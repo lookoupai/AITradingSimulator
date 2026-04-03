@@ -7,6 +7,7 @@ const PREDICTOR_PRESETS = [
         injectionMode: 'summary',
         historyWindow: 100,
         temperature: 0.4,
+        apiMode: 'auto',
         targets: ['number', 'big_small', 'odd_even', 'combo'],
         tags: ['新手友好', '摘要模式', '推荐 100 期'],
         prompt: `角色：\n你是一个 PC28 预测引擎。\n\n目标：\n基于最近 {{history_window}} 期开奖摘要、遗漏统计、今日统计，预测下一期和值与大小单双。\n\n输入：\n{{recent_draws_summary}}\n\n遗漏统计：\n{{omission_summary}}\n\n今日统计：\n{{today_summary}}\n\n要求：\n1. 先分析和值分布、大小比例、单双比例、连续次数、遗漏值。\n2. 再给出下一期预测和值和对应的大小单双组合。\n3. 输出 JSON，不要附加多余解释。`
@@ -19,6 +20,7 @@ const PREDICTOR_PRESETS = [
         injectionMode: 'raw',
         historyWindow: 80,
         temperature: 0.7,
+        apiMode: 'chat_completions',
         targets: ['number', 'big_small', 'odd_even', 'combo'],
         tags: ['原始模式', '时间变量', '玄学玩法'],
         prompt: `角色：\n你是一个 PC28 预测引擎。\n\n方法：\n小六壬 + 基础统计校验。\n\n输入：\n最近 {{history_window}} 期 PC28 数据：\n{{recent_draws_csv}}\n\n起课时间：\n年={{current_year}}\n月={{current_month}}\n日={{current_day}}\n时={{current_hour}}\n分={{current_minute}}\n\n规则：\n1. 先按大安、留连、速喜、赤口、小吉、空亡推演。\n2. 再用历史开奖做交叉验证，避免完全脱离统计。\n3. 输出下一期和值、大小单双、风险和一句策略建议。\n4. 只输出 JSON。`
@@ -31,6 +33,7 @@ const PREDICTOR_PRESETS = [
         injectionMode: 'raw',
         historyWindow: 100,
         temperature: 0.55,
+        apiMode: 'auto',
         targets: ['number', 'big_small', 'odd_even', 'combo'],
         tags: ['推荐', '原始模式', '平衡型'],
         prompt: `角色：\n你是一个 PC28 预测引擎。\n\n方法：\n统计模型 + 小六壬 + 概率回归。\n\n输入：\n最近 {{history_window}} 期 PC28 数据：\n{{recent_draws_csv}}\n\n补充信息：\n遗漏统计：\n{{omission_summary}}\n\n今日统计：\n{{today_summary}}\n\n起课时间：\n{{current_time_beijing}}\n\n步骤：\n1. 统计和值分布、大小比例、单双比例、连续次数与极端概率。\n2. 计算移动平均、标准差、趋势方向和回归概率。\n3. 小六壬用于修正最终取值方向。\n4. 输出下一期和值、概率、推荐、大小单双、风险、策略。\n5. 只输出 JSON。`
@@ -43,6 +46,7 @@ const PREDICTOR_PRESETS = [
         injectionMode: 'summary',
         historyWindow: 60,
         temperature: 0.3,
+        apiMode: 'auto',
         targets: ['big_small', 'odd_even', 'combo'],
         tags: ['保守', '摘要模式', '不追和值'],
         prompt: `角色：\n你是 PC28 保守预测助手。\n\n输入：\n{{recent_draws_summary}}\n\n遗漏统计：\n{{omission_summary}}\n\n要求：\n1. 不强行预测精确和值。\n2. 重点输出大小、单双、组合和风险。\n3. 如果信号不明确，降低 confidence。\n4. 只输出 JSON。`
@@ -55,6 +59,7 @@ const PREDICTOR_PRESETS = [
         injectionMode: 'raw',
         historyWindow: 120,
         temperature: 0.65,
+        apiMode: 'chat_completions',
         targets: ['number', 'big_small', 'odd_even', 'combo'],
         tags: ['激进', '120 期', '极值/遗漏'],
         prompt: `角色：\n你是一个擅长极值回归判断的 PC28 预测助手。\n\n输入：\n{{recent_draws_csv}}\n\n额外信息：\n{{omission_summary}}\n\n任务：\n1. 重点分析极端和值、长遗漏号码、连续大小单双。\n2. 判断下一期是否存在回归或继续延续的概率。\n3. 输出一个主预测和一句激进策略建议。\n4. 只输出 JSON。`
@@ -598,6 +603,7 @@ class PredictionApp {
         document.getElementById('predictionMethod').value = data.prediction_method || '';
         document.getElementById('apiUrl').value = data.api_url || '';
         document.getElementById('modelName').value = data.model_name || '';
+        document.getElementById('apiMode').value = data.api_mode || 'auto';
         document.getElementById('apiKey').value = '';
         document.getElementById('historyWindow').value = data.history_window || 60;
         document.getElementById('temperature').value = data.temperature ?? 0.7;
@@ -627,6 +633,7 @@ class PredictionApp {
         document.getElementById('predictionMethod').value = '';
         document.getElementById('apiUrl').value = '';
         document.getElementById('modelName').value = '';
+        document.getElementById('apiMode').value = 'auto';
         document.getElementById('apiKey').value = '';
         document.getElementById('historyWindow').value = '60';
         document.getElementById('temperature').value = '0.7';
@@ -657,6 +664,7 @@ class PredictionApp {
                     ${preset.tags.map((tag) => `<span class="tag">${this.escapeHtml(tag)}</span>`).join('')}
                     <span class="tag">历史 ${preset.historyWindow} 期</span>
                     <span class="tag">${preset.injectionMode === 'raw' ? '原始模式' : '摘要模式'}</span>
+                    <span class="tag">${preset.apiMode === 'responses' ? 'Responses' : preset.apiMode === 'chat_completions' ? 'Chat Completions' : '自动模式'}</span>
                 </div>
                 <div class="preset-actions">
                     <button type="button" class="btn ghost compact" data-apply-preset="${preset.id}">一键填充</button>
@@ -692,6 +700,7 @@ class PredictionApp {
             document.getElementById('predictorName').value = preset.title;
         }
         document.getElementById('predictionMethod').value = preset.method;
+        document.getElementById('apiMode').value = preset.apiMode || 'auto';
         document.getElementById('historyWindow').value = String(preset.historyWindow);
         document.getElementById('temperature').value = String(preset.temperature);
         document.getElementById('dataInjectionMode').value = preset.injectionMode;
@@ -714,6 +723,7 @@ class PredictionApp {
             prediction_method: document.getElementById('predictionMethod').value.trim(),
             api_url: document.getElementById('apiUrl').value.trim(),
             model_name: document.getElementById('modelName').value.trim(),
+            api_mode: document.getElementById('apiMode').value,
             api_key: document.getElementById('apiKey').value.trim(),
             history_window: Number(document.getElementById('historyWindow').value || 60),
             temperature: Number(document.getElementById('temperature').value || 0.7),
@@ -773,7 +783,8 @@ class PredictionApp {
             }
 
             const preview = data.response_preview || '模型已返回响应';
-            this.showTestResult('success', `测试成功：${preview}`);
+            const modeText = data.api_mode ? `（模式：${data.api_mode}）` : '';
+            this.showTestResult('success', `测试成功${modeText}：${preview}`);
         } catch (error) {
             this.showTestResult('error', error.message);
         } finally {

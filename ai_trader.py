@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Optional
+from urllib.parse import urlparse
 
 from openai import APIConnectionError, APIError, OpenAI
 
@@ -13,6 +14,7 @@ from utils.pc28 import (
     build_combo,
     derive_pc28_attributes,
     normalize_big_small,
+    normalize_api_mode,
     normalize_combo,
     normalize_injection_mode,
     normalize_odd_even,
@@ -26,10 +28,18 @@ from utils.timezone import get_current_beijing_time, get_current_beijing_time_st
 class AIPredictor:
     """基于 OpenAI 兼容接口的 PC28 预测器"""
 
-    def __init__(self, api_key: str, api_url: str, model_name: str, temperature: float = 0.7):
+    def __init__(
+        self,
+        api_key: str,
+        api_url: str,
+        model_name: str,
+        api_mode: str = 'auto',
+        temperature: float = 0.7
+    ):
         self.api_key = api_key
         self.api_url = api_url.rstrip('/')
         self.model_name = model_name
+        self.api_mode = normalize_api_mode(api_mode)
         self.temperature = temperature
 
     def predict_next_issue(self, context: dict, predictor_config: dict) -> tuple[dict, str, str]:
@@ -59,11 +69,12 @@ class AIPredictor:
 
     def run_connectivity_test(self) -> dict:
         """测试模型连通性与基础输出能力"""
-        test_prompt = 'Reply with OK only.'
+        test_prompt = 'Return a minimal JSON object only: {"status":"ok"}'
         raw_response = self._call_llm(test_prompt)
         preview = raw_response.strip()
         return {
             'success': bool(preview),
+            'api_mode': self._resolve_api_mode(),
             'raw_response': raw_response,
             'response_preview': preview[:200]
         }
@@ -276,6 +287,7 @@ class AIPredictor:
         system_prompt = (
             "你是 PC28 预测助手。你必须遵守字段契约，只输出单个 JSON 对象。"
         )
+        resolved_api_mode = self._resolve_api_mode()
 
         for base_url in self._candidate_base_urls():
             try:
@@ -283,6 +295,21 @@ class AIPredictor:
                     api_key=self.api_key,
                     base_url=base_url
                 )
+                if resolved_api_mode == 'responses':
+                    response = client.responses.create(
+                        model=self.model_name,
+                        instructions=system_prompt,
+                        input=prompt,
+                        temperature=self.temperature,
+                        max_output_tokens=1200,
+                        text={
+                            'format': {
+                                'type': 'json_object'
+                            }
+                        }
+                    )
+                    return self._extract_response_output_text(response)
+
                 response = client.chat.completions.create(
                     model=self.model_name,
                     messages=[
@@ -300,8 +327,44 @@ class AIPredictor:
         if isinstance(last_error, APIConnectionError):
             raise Exception(f'API 连接失败：{last_error}')
         if isinstance(last_error, APIError):
-            raise Exception(f'API 调用失败：{last_error}')
-        raise Exception(f'LLM 调用失败：{last_error}')
+            raise Exception(f'API 调用失败（模式={resolved_api_mode}）：{last_error}')
+        raise Exception(f'LLM 调用失败（模式={resolved_api_mode}）：{last_error}')
+
+    def _resolve_api_mode(self) -> str:
+        if self.api_mode != 'auto':
+            return self.api_mode
+
+        host = urlparse(self.api_url).hostname or ''
+        host = host.lower()
+        if host in {'api.openai.com', 'openai.com'} or host.endswith('.openai.com'):
+            return 'responses'
+        return 'chat_completions'
+
+    def _extract_response_output_text(self, response) -> str:
+        output_text = getattr(response, 'output_text', None)
+        text = self._collect_text_fragments(output_text)
+        if text:
+            return text
+
+        output_items = getattr(response, 'output', None) or []
+        parts = []
+        for item in output_items:
+            content_items = getattr(item, 'content', None) or []
+            for content_item in content_items:
+                candidate_text = self._collect_text_fragments(
+                    getattr(content_item, 'text', None)
+                    or getattr(content_item, 'content', None)
+                    or content_item
+                )
+                if candidate_text:
+                    parts.append(candidate_text)
+
+        combined_text = '\n'.join(part for part in parts if part).strip()
+        if combined_text:
+            return combined_text
+
+        response_dump = self._safe_model_dump(response)
+        raise ValueError(f'Responses API 返回为空，原始响应片段：{response_dump[:500]}')
 
     def _extract_message_text(self, response) -> str:
         choices = getattr(response, 'choices', None) or []

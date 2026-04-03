@@ -44,6 +44,7 @@ class Database:
                 api_key TEXT NOT NULL,
                 api_url TEXT NOT NULL,
                 model_name TEXT NOT NULL,
+                api_mode TEXT NOT NULL DEFAULT 'auto',
                 prediction_method TEXT DEFAULT '',
                 system_prompt TEXT DEFAULT '',
                 data_injection_mode TEXT NOT NULL DEFAULT 'summary',
@@ -134,6 +135,10 @@ class Database:
             cursor.execute("ALTER TABLE predictors ADD COLUMN data_injection_mode TEXT NOT NULL DEFAULT 'summary'")
         except Exception:
             pass
+        try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN api_mode TEXT NOT NULL DEFAULT 'auto'")
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
@@ -147,6 +152,7 @@ class Database:
         api_key: str,
         api_url: str,
         model_name: str,
+        api_mode: str,
         prediction_method: str,
         system_prompt: str,
         data_injection_mode: str,
@@ -161,11 +167,11 @@ class Database:
         cursor.execute(
             '''
             INSERT INTO predictors (
-                user_id, name, lottery_type, api_key, api_url, model_name,
+                user_id, name, lottery_type, api_key, api_url, model_name, api_mode,
                 prediction_method, system_prompt, data_injection_mode,
                 prediction_targets, history_window, temperature, enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 user_id,
@@ -174,6 +180,7 @@ class Database:
                 api_key,
                 api_url,
                 model_name,
+                api_mode,
                 prediction_method,
                 system_prompt,
                 data_injection_mode,
@@ -628,6 +635,7 @@ class Database:
         data = dict(row)
         data['prediction_targets'] = self._decode_json_list(data.get('prediction_targets'))
         data['enabled'] = bool(data.get('enabled'))
+        data['api_mode'] = data.get('api_mode') or 'auto'
         data['data_injection_mode'] = data.get('data_injection_mode') or 'summary'
         if not include_secret:
             data.pop('api_key', None)

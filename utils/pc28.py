@@ -9,6 +9,7 @@ from typing import Iterable, Optional
 
 ALLOWED_TARGETS = ('number', 'big_small', 'odd_even', 'combo')
 ALLOWED_INJECTION_MODES = ('summary', 'raw')
+ALLOWED_API_MODES = ('auto', 'chat_completions', 'responses')
 
 TARGET_LABELS = {
     'number': '号码',
@@ -38,6 +39,14 @@ def normalize_injection_mode(value: Optional[str]) -> str:
     if text in ALLOWED_INJECTION_MODES:
         return text
     return 'summary'
+
+
+def normalize_api_mode(value: Optional[str]) -> str:
+    """规范化 API 模式"""
+    text = str(value or '').strip().lower()
+    if text in ALLOWED_API_MODES:
+        return text
+    return 'auto'
 
 
 def parse_pc28_number(value) -> Optional[int]:

@@ -144,6 +144,7 @@ class PredictionEngine:
             api_key=predictor['api_key'],
             api_url=predictor['api_url'],
             model_name=predictor['model_name'],
+            api_mode=predictor.get('api_mode', 'auto'),
             temperature=predictor['temperature']
         )
 

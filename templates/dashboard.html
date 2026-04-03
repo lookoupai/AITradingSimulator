@@ -212,6 +212,15 @@
                     <input type="text" id="modelName" placeholder="deepseek-chat / gemini-2.5-flash">
                 </label>
                 <label class="form-field span-2">
+                    <span>API 模式</span>
+                    <select id="apiMode" class="form-input">
+                        <option value="auto">自动：OpenAI 官方直连优先 Responses，第三方网关默认 Chat Completions</option>
+                        <option value="chat_completions">Chat Completions：兼容大多数第三方 OpenAI 网关</option>
+                        <option value="responses">Responses：适合 OpenAI 官方直连与新项目</option>
+                    </select>
+                    <small class="field-hint">不确定时先用自动；如果是 DeepSeek、LongCat、Gemini 兼容网关，通常优先 Chat Completions。</small>
+                </label>
+                <label class="form-field span-2">
                     <span>API Key</span>
                     <input type="password" id="apiKey" placeholder="编辑时留空表示保持原值">
                 </label>

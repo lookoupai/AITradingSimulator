@@ -22,7 +22,7 @@ from utils.auth import (
     set_current_user,
     verify_password
 )
-from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_injection_mode, normalize_target_list
+from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_target_list
 from utils.timezone import get_current_beijing_time_str, utc_to_beijing
 
 
@@ -110,6 +110,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'lottery_type': predictor['lottery_type'],
         'api_url': predictor['api_url'],
         'model_name': predictor['model_name'],
+        'api_mode': predictor.get('api_mode') or 'auto',
         'prediction_method': predictor.get('prediction_method') or '',
         'system_prompt': predictor.get('system_prompt') or '',
         'data_injection_mode': predictor.get('data_injection_mode') or 'summary',
@@ -181,6 +182,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     fallback_name = existing_predictor.get('name') if existing_predictor else ''
     fallback_api_url = existing_predictor.get('api_url') if existing_predictor else ''
     fallback_model_name = existing_predictor.get('model_name') if existing_predictor else ''
+    fallback_api_mode = existing_predictor.get('api_mode') if existing_predictor else 'auto'
     fallback_method = existing_predictor.get('prediction_method') if existing_predictor else ''
     fallback_prompt = existing_predictor.get('system_prompt') if existing_predictor else ''
     fallback_injection_mode = existing_predictor.get('data_injection_mode') if existing_predictor else 'summary'
@@ -189,6 +191,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     api_key = str(data.get('api_key') or '').strip()
     api_url = str(data.get('api_url') or fallback_api_url).strip()
     model_name = str(data.get('model_name') or fallback_model_name).strip()
+    api_mode = normalize_api_mode(data.get('api_mode') or fallback_api_mode)
     prediction_method = str(data.get('prediction_method') or fallback_method).strip()
     system_prompt = str(data.get('system_prompt') or fallback_prompt).strip()
     data_injection_mode = normalize_injection_mode(data.get('data_injection_mode') or fallback_injection_mode)
@@ -231,6 +234,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
         'api_key': api_key,
         'api_url': api_url,
         'model_name': model_name,
+        'api_mode': api_mode,
         'prediction_method': prediction_method or '自定义策略',
         'system_prompt': system_prompt,
         'data_injection_mode': data_injection_mode,
@@ -538,6 +542,7 @@ def create_predictor():
         api_key=payload['api_key'],
         api_url=payload['api_url'],
         model_name=payload['model_name'],
+        api_mode=payload['api_mode'],
         prediction_method=payload['prediction_method'],
         system_prompt=payload['system_prompt'],
         data_injection_mode=payload['data_injection_mode'],
@@ -571,9 +576,11 @@ def test_predictor():
 
     fallback_api_url = existing.get('api_url') if existing else ''
     fallback_model_name = existing.get('model_name') if existing else ''
+    fallback_api_mode = existing.get('api_mode') if existing else 'auto'
     api_key = str(data.get('api_key') or '').strip() or (existing.get('api_key') if existing else '')
     api_url = str(data.get('api_url') or fallback_api_url).strip()
     model_name = str(data.get('model_name') or fallback_model_name).strip()
+    api_mode = normalize_api_mode(data.get('api_mode') or fallback_api_mode)
 
     if not api_key:
         return jsonify({'error': '请填写 API Key，或在编辑已有方案时使用已保存的 Key'}), 400
@@ -582,12 +589,19 @@ def test_predictor():
     if not model_name:
         return jsonify({'error': '模型名称不能为空'}), 400
 
-    tester = AIPredictor(api_key=api_key, api_url=api_url, model_name=model_name, temperature=0)
+    tester = AIPredictor(
+        api_key=api_key,
+        api_url=api_url,
+        model_name=model_name,
+        api_mode=api_mode,
+        temperature=0
+    )
 
     try:
         result = tester.run_connectivity_test()
         return jsonify({
             'message': '连接测试成功',
+            'api_mode': result['api_mode'],
             'response_preview': result['response_preview'],
             'raw_response': result['raw_response'][:1000]
         })
@@ -616,6 +630,7 @@ def update_predictor(predictor_id: int):
         'api_key': payload['api_key'],
         'api_url': payload['api_url'],
         'model_name': payload['model_name'],
+        'api_mode': payload['api_mode'],
         'prediction_method': payload['prediction_method'],
         'system_prompt': payload['system_prompt'],
         'data_injection_mode': payload['data_injection_mode'],
