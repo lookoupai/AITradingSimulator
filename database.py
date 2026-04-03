@@ -1,28 +1,29 @@
 """
-Database management module
+数据库管理模块
 """
-import sqlite3
+from __future__ import annotations
+
 import json
-from datetime import datetime
-from typing import List, Dict, Optional
+import sqlite3
+from datetime import datetime, timedelta
+from typing import Any, Optional
+
 
 class Database:
-    def __init__(self, db_path: str = 'trading_bot.db'):
+    def __init__(self, db_path: str = 'pc28_predictor.db'):
         self.db_path = db_path
-        
+
     def get_connection(self):
-        """Get database connection"""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
-    
+
     def init_db(self):
-        """Initialize database tables"""
         conn = self.get_connection()
         cursor = conn.cursor()
 
-        # Users table
-        cursor.execute('''
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
@@ -30,379 +31,571 @@ class Database:
                 email TEXT UNIQUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+            '''
+        )
 
-        # Models table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS models (
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS predictors (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
+                lottery_type TEXT NOT NULL DEFAULT 'pc28',
                 api_key TEXT NOT NULL,
                 api_url TEXT NOT NULL,
                 model_name TEXT NOT NULL,
-                initial_capital REAL DEFAULT 10000,
-                system_prompt TEXT,
+                prediction_method TEXT DEFAULT '',
+                system_prompt TEXT DEFAULT '',
+                data_injection_mode TEXT NOT NULL DEFAULT 'summary',
+                prediction_targets TEXT NOT NULL DEFAULT '[]',
+                history_window INTEGER NOT NULL DEFAULT 60,
+                temperature REAL NOT NULL DEFAULT 0.7,
+                enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
-        ''')
+            '''
+        )
 
-        # 为已存在的models表添加user_id字段
-        try:
-            cursor.execute('ALTER TABLE models ADD COLUMN user_id INTEGER')
-        except:
-            pass  # 字段已存在
-
-        # 为已存在的models表添加system_prompt字段
-        try:
-            cursor.execute('ALTER TABLE models ADD COLUMN system_prompt TEXT')
-        except:
-            pass  # 字段已存在
-        
-        # Portfolios table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS portfolios (
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS lottery_draws (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_id INTEGER NOT NULL,
-                coin TEXT NOT NULL,
-                quantity REAL NOT NULL,
-                avg_price REAL NOT NULL,
-                leverage INTEGER DEFAULT 1,
-                side TEXT DEFAULT 'long',
-                stop_loss REAL,
-                take_profit REAL,
+                lottery_type TEXT NOT NULL,
+                issue_no TEXT NOT NULL,
+                draw_date TEXT,
+                draw_time TEXT,
+                open_time TEXT,
+                result_number INTEGER NOT NULL,
+                result_number_text TEXT NOT NULL,
+                big_small TEXT NOT NULL,
+                odd_even TEXT NOT NULL,
+                combo TEXT NOT NULL,
+                source_payload TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (model_id) REFERENCES models(id),
-                UNIQUE(model_id, coin, side)
+                UNIQUE(lottery_type, issue_no)
             )
-        ''')
+            '''
+        )
 
-        # 为已存在的表添加新字段（如果不存在）
-        try:
-            cursor.execute('ALTER TABLE portfolios ADD COLUMN stop_loss REAL')
-        except:
-            pass  # 字段已存在
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                predictor_id INTEGER NOT NULL,
+                lottery_type TEXT NOT NULL DEFAULT 'pc28',
+                issue_no TEXT NOT NULL,
+                requested_targets TEXT NOT NULL DEFAULT '[]',
+                prediction_number INTEGER,
+                prediction_big_small TEXT,
+                prediction_odd_even TEXT,
+                prediction_combo TEXT,
+                confidence REAL,
+                reasoning_summary TEXT,
+                raw_response TEXT,
+                prompt_snapshot TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error_message TEXT,
+                actual_number INTEGER,
+                actual_big_small TEXT,
+                actual_odd_even TEXT,
+                actual_combo TEXT,
+                hit_number INTEGER,
+                hit_big_small INTEGER,
+                hit_odd_even INTEGER,
+                hit_combo INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                settled_at TIMESTAMP,
+                FOREIGN KEY (predictor_id) REFERENCES predictors(id),
+                UNIQUE(predictor_id, issue_no)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS scheduler_state (
+                name TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                heartbeat_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictors_user ON predictors(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_draws_issue ON lottery_draws(lottery_type, issue_no)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_predictor ON predictions(predictor_id, issue_no)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status, issue_no)')
 
         try:
-            cursor.execute('ALTER TABLE portfolios ADD COLUMN take_profit REAL')
-        except:
-            pass  # 字段已存在
-        
-        # Trades table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_id INTEGER NOT NULL,
-                coin TEXT NOT NULL,
-                signal TEXT NOT NULL,
-                quantity REAL NOT NULL,
-                price REAL NOT NULL,
-                leverage INTEGER DEFAULT 1,
-                side TEXT DEFAULT 'long',
-                pnl REAL DEFAULT 0,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (model_id) REFERENCES models(id)
-            )
-        ''')
-        
-        # Conversations table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_id INTEGER NOT NULL,
-                user_prompt TEXT NOT NULL,
-                ai_response TEXT NOT NULL,
-                cot_trace TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (model_id) REFERENCES models(id)
-            )
-        ''')
-        
-        # Account values history table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS account_values (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_id INTEGER NOT NULL,
-                total_value REAL NOT NULL,
-                cash REAL NOT NULL,
-                positions_value REAL NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (model_id) REFERENCES models(id)
-            )
-        ''')
-        
+            cursor.execute("ALTER TABLE predictors ADD COLUMN data_injection_mode TEXT NOT NULL DEFAULT 'summary'")
+        except Exception:
+            pass
+
         conn.commit()
         conn.close()
-    
-    # ============ Model Management ============
-    
-    def add_model(self, user_id: int, name: str, api_key: str, api_url: str,
-                   model_name: str, initial_capital: float = 10000, system_prompt: str = None) -> int:
-        """Add new trading model"""
+
+    # ============ Predictor Management ============
+
+    def create_predictor(
+        self,
+        user_id: int,
+        name: str,
+        api_key: str,
+        api_url: str,
+        model_name: str,
+        prediction_method: str,
+        system_prompt: str,
+        data_injection_mode: str,
+        prediction_targets: list[str],
+        history_window: int,
+        temperature: float,
+        enabled: bool,
+        lottery_type: str = 'pc28'
+    ) -> int:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO models (user_id, name, api_key, api_url, model_name, initial_capital, system_prompt)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, name, api_key, api_url, model_name, initial_capital, system_prompt))
-        model_id = cursor.lastrowid
+        cursor.execute(
+            '''
+            INSERT INTO predictors (
+                user_id, name, lottery_type, api_key, api_url, model_name,
+                prediction_method, system_prompt, data_injection_mode,
+                prediction_targets, history_window, temperature, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                user_id,
+                name,
+                lottery_type,
+                api_key,
+                api_url,
+                model_name,
+                prediction_method,
+                system_prompt,
+                data_injection_mode,
+                json.dumps(prediction_targets, ensure_ascii=False),
+                history_window,
+                temperature,
+                1 if enabled else 0
+            )
+        )
+        predictor_id = cursor.lastrowid
         conn.commit()
         conn.close()
-        return model_id
-    
-    def get_model(self, model_id: int) -> Optional[Dict]:
-        """Get model information"""
+        return predictor_id
+
+    def update_predictor(self, predictor_id: int, fields: dict):
+        if not fields:
+            return
+
+        updates = []
+        values = []
+        for key, value in fields.items():
+            if key == 'prediction_targets':
+                value = json.dumps(value, ensure_ascii=False)
+            if key == 'enabled':
+                value = 1 if value else 0
+            updates.append(f'{key} = ?')
+            values.append(value)
+
+        updates.append('updated_at = CURRENT_TIMESTAMP')
+        values.append(predictor_id)
+
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM models WHERE id = ?', (model_id,))
+        cursor.execute(
+            f'''
+            UPDATE predictors
+            SET {', '.join(updates)}
+            WHERE id = ?
+            ''',
+            values
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_predictor(self, predictor_id: int):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM predictions WHERE predictor_id = ?', (predictor_id,))
+        cursor.execute('DELETE FROM predictors WHERE id = ?', (predictor_id,))
+        conn.commit()
+        conn.close()
+
+    def get_predictor(self, predictor_id: int, include_secret: bool = False) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM predictors WHERE id = ?', (predictor_id,))
         row = cursor.fetchone()
         conn.close()
-        return dict(row) if row else None
-    
-    def get_all_models(self, user_id: int = None) -> List[Dict]:
-        """Get all trading models (optionally filtered by user_id)"""
+        return self._prepare_predictor(row, include_secret=include_secret)
+
+    def get_predictors_by_user(self, user_id: int, include_secret: bool = False) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        if user_id:
-            cursor.execute('SELECT * FROM models WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
-        else:
-            cursor.execute('SELECT * FROM models ORDER BY created_at DESC')
+        cursor.execute(
+            '''
+            SELECT * FROM predictors
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            ''',
+            (user_id,)
+        )
         rows = cursor.fetchall()
         conn.close()
-        return [dict(row) for row in rows]
-    
-    def update_model_prompt(self, model_id: int, system_prompt: str):
-        """Update model's system prompt"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            UPDATE models
-            SET system_prompt = ?
-            WHERE id = ?
-        ''', (system_prompt, model_id))
-        conn.commit()
-        conn.close()
+        return [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
 
-    def delete_model(self, model_id: int):
-        """Delete model and related data"""
+    def get_enabled_predictors(self, lottery_type: str = 'pc28', include_secret: bool = True) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM models WHERE id = ?', (model_id,))
-        cursor.execute('DELETE FROM portfolios WHERE model_id = ?', (model_id,))
-        cursor.execute('DELETE FROM trades WHERE model_id = ?', (model_id,))
-        cursor.execute('DELETE FROM conversations WHERE model_id = ?', (model_id,))
-        cursor.execute('DELETE FROM account_values WHERE model_id = ?', (model_id,))
-        conn.commit()
+        cursor.execute(
+            '''
+            SELECT * FROM predictors
+            WHERE lottery_type = ? AND enabled = 1
+            ORDER BY created_at ASC
+            ''',
+            (lottery_type,)
+        )
+        rows = cursor.fetchall()
         conn.close()
+        return [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
 
-    # ============ Portfolio Management ============
-    
-    def update_position(self, model_id: int, coin: str, quantity: float,
-                       avg_price: float, leverage: int = 1, side: str = 'long',
-                       stop_loss: float = None, take_profit: float = None):
-        """Update position with stop loss and take profit"""
+    def predictor_exists_for_user(self, predictor_id: int, user_id: int) -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO portfolios (model_id, coin, quantity, avg_price, leverage, side, stop_loss, take_profit, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(model_id, coin, side) DO UPDATE SET
-                quantity = excluded.quantity,
-                avg_price = excluded.avg_price,
-                leverage = excluded.leverage,
-                stop_loss = excluded.stop_loss,
-                take_profit = excluded.take_profit,
+        cursor.execute(
+            'SELECT 1 FROM predictors WHERE id = ? AND user_id = ?',
+            (predictor_id, user_id)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row is not None
+
+    # ============ Draw Sync ============
+
+    def upsert_draws(self, lottery_type: str, draws: list[dict]):
+        if not draws:
+            return
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.executemany(
+            '''
+            INSERT INTO lottery_draws (
+                lottery_type, issue_no, draw_date, draw_time, open_time,
+                result_number, result_number_text, big_small, odd_even, combo,
+                source_payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(lottery_type, issue_no) DO UPDATE SET
+                draw_date = excluded.draw_date,
+                draw_time = excluded.draw_time,
+                open_time = excluded.open_time,
+                result_number = excluded.result_number,
+                result_number_text = excluded.result_number_text,
+                big_small = excluded.big_small,
+                odd_even = excluded.odd_even,
+                combo = excluded.combo,
+                source_payload = excluded.source_payload,
                 updated_at = CURRENT_TIMESTAMP
-        ''', (model_id, coin, quantity, avg_price, leverage, side, stop_loss, take_profit))
+            ''',
+            [
+                (
+                    lottery_type,
+                    draw['issue_no'],
+                    draw.get('draw_date'),
+                    draw.get('draw_time'),
+                    draw.get('open_time'),
+                    draw['result_number'],
+                    draw['result_number_text'],
+                    draw['big_small'],
+                    draw['odd_even'],
+                    draw['combo'],
+                    draw.get('source_payload')
+                )
+                for draw in draws
+            ]
+        )
         conn.commit()
         conn.close()
-    
-    def get_portfolio(self, model_id: int, current_prices: Dict = None) -> Dict:
-        """Get portfolio with positions and P&L
-        
-        Args:
-            model_id: Model ID
-            current_prices: Current market prices {coin: price} for unrealized P&L calculation
-        """
+
+    def get_recent_draws(self, lottery_type: str = 'pc28', limit: int = 20) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        
-        # Get positions
-        cursor.execute('''
-            SELECT * FROM portfolios WHERE model_id = ? AND quantity > 0
-        ''', (model_id,))
-        positions = [dict(row) for row in cursor.fetchall()]
-        
-        # Get initial capital
-        cursor.execute('SELECT initial_capital FROM models WHERE id = ?', (model_id,))
-        initial_capital = cursor.fetchone()['initial_capital']
-        
-        # Calculate realized P&L (sum of all trade P&L)
-        cursor.execute('''
-            SELECT COALESCE(SUM(pnl), 0) as total_pnl FROM trades WHERE model_id = ?
-        ''', (model_id,))
-        realized_pnl = cursor.fetchone()['total_pnl']
-        
-        # Calculate margin used
-        margin_used = sum([p['quantity'] * p['avg_price'] / p['leverage'] for p in positions])
-        
-        # Calculate unrealized P&L (if prices provided)
-        unrealized_pnl = 0
-        if current_prices:
-            for pos in positions:
-                coin = pos['coin']
-                if coin in current_prices:
-                    current_price = current_prices[coin]
-                    entry_price = pos['avg_price']
-                    quantity = pos['quantity']
-                    
-                    # Add current price to position
-                    pos['current_price'] = current_price
-                    
-                    # Calculate position P&L
-                    if pos['side'] == 'long':
-                        pos_pnl = (current_price - entry_price) * quantity
-                    else:  # short
-                        pos_pnl = (entry_price - current_price) * quantity
-                    
-                    pos['pnl'] = pos_pnl
-                    unrealized_pnl += pos_pnl
-                else:
-                    pos['current_price'] = None
-                    pos['pnl'] = 0
-        else:
-            for pos in positions:
-                pos['current_price'] = None
-                pos['pnl'] = 0
-        
-        # Cash = initial capital + realized P&L - margin used
-        cash = initial_capital + realized_pnl - margin_used
-        
-        # Position value = quantity * entry price (not margin!)
-        positions_value = sum([p['quantity'] * p['avg_price'] for p in positions])
-        
-        # Total account value = initial capital + realized P&L + unrealized P&L
-        total_value = initial_capital + realized_pnl + unrealized_pnl
-        
+        cursor.execute(
+            '''
+            SELECT * FROM lottery_draws
+            WHERE lottery_type = ?
+            ORDER BY CAST(issue_no AS INTEGER) DESC
+            LIMIT ?
+            ''',
+            (lottery_type, limit)
+        )
+        rows = cursor.fetchall()
         conn.close()
-        
+        return [self._prepare_draw(row) for row in rows]
+
+    def get_draw_by_issue(self, lottery_type: str, issue_no: str) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM lottery_draws
+            WHERE lottery_type = ? AND issue_no = ?
+            LIMIT 1
+            ''',
+            (lottery_type, issue_no)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_draw(row) if row else None
+
+    # ============ Predictions ============
+
+    def upsert_prediction(self, payload: dict):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO predictions (
+                predictor_id, lottery_type, issue_no, requested_targets,
+                prediction_number, prediction_big_small, prediction_odd_even,
+                prediction_combo, confidence, reasoning_summary, raw_response,
+                prompt_snapshot, status, error_message, actual_number,
+                actual_big_small, actual_odd_even, actual_combo, hit_number,
+                hit_big_small, hit_odd_even, hit_combo, settled_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(predictor_id, issue_no) DO UPDATE SET
+                requested_targets = excluded.requested_targets,
+                prediction_number = excluded.prediction_number,
+                prediction_big_small = excluded.prediction_big_small,
+                prediction_odd_even = excluded.prediction_odd_even,
+                prediction_combo = excluded.prediction_combo,
+                confidence = excluded.confidence,
+                reasoning_summary = excluded.reasoning_summary,
+                raw_response = excluded.raw_response,
+                prompt_snapshot = excluded.prompt_snapshot,
+                status = excluded.status,
+                error_message = excluded.error_message,
+                actual_number = excluded.actual_number,
+                actual_big_small = excluded.actual_big_small,
+                actual_odd_even = excluded.actual_odd_even,
+                actual_combo = excluded.actual_combo,
+                hit_number = excluded.hit_number,
+                hit_big_small = excluded.hit_big_small,
+                hit_odd_even = excluded.hit_odd_even,
+                hit_combo = excluded.hit_combo,
+                settled_at = excluded.settled_at,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (
+                payload['predictor_id'],
+                payload.get('lottery_type', 'pc28'),
+                payload['issue_no'],
+                json.dumps(payload.get('requested_targets') or [], ensure_ascii=False),
+                payload.get('prediction_number'),
+                payload.get('prediction_big_small'),
+                payload.get('prediction_odd_even'),
+                payload.get('prediction_combo'),
+                payload.get('confidence'),
+                payload.get('reasoning_summary'),
+                payload.get('raw_response'),
+                payload.get('prompt_snapshot'),
+                payload.get('status', 'pending'),
+                payload.get('error_message'),
+                payload.get('actual_number'),
+                payload.get('actual_big_small'),
+                payload.get('actual_odd_even'),
+                payload.get('actual_combo'),
+                payload.get('hit_number'),
+                payload.get('hit_big_small'),
+                payload.get('hit_odd_even'),
+                payload.get('hit_combo'),
+                payload.get('settled_at')
+            )
+        )
+        conn.commit()
+        conn.close()
+
+    def get_prediction_by_issue(self, predictor_id: int, issue_no: str) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM predictions
+            WHERE predictor_id = ? AND issue_no = ?
+            LIMIT 1
+            ''',
+            (predictor_id, issue_no)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_prediction(row) if row else None
+
+    def get_latest_prediction(self, predictor_id: int) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM predictions
+            WHERE predictor_id = ?
+            ORDER BY CAST(issue_no AS INTEGER) DESC
+            LIMIT 1
+            ''',
+            (predictor_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_prediction(row) if row else None
+
+    def get_recent_predictions(self, predictor_id: int, limit: int = 20) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM predictions
+            WHERE predictor_id = ?
+            ORDER BY CAST(issue_no AS INTEGER) DESC
+            LIMIT ?
+            ''',
+            (predictor_id, limit)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_prediction(row) for row in rows]
+
+    def get_pending_predictions(self, lottery_type: str = 'pc28') -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT p.*
+            FROM predictions p
+            JOIN predictors r ON r.id = p.predictor_id
+            WHERE p.lottery_type = ? AND p.status = 'pending'
+            ORDER BY CAST(p.issue_no AS INTEGER) ASC
+            ''',
+            (lottery_type,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_prediction(row) for row in rows]
+
+    def get_predictor_stats(self, predictor_id: int) -> dict:
+        rows = self.get_recent_predictions(predictor_id, limit=500)
+        settled_rows = [row for row in rows if row['status'] == 'settled']
+        recent_rows = settled_rows[:20]
+
+        def _rate(items: list[dict], key: str) -> Optional[float]:
+            attempted = [item for item in items if item[key] is not None]
+            if not attempted:
+                return None
+            return round(sum(item[key] for item in attempted) / len(attempted) * 100, 2)
+
+        latest_settled = settled_rows[0] if settled_rows else None
+
         return {
-            'model_id': model_id,
-            'cash': cash,
-            'positions': positions,
-            'positions_value': positions_value,
-            'margin_used': margin_used,
-            'total_value': total_value,
-            'realized_pnl': realized_pnl,
-            'unrealized_pnl': unrealized_pnl
+            'total_predictions': len(rows),
+            'settled_predictions': len(settled_rows),
+            'pending_predictions': len([row for row in rows if row['status'] == 'pending']),
+            'failed_predictions': len([row for row in rows if row['status'] == 'failed']),
+            'number_hit_rate': _rate(settled_rows, 'hit_number'),
+            'big_small_hit_rate': _rate(settled_rows, 'hit_big_small'),
+            'odd_even_hit_rate': _rate(settled_rows, 'hit_odd_even'),
+            'combo_hit_rate': _rate(settled_rows, 'hit_combo'),
+            'recent_number_hit_rate': _rate(recent_rows, 'hit_number'),
+            'recent_big_small_hit_rate': _rate(recent_rows, 'hit_big_small'),
+            'recent_odd_even_hit_rate': _rate(recent_rows, 'hit_odd_even'),
+            'recent_combo_hit_rate': _rate(recent_rows, 'hit_combo'),
+            'latest_settled_issue': latest_settled['issue_no'] if latest_settled else None
         }
-    
-    def close_position(self, model_id: int, coin: str, side: str = 'long'):
-        """Close position"""
+
+    # ============ Scheduler Lease ============
+
+    def try_acquire_scheduler(self, name: str, owner_id: str, stale_after_seconds: int = 60) -> bool:
+        conn = self.get_connection()
+        conn.isolation_level = None
+        cursor = conn.cursor()
+        acquired = False
+
+        try:
+            cursor.execute('BEGIN IMMEDIATE')
+            cursor.execute('SELECT owner_id, heartbeat_at FROM scheduler_state WHERE name = ?', (name,))
+            row = cursor.fetchone()
+            now = datetime.utcnow()
+
+            if row is None:
+                cursor.execute(
+                    '''
+                    INSERT INTO scheduler_state (name, owner_id, heartbeat_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ''',
+                    (name, owner_id)
+                )
+                acquired = True
+            else:
+                last_heartbeat = self._parse_timestamp(row['heartbeat_at'])
+                is_stale = last_heartbeat is None or (now - last_heartbeat) > timedelta(seconds=stale_after_seconds)
+                if row['owner_id'] == owner_id or is_stale:
+                    cursor.execute(
+                        '''
+                        UPDATE scheduler_state
+                        SET owner_id = ?, heartbeat_at = CURRENT_TIMESTAMP
+                        WHERE name = ?
+                        ''',
+                        (owner_id, name)
+                    )
+                    acquired = True
+
+            cursor.execute('COMMIT')
+        except Exception:
+            try:
+                cursor.execute('ROLLBACK')
+            except Exception:
+                pass
+            acquired = False
+        finally:
+            conn.close()
+
+        return acquired
+
+    def heartbeat_scheduler(self, name: str, owner_id: str):
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
-            DELETE FROM portfolios WHERE model_id = ? AND coin = ? AND side = ?
-        ''', (model_id, coin, side))
+        cursor.execute(
+            '''
+            UPDATE scheduler_state
+            SET heartbeat_at = CURRENT_TIMESTAMP
+            WHERE name = ? AND owner_id = ?
+            ''',
+            (name, owner_id)
+        )
         conn.commit()
         conn.close()
-    
-    # ============ Trade Records ============
-    
-    def add_trade(self, model_id: int, coin: str, signal: str, quantity: float,
-                  price: float, leverage: int = 1, side: str = 'long', pnl: float = 0):
-        """Add trade record"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO trades (model_id, coin, signal, quantity, price, leverage, side, pnl)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (model_id, coin, signal, quantity, price, leverage, side, pnl))
-        conn.commit()
-        conn.close()
-    
-    def get_trades(self, model_id: int, limit: int = 50) -> List[Dict]:
-        """Get trade history"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT * FROM trades WHERE model_id = ?
-            ORDER BY timestamp DESC LIMIT ?
-        ''', (model_id, limit))
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-    
-    # ============ Conversation History ============
-    
-    def add_conversation(self, model_id: int, user_prompt: str, 
-                        ai_response: str, cot_trace: str = ''):
-        """Add conversation record"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO conversations (model_id, user_prompt, ai_response, cot_trace)
-            VALUES (?, ?, ?, ?)
-        ''', (model_id, user_prompt, ai_response, cot_trace))
-        conn.commit()
-        conn.close()
-    
-    def get_conversations(self, model_id: int, limit: int = 20) -> List[Dict]:
-        """Get conversation history"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT * FROM conversations WHERE model_id = ?
-            ORDER BY timestamp DESC LIMIT ?
-        ''', (model_id, limit))
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-    
-    # ============ Account Value History ============
-    
-    def record_account_value(self, model_id: int, total_value: float, 
-                            cash: float, positions_value: float):
-        """Record account value snapshot"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO account_values (model_id, total_value, cash, positions_value)
-            VALUES (?, ?, ?, ?)
-        ''', (model_id, total_value, cash, positions_value))
-        conn.commit()
-        conn.close()
-    
-    def get_account_value_history(self, model_id: int, limit: int = 100) -> List[Dict]:
-        """Get account value history"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT * FROM account_values WHERE model_id = ?
-            ORDER BY timestamp DESC LIMIT ?
-        ''', (model_id, limit))
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
 
     # ============ User Management ============
 
     def create_user(self, username: str, password_hash: str, email: str = None) -> int:
-        """Create a new user"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(
+            '''
             INSERT INTO users (username, password_hash, email)
             VALUES (?, ?, ?)
-        ''', (username, password_hash, email))
+            ''',
+            (username, password_hash, email)
+        )
         user_id = cursor.lastrowid
         conn.commit()
         conn.close()
         return user_id
 
-    def get_user_by_username(self, username: str) -> Optional[Dict]:
-        """Get user by username"""
+    def get_user_by_username(self, username: str) -> Optional[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
@@ -410,8 +603,7 @@ class Database:
         conn.close()
         return dict(row) if row else None
 
-    def get_user_by_id(self, user_id: int) -> Optional[Dict]:
-        """Get user by ID"""
+    def get_user_by_id(self, user_id: int) -> Optional[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
@@ -419,8 +611,7 @@ class Database:
         conn.close()
         return dict(row) if row else None
 
-    def get_all_users(self) -> List[Dict]:
-        """Get all users"""
+    def get_all_users(self) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT id, username, email, created_at FROM users')
@@ -428,3 +619,43 @@ class Database:
         conn.close()
         return [dict(row) for row in rows]
 
+    # ============ Serializers ============
+
+    def _prepare_predictor(self, row, include_secret: bool = False) -> Optional[dict]:
+        if row is None:
+            return None
+
+        data = dict(row)
+        data['prediction_targets'] = self._decode_json_list(data.get('prediction_targets'))
+        data['enabled'] = bool(data.get('enabled'))
+        data['data_injection_mode'] = data.get('data_injection_mode') or 'summary'
+        if not include_secret:
+            data.pop('api_key', None)
+        return data
+
+    def _prepare_draw(self, row) -> dict:
+        return dict(row)
+
+    def _prepare_prediction(self, row) -> dict:
+        data = dict(row)
+        data['requested_targets'] = self._decode_json_list(data.get('requested_targets'))
+        return data
+
+    def _decode_json_list(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except (TypeError, json.JSONDecodeError):
+            return []
+
+    def _parse_timestamp(self, value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.strptime(str(value), '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            return None

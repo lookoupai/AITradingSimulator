@@ -1,58 +1,918 @@
-class TradingApp {
+const PREDICTOR_PRESETS = [
+    {
+        id: 'statistical',
+        title: '概率统计型',
+        description: '适合先跑稳定版。偏重和值分布、遗漏、冷热和趋势，不依赖玄学解释。',
+        method: '概率统计',
+        injectionMode: 'summary',
+        historyWindow: 100,
+        temperature: 0.4,
+        targets: ['number', 'big_small', 'odd_even', 'combo'],
+        tags: ['新手友好', '摘要模式', '推荐 100 期'],
+        prompt: `角色：\n你是一个 PC28 预测引擎。\n\n目标：\n基于最近 {{history_window}} 期开奖摘要、遗漏统计、今日统计，预测下一期和值与大小单双。\n\n输入：\n{{recent_draws_summary}}\n\n遗漏统计：\n{{omission_summary}}\n\n今日统计：\n{{today_summary}}\n\n要求：\n1. 先分析和值分布、大小比例、单双比例、连续次数、遗漏值。\n2. 再给出下一期预测和值和对应的大小单双组合。\n3. 输出 JSON，不要附加多余解释。`
+    },
+    {
+        id: 'six-ren',
+        title: '小六壬型',
+        description: '偏重时间起课与象意推断，适合你现在这种“小六壬预测”玩法。',
+        method: '小六壬',
+        injectionMode: 'raw',
+        historyWindow: 80,
+        temperature: 0.7,
+        targets: ['number', 'big_small', 'odd_even', 'combo'],
+        tags: ['原始模式', '时间变量', '玄学玩法'],
+        prompt: `角色：\n你是一个 PC28 预测引擎。\n\n方法：\n小六壬 + 基础统计校验。\n\n输入：\n最近 {{history_window}} 期 PC28 数据：\n{{recent_draws_csv}}\n\n起课时间：\n年={{current_year}}\n月={{current_month}}\n日={{current_day}}\n时={{current_hour}}\n分={{current_minute}}\n\n规则：\n1. 先按大安、留连、速喜、赤口、小吉、空亡推演。\n2. 再用历史开奖做交叉验证，避免完全脱离统计。\n3. 输出下一期和值、大小单双、风险和一句策略建议。\n4. 只输出 JSON。`
+    },
+    {
+        id: 'hybrid',
+        title: '混合推演型',
+        description: '统计模型 + 小六壬 + 概率回归的平衡方案，适合中级用户。',
+        method: '统计 + 小六壬 + 回归',
+        injectionMode: 'raw',
+        historyWindow: 100,
+        temperature: 0.55,
+        targets: ['number', 'big_small', 'odd_even', 'combo'],
+        tags: ['推荐', '原始模式', '平衡型'],
+        prompt: `角色：\n你是一个 PC28 预测引擎。\n\n方法：\n统计模型 + 小六壬 + 概率回归。\n\n输入：\n最近 {{history_window}} 期 PC28 数据：\n{{recent_draws_csv}}\n\n补充信息：\n遗漏统计：\n{{omission_summary}}\n\n今日统计：\n{{today_summary}}\n\n起课时间：\n{{current_time_beijing}}\n\n步骤：\n1. 统计和值分布、大小比例、单双比例、连续次数与极端概率。\n2. 计算移动平均、标准差、趋势方向和回归概率。\n3. 小六壬用于修正最终取值方向。\n4. 输出下一期和值、概率、推荐、大小单双、风险、策略。\n5. 只输出 JSON。`
+    },
+    {
+        id: 'conservative',
+        title: '保守大小单双型',
+        description: '不强追精确和值，只重点判断大小单双与风险，适合风险控制型玩法。',
+        method: '保守统计',
+        injectionMode: 'summary',
+        historyWindow: 60,
+        temperature: 0.3,
+        targets: ['big_small', 'odd_even', 'combo'],
+        tags: ['保守', '摘要模式', '不追和值'],
+        prompt: `角色：\n你是 PC28 保守预测助手。\n\n输入：\n{{recent_draws_summary}}\n\n遗漏统计：\n{{omission_summary}}\n\n要求：\n1. 不强行预测精确和值。\n2. 重点输出大小、单双、组合和风险。\n3. 如果信号不明确，降低 confidence。\n4. 只输出 JSON。`
+    },
+    {
+        id: 'extreme',
+        title: '极值回归型',
+        description: '关注大值、小值、连开和遗漏回补，适合喜欢追波动的激进玩家。',
+        method: '极值回归',
+        injectionMode: 'raw',
+        historyWindow: 120,
+        temperature: 0.65,
+        targets: ['number', 'big_small', 'odd_even', 'combo'],
+        tags: ['激进', '120 期', '极值/遗漏'],
+        prompt: `角色：\n你是一个擅长极值回归判断的 PC28 预测助手。\n\n输入：\n{{recent_draws_csv}}\n\n额外信息：\n{{omission_summary}}\n\n任务：\n1. 重点分析极端和值、长遗漏号码、连续大小单双。\n2. 判断下一期是否存在回归或继续延续的概率。\n3. 输出一个主预测和一句激进策略建议。\n4. 只输出 JSON。`
+    }
+];
+
+class PredictionApp {
     constructor() {
-        this.currentModelId = null;
         this.currentUser = null;
+        this.currentPredictorId = null;
+        this.currentPredictor = null;
+        this.overview = null;
         this.chart = null;
-        this.klineChart = null;
-        this.currentKlineCoin = 'BTC';
-        this.klineColorMode = 'red-up'; // 默认红涨绿跌
-        this.refreshIntervals = {
-            market: null,
-            portfolio: null,
-            trades: null
-        };
+        this.refreshTimer = null;
+        this.darkMode = localStorage.getItem('pc28Theme') === 'dark';
+        this.presetExpanded = false;
         this.init();
     }
 
     async init() {
-        // 检查登录状态
-        await this.checkAuth();
-
+        this.applyTheme();
         this.initEventListeners();
-        this.initKlineChart();
-        this.loadModels();
-        this.loadMarketPrices();
-        this.startRefreshCycles();
+        await this.checkAuth();
+        await this.refresh(true);
+        this.refreshTimer = setInterval(() => this.refresh(), 10000);
+    }
+
+    initEventListeners() {
+        document.getElementById('themeToggle').addEventListener('click', () => this.toggleTheme());
+        document.getElementById('refreshBtn').addEventListener('click', () => this.refresh(true));
+        document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
+        document.getElementById('addPredictorBtn').addEventListener('click', () => this.openCreateModal());
+        document.getElementById('closeModalBtn').addEventListener('click', () => this.hideModal());
+        document.getElementById('cancelModalBtn').addEventListener('click', () => this.hideModal());
+        document.getElementById('savePredictorBtn').addEventListener('click', () => this.submitPredictor());
+        document.getElementById('predictNowBtn').addEventListener('click', () => this.predictNow());
+        document.getElementById('editPredictorBtn').addEventListener('click', () => this.openEditModal());
+        document.getElementById('togglePredictorBtn').addEventListener('click', () => this.toggleCurrentPredictor());
+        document.getElementById('togglePresetListBtn').addEventListener('click', () => this.togglePresetList());
+
+        document.querySelectorAll('.tab-btn').forEach((button) => {
+            button.addEventListener('click', (event) => this.switchTab(event.currentTarget.dataset.tab));
+        });
+
+        document.getElementById('predictorModal').addEventListener('click', (event) => {
+            if (event.target.id === 'predictorModal') {
+                this.hideModal();
+            }
+        });
+
+        this.renderPresetCards();
     }
 
     async checkAuth() {
-        try {
-            const response = await fetch('/api/auth/me', {
-                credentials: 'include'
-            });
-
-            if (response.ok) {
-                this.currentUser = await response.json();
-                this.updateUserInfo();
-            } else {
-                // 未登录，跳转到登录页
-                window.location.href = '/login';
-            }
-        } catch (error) {
-            console.error('Auth check failed:', error);
+        const response = await fetch('/api/auth/me', { credentials: 'include' });
+        if (!response.ok) {
             window.location.href = '/login';
+            return;
+        }
+
+        this.currentUser = await response.json();
+        document.getElementById('userInfo').textContent = `当前用户：${this.currentUser.username}`;
+    }
+
+    async refresh(forceReloadPredictorList = false) {
+        await this.loadOverview();
+        await this.loadPredictors(forceReloadPredictorList);
+        if (this.currentPredictorId) {
+            await this.loadPredictorDashboard(this.currentPredictorId);
+        } else {
+            this.renderEmptyPredictorState();
         }
     }
 
-    updateUserInfo() {
-        const userInfoEl = document.getElementById('userInfo');
-        if (userInfoEl && this.currentUser) {
-            userInfoEl.textContent = `欢迎, ${this.currentUser.username}`;
+    async loadOverview() {
+        try {
+            const response = await fetch('/api/pc28/overview?limit=20');
+            const overview = await response.json();
+            this.overview = overview;
+            this.renderOverview(overview);
+        } catch (error) {
+            console.error('Failed to load overview:', error);
         }
+    }
+
+    renderOverview(overview) {
+        const latestDraw = overview.latest_draw;
+        const warning = overview.warning ? `<div class="warning-banner">${this.escapeHtml(overview.warning)}</div>` : '';
+        const topOmissions = (overview.omission_preview?.top_numbers || []).slice(0, 4);
+        const hotNumbers = (overview.today_preview?.hot_numbers || []).slice(0, 4);
+
+        document.getElementById('overviewPanel').innerHTML = `
+            ${warning}
+            <div class="overview-primary">
+                <div>
+                    <span class="mini-label">下一期期号</span>
+                    <strong>${this.escapeHtml(overview.next_issue_no || '--')}</strong>
+                </div>
+                <div>
+                    <span class="mini-label">倒计时</span>
+                    <strong>${this.escapeHtml(overview.countdown || '--:--:--')}</strong>
+                </div>
+            </div>
+            <div class="overview-result">
+                <span class="mini-label">最新开奖</span>
+                <div class="result-number">${latestDraw ? latestDraw.result_number_text : '--'}</div>
+                <div class="badge-row">
+                    ${latestDraw ? this.renderBadge(latestDraw.big_small) : ''}
+                    ${latestDraw ? this.renderBadge(latestDraw.odd_even) : ''}
+                    ${latestDraw ? this.renderBadge(latestDraw.combo) : ''}
+                </div>
+                <div class="result-meta">${latestDraw ? `第 ${latestDraw.issue_no} 期 · ${this.escapeHtml(latestDraw.open_time || '')}` : '暂无数据'}</div>
+            </div>
+            <div class="overview-block">
+                <span class="mini-label">高遗漏号码</span>
+                <div class="tag-list compact">
+                    ${topOmissions.length ? topOmissions.map((item) => `<span class="tag">${item.label} · ${item.value}期</span>`).join('') : '<span class="tag">暂无</span>'}
+                </div>
+            </div>
+            <div class="overview-block">
+                <span class="mini-label">今日热号</span>
+                <div class="tag-list compact">
+                    ${hotNumbers.length ? hotNumbers.map((item) => `<span class="tag">${item.label} · ${item.value}次</span>`).join('') : '<span class="tag">暂无</span>'}
+                </div>
+            </div>
+        `;
+
+        this.renderDrawsTable(overview.recent_draws || []);
+    }
+
+    async loadPredictors(forceReload = false) {
+        try {
+            const response = await fetch('/api/predictors', { credentials: 'include' });
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+
+            const predictors = await response.json();
+            this.predictors = predictors;
+
+            if (!predictors.length) {
+                this.currentPredictorId = null;
+                this.currentPredictor = null;
+                this.renderPredictorList([]);
+                return;
+            }
+
+            if (!this.currentPredictorId || forceReload) {
+                const exists = predictors.some((item) => item.id === this.currentPredictorId);
+                if (!exists) {
+                    this.currentPredictorId = predictors[0].id;
+                }
+            }
+
+            this.renderPredictorList(predictors);
+        } catch (error) {
+            console.error('Failed to load predictors:', error);
+        }
+    }
+
+    renderPredictorList(predictors) {
+        const container = document.getElementById('predictorList');
+        if (!predictors.length) {
+            container.innerHTML = '<div class="empty-panel">暂无预测方案</div>';
+            return;
+        }
+
+        container.innerHTML = predictors.map((predictor) => `
+            <div class="predictor-item ${predictor.id === this.currentPredictorId ? 'active' : ''}" data-id="${predictor.id}">
+                <div class="predictor-head">
+                    <div>
+                        <div class="predictor-name">${this.escapeHtml(predictor.name)}</div>
+                        <div class="predictor-meta">${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</div>
+                    </div>
+                    <span class="status-chip ${predictor.enabled ? 'enabled' : 'disabled'}">${predictor.enabled ? '启用' : '停用'}</span>
+                </div>
+                <div class="predictor-tags">
+                    ${(predictor.prediction_targets || []).map((target) => `<span class="tag">${this.escapeHtml(this.targetLabel(target))}</span>`).join('')}
+                </div>
+                <div class="predictor-actions">
+                    <button class="icon-btn" data-action="toggle" data-id="${predictor.id}" title="${predictor.enabled ? '暂停方案' : '恢复方案'}">
+                        <i class="bi ${predictor.enabled ? 'bi-pause-circle' : 'bi-play-circle'}"></i>
+                    </button>
+                    <button class="icon-btn" data-action="edit" data-id="${predictor.id}" title="编辑方案"><i class="bi bi-pencil"></i></button>
+                    <button class="icon-btn danger" data-action="delete" data-id="${predictor.id}" title="删除方案"><i class="bi bi-trash"></i></button>
+                </div>
+            </div>
+        `).join('');
+
+        container.querySelectorAll('.predictor-item').forEach((item) => {
+            item.addEventListener('click', (event) => {
+                const actionButton = event.target.closest('button[data-action]');
+                if (actionButton) {
+                    return;
+                }
+                this.selectPredictor(Number(item.dataset.id));
+            });
+        });
+
+        container.querySelectorAll('button[data-action="toggle"]').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const predictorId = Number(button.dataset.id);
+                const predictor = (this.predictors || []).find((item) => item.id === predictorId);
+                if (!predictor) {
+                    return;
+                }
+                this.togglePredictorStatus(predictorId, !predictor.enabled);
+            });
+        });
+
+        container.querySelectorAll('button[data-action="edit"]').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this.selectPredictor(Number(button.dataset.id), false);
+                this.openEditModal(Number(button.dataset.id));
+            });
+        });
+
+        container.querySelectorAll('button[data-action="delete"]').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this.deletePredictor(Number(button.dataset.id));
+            });
+        });
+    }
+
+    async selectPredictor(predictorId, shouldLoad = true) {
+        this.currentPredictorId = predictorId;
+        this.renderPredictorList(this.predictors || []);
+        if (shouldLoad) {
+            await this.loadPredictorDashboard(predictorId);
+        }
+    }
+
+    async loadPredictorDashboard(predictorId) {
+        try {
+            const response = await fetch(`/api/predictors/${predictorId}/dashboard`, {
+                credentials: 'include'
+            });
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '加载方案详情失败');
+            }
+
+            this.currentPredictor = data.predictor;
+            this.updatePredictorActionState(data.predictor);
+            this.renderStats(data.stats);
+            this.renderCurrentPrediction(data.current_prediction, data.latest_prediction, data.predictor);
+            this.renderPredictionsTable(data.recent_predictions || []);
+            this.renderDrawsTable(data.overview?.recent_draws || data.recent_draws || []);
+            this.renderAILogs(data.recent_predictions || []);
+            this.renderChart(data.recent_predictions || []);
+        } catch (error) {
+            console.error('Failed to load predictor dashboard:', error);
+        }
+    }
+
+    renderStats(stats) {
+        const values = [
+            stats.total_predictions || 0,
+            this.formatPercent(stats.number_hit_rate),
+            this.formatPercent(stats.big_small_hit_rate),
+            this.formatPercent(stats.odd_even_hit_rate)
+        ];
+
+        document.querySelectorAll('#statsGrid .stat-value').forEach((element, index) => {
+            element.textContent = values[index];
+        });
+    }
+
+    renderCurrentPrediction(currentPrediction, latestPrediction, predictor) {
+        const container = document.getElementById('currentPrediction');
+
+        if (!predictor) {
+            container.className = 'prediction-summary empty-panel';
+            container.textContent = '请选择预测方案';
+            this.updatePredictorActionState(null);
+            return;
+        }
+
+        const targetTags = (predictor.prediction_targets || []).map((item) => this.renderBadge(this.targetLabel(item))).join('');
+        const prediction = currentPrediction || latestPrediction;
+
+        if (!prediction) {
+            container.className = 'prediction-summary empty-panel';
+            container.innerHTML = `
+                <div class="summary-head">
+                    <div>
+                        <h4>${this.escapeHtml(predictor.name)}</h4>
+                        <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
+                    </div>
+                    <div class="badge-row">${targetTags}</div>
+                </div>
+                <p>当前尚无预测记录，点击“立即预测”或等待自动轮询。</p>
+            `;
+            return;
+        }
+
+        const statusText = prediction.status === 'pending' ? '待开奖' : prediction.status === 'settled' ? '已结算' : '执行失败';
+        const errorBlock = prediction.error_message
+            ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>`
+            : '';
+
+        container.className = 'prediction-summary';
+        container.innerHTML = `
+            <div class="summary-head">
+                <div>
+                    <h4>${this.escapeHtml(predictor.name)}</h4>
+                    <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
+                </div>
+                <div class="badge-row">
+                    ${targetTags}
+                    <span class="status-chip ${prediction.status}">${statusText}</span>
+                </div>
+            </div>
+            ${errorBlock}
+            <div class="prediction-grid">
+                <div class="prediction-card">
+                    <span class="mini-label">预测期号</span>
+                    <strong>${this.escapeHtml(prediction.issue_no || '--')}</strong>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">预测号码</span>
+                    <strong>${prediction.prediction_number !== null && prediction.prediction_number !== undefined ? String(prediction.prediction_number).padStart(2, '0') : '--'}</strong>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">大小 / 单双 / 组合</span>
+                    <div class="badge-row">
+                        ${this.renderBadge(prediction.prediction_big_small || '--')}
+                        ${this.renderBadge(prediction.prediction_odd_even || '--')}
+                        ${this.renderBadge(prediction.prediction_combo || '--')}
+                    </div>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">置信度</span>
+                    <strong>${this.formatPercent(prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null)}</strong>
+                </div>
+            </div>
+            <div class="summary-foot">
+                <div>
+                    <span class="mini-label">简要说明</span>
+                    <p>${this.escapeHtml(prediction.reasoning_summary || '无')}</p>
+                </div>
+                <div>
+                    <span class="mini-label">更新时间</span>
+                    <p>${this.escapeHtml(prediction.updated_at || prediction.created_at || '--')}</p>
+                </div>
+            </div>
+        `;
+    }
+
+    renderPredictionsTable(predictions) {
+        const tbody = document.getElementById('predictionsBody');
+        if (!predictions.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">暂无预测记录</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = predictions.map((prediction) => `
+            <tr>
+                <td>${this.escapeHtml(prediction.issue_no)}</td>
+                <td><span class="status-chip ${prediction.status}">${this.predictionStatusLabel(prediction.status)}</span></td>
+                <td>${prediction.prediction_number !== null && prediction.prediction_number !== undefined ? String(prediction.prediction_number).padStart(2, '0') : '--'}</td>
+                <td>${prediction.prediction_big_small || '--'}</td>
+                <td>${prediction.prediction_odd_even || '--'}</td>
+                <td>${prediction.prediction_combo || '--'}</td>
+                <td>${this.formatPercent(prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null)}</td>
+                <td>${this.formatPercent(prediction.score_percentage)}</td>
+            </tr>
+        `).join('');
+    }
+
+    renderDrawsTable(draws) {
+        const tbody = document.getElementById('drawsBody');
+        if (!draws.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无官方开奖数据</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = draws.map((draw) => `
+            <tr>
+                <td>${this.escapeHtml(draw.issue_no)}</td>
+                <td><strong>${this.escapeHtml(draw.result_number_text)}</strong></td>
+                <td>${draw.big_small}</td>
+                <td>${draw.odd_even}</td>
+                <td>${draw.combo}</td>
+                <td>${this.escapeHtml(draw.open_time || '')}</td>
+            </tr>
+        `).join('');
+    }
+
+    renderAILogs(predictions) {
+        const container = document.getElementById('aiLogs');
+        if (!predictions.length) {
+            container.innerHTML = '<div class="empty-panel">暂无 AI 输出记录</div>';
+            return;
+        }
+
+        container.innerHTML = predictions.map((prediction) => `
+            <article class="ai-log-card">
+                <div class="ai-log-head">
+                    <div>
+                        <strong>第 ${this.escapeHtml(prediction.issue_no)} 期</strong>
+                        <span class="status-chip ${prediction.status}">${this.predictionStatusLabel(prediction.status)}</span>
+                    </div>
+                    <span>${this.escapeHtml(prediction.created_at || '--')}</span>
+                </div>
+                ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
+                <div class="ai-log-block">
+                    <span class="mini-label">简要说明</span>
+                    <p>${this.escapeHtml(prediction.reasoning_summary || '无')}</p>
+                </div>
+                <details class="ai-log-block">
+                    <summary>查看原始输出</summary>
+                    <pre>${this.escapeHtml(prediction.raw_response || '无')}</pre>
+                </details>
+            </article>
+        `).join('');
+    }
+
+    renderChart(predictions) {
+        const chartDom = document.getElementById('predictionChart');
+        if (!this.chart) {
+            this.chart = echarts.init(chartDom, this.darkMode ? 'dark' : null);
+        }
+
+        if (!predictions.length) {
+            this.chart.clear();
+            this.chart.setOption({
+                title: {
+                    text: '暂无数据',
+                    left: 'center',
+                    top: 'middle',
+                    textStyle: { color: this.darkMode ? '#94a3b8' : '#64748b', fontSize: 14 }
+                }
+            });
+            return;
+        }
+
+        const ordered = [...predictions].slice(0, 20).reverse();
+        const xAxisData = ordered.map((item) => item.issue_no);
+        const scoreData = ordered.map((item) => item.score_percentage);
+        const confidenceData = ordered.map((item) => (
+            item.confidence !== null && item.confidence !== undefined ? Number(item.confidence * 100).toFixed(2) : null
+        ));
+
+        this.chart.setOption({
+            animation: false,
+            tooltip: { trigger: 'axis' },
+            legend: {
+                data: ['单期得分', '置信度'],
+                textStyle: { color: this.darkMode ? '#cbd5f5' : '#334155' }
+            },
+            grid: { top: 48, left: 36, right: 24, bottom: 36, containLabel: true },
+            xAxis: {
+                type: 'category',
+                data: xAxisData,
+                axisLabel: { color: this.darkMode ? '#94a3b8' : '#64748b' },
+                axisLine: { lineStyle: { color: this.darkMode ? '#334155' : '#cbd5e1' } }
+            },
+            yAxis: {
+                type: 'value',
+                min: 0,
+                max: 100,
+                axisLabel: {
+                    formatter: '{value}%',
+                    color: this.darkMode ? '#94a3b8' : '#64748b'
+                },
+                splitLine: { lineStyle: { color: this.darkMode ? '#1e293b' : '#e2e8f0' } }
+            },
+            series: [
+                {
+                    name: '单期得分',
+                    type: 'line',
+                    smooth: true,
+                    data: scoreData,
+                    lineStyle: { width: 3, color: '#38bdf8' },
+                    itemStyle: { color: '#38bdf8' }
+                },
+                {
+                    name: '置信度',
+                    type: 'bar',
+                    data: confidenceData,
+                    itemStyle: { color: '#6366f1', opacity: 0.75 }
+                }
+            ]
+        });
+    }
+
+    renderEmptyPredictorState() {
+        document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
+        document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
+        document.getElementById('predictionsBody').innerHTML = '<tr><td colspan="8" class="empty-cell">暂无预测记录</td></tr>';
+        document.getElementById('aiLogs').innerHTML = '<div class="empty-panel">暂无 AI 输出记录</div>';
+        if (this.chart) {
+            this.chart.clear();
+        }
+    }
+
+    switchTab(tabName) {
+        document.querySelectorAll('.tab-btn').forEach((button) => {
+            button.classList.toggle('active', button.dataset.tab === tabName);
+        });
+        document.querySelectorAll('.tab-panel').forEach((panel) => {
+            panel.classList.toggle('active', panel.id === `${tabName}Tab`);
+        });
+    }
+
+    openCreateModal() {
+        document.getElementById('modalTitle').textContent = '新建预测方案';
+        document.getElementById('predictorId').value = '';
+        this.resetForm();
+        this.presetExpanded = false;
+        this.renderPresetCards();
+        this.showModal();
+    }
+
+    async openEditModal(predictorId = this.currentPredictorId) {
+        if (!predictorId) {
+            alert('请先选择一个预测方案');
+            return;
+        }
+
+        const response = await fetch(`/api/predictors/${predictorId}`, { credentials: 'include' });
+        const data = await response.json();
+        if (!response.ok) {
+            alert(data.error || '加载预测方案失败');
+            return;
+        }
+
+        document.getElementById('modalTitle').textContent = '编辑预测方案';
+        document.getElementById('predictorId').value = data.id;
+        document.getElementById('predictorName').value = data.name || '';
+        document.getElementById('predictionMethod').value = data.prediction_method || '';
+        document.getElementById('apiUrl').value = data.api_url || '';
+        document.getElementById('modelName').value = data.model_name || '';
+        document.getElementById('apiKey').value = '';
+        document.getElementById('historyWindow').value = data.history_window || 60;
+        document.getElementById('temperature').value = data.temperature ?? 0.7;
+        document.getElementById('dataInjectionMode').value = data.data_injection_mode || 'summary';
+        document.getElementById('systemPrompt').value = data.system_prompt || '';
+        document.getElementById('predictorEnabled').checked = Boolean(data.enabled);
+        document.getElementById('targetNumber').checked = data.prediction_targets.includes('number');
+        document.getElementById('targetBigSmall').checked = data.prediction_targets.includes('big_small');
+        document.getElementById('targetOddEven').checked = data.prediction_targets.includes('odd_even');
+        document.getElementById('targetCombo').checked = data.prediction_targets.includes('combo');
+        this.presetExpanded = false;
+        this.renderPresetCards();
+        this.showModal();
+    }
+
+    showModal() {
+        document.getElementById('predictorModal').classList.add('show');
+    }
+
+    hideModal() {
+        document.getElementById('predictorModal').classList.remove('show');
+    }
+
+    resetForm() {
+        document.getElementById('predictorName').value = '';
+        document.getElementById('predictionMethod').value = '';
+        document.getElementById('apiUrl').value = '';
+        document.getElementById('modelName').value = '';
+        document.getElementById('apiKey').value = '';
+        document.getElementById('historyWindow').value = '60';
+        document.getElementById('temperature').value = '0.7';
+        document.getElementById('dataInjectionMode').value = 'summary';
+        document.getElementById('systemPrompt').value = '';
+        document.getElementById('predictorEnabled').checked = true;
+        document.getElementById('targetNumber').checked = true;
+        document.getElementById('targetBigSmall').checked = true;
+        document.getElementById('targetOddEven').checked = true;
+        document.getElementById('targetCombo').checked = true;
+    }
+
+    renderPresetCards() {
+        const container = document.getElementById('presetCards');
+        const toggleButton = document.getElementById('togglePresetListBtn');
+        const visibleCount = 3;
+
+        container.innerHTML = PREDICTOR_PRESETS.map((preset, index) => `
+            <article class="preset-card ${index >= visibleCount && !this.presetExpanded ? 'hidden' : ''}" data-preset-id="${preset.id}">
+                <div class="preset-card-head">
+                    <div>
+                        <h4>${this.escapeHtml(preset.title)}</h4>
+                        <p>${this.escapeHtml(preset.description)}</p>
+                    </div>
+                </div>
+                <div class="preset-meta">
+                    ${preset.tags.map((tag) => `<span class="tag">${this.escapeHtml(tag)}</span>`).join('')}
+                    <span class="tag">历史 ${preset.historyWindow} 期</span>
+                    <span class="tag">${preset.injectionMode === 'raw' ? '原始模式' : '摘要模式'}</span>
+                </div>
+                <div class="preset-actions">
+                    <button type="button" class="btn ghost compact" data-apply-preset="${preset.id}">一键填充</button>
+                </div>
+            </article>
+        `).join('');
+
+        container.querySelectorAll('[data-apply-preset]').forEach((button) => {
+            button.addEventListener('click', () => this.applyPreset(button.dataset.applyPreset));
+        });
+
+        if (PREDICTOR_PRESETS.length <= visibleCount) {
+            toggleButton.style.display = 'none';
+            return;
+        }
+
+        toggleButton.style.display = 'inline-flex';
+        toggleButton.textContent = this.presetExpanded ? '收起示例' : '查看更多示例';
+    }
+
+    togglePresetList() {
+        this.presetExpanded = !this.presetExpanded;
+        this.renderPresetCards();
+    }
+
+    applyPreset(presetId) {
+        const preset = PREDICTOR_PRESETS.find((item) => item.id === presetId);
+        if (!preset) {
+            return;
+        }
+
+        if (!document.getElementById('predictorName').value.trim()) {
+            document.getElementById('predictorName').value = preset.title;
+        }
+        document.getElementById('predictionMethod').value = preset.method;
+        document.getElementById('historyWindow').value = String(preset.historyWindow);
+        document.getElementById('temperature').value = String(preset.temperature);
+        document.getElementById('dataInjectionMode').value = preset.injectionMode;
+        document.getElementById('systemPrompt').value = preset.prompt;
+        document.getElementById('targetNumber').checked = preset.targets.includes('number');
+        document.getElementById('targetBigSmall').checked = preset.targets.includes('big_small');
+        document.getElementById('targetOddEven').checked = preset.targets.includes('odd_even');
+        document.getElementById('targetCombo').checked = preset.targets.includes('combo');
+    }
+
+    collectFormData() {
+        const predictionTargets = [];
+        if (document.getElementById('targetNumber').checked) predictionTargets.push('number');
+        if (document.getElementById('targetBigSmall').checked) predictionTargets.push('big_small');
+        if (document.getElementById('targetOddEven').checked) predictionTargets.push('odd_even');
+        if (document.getElementById('targetCombo').checked) predictionTargets.push('combo');
+
+        return {
+            name: document.getElementById('predictorName').value.trim(),
+            prediction_method: document.getElementById('predictionMethod').value.trim(),
+            api_url: document.getElementById('apiUrl').value.trim(),
+            model_name: document.getElementById('modelName').value.trim(),
+            api_key: document.getElementById('apiKey').value.trim(),
+            history_window: Number(document.getElementById('historyWindow').value || 60),
+            temperature: Number(document.getElementById('temperature').value || 0.7),
+            data_injection_mode: document.getElementById('dataInjectionMode').value,
+            system_prompt: document.getElementById('systemPrompt').value.trim(),
+            enabled: document.getElementById('predictorEnabled').checked,
+            prediction_targets: predictionTargets
+        };
+    }
+
+    async submitPredictor() {
+        const predictorId = document.getElementById('predictorId').value;
+        const method = predictorId ? 'PUT' : 'POST';
+        const url = predictorId ? `/api/predictors/${predictorId}` : '/api/predictors';
+        const payload = this.collectFormData();
+
+        try {
+            const response = await fetch(url, {
+                method,
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '保存预测方案失败');
+            }
+
+            this.hideModal();
+            this.currentPredictorId = data.predictor?.id || Number(predictorId) || this.currentPredictorId;
+            await this.refresh(true);
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async deletePredictor(predictorId) {
+        if (!confirm('确定删除这个预测方案吗？相关预测记录也会一并删除。')) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/predictors/${predictorId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '删除预测方案失败');
+            }
+
+            if (this.currentPredictorId === predictorId) {
+                this.currentPredictorId = null;
+            }
+            await this.refresh(true);
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async toggleCurrentPredictor() {
+        if (!this.currentPredictor) {
+            alert('请先选择一个预测方案');
+            return;
+        }
+
+        await this.togglePredictorStatus(this.currentPredictor.id, !this.currentPredictor.enabled);
+    }
+
+    async togglePredictorStatus(predictorId, enabled) {
+        try {
+            const response = await fetch(`/api/predictors/${predictorId}`, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '更新方案状态失败');
+            }
+
+            if (this.currentPredictorId === predictorId) {
+                this.currentPredictor = data.predictor;
+                this.updatePredictorActionState(data.predictor);
+            }
+
+            await this.refresh(true);
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async predictNow() {
+        if (!this.currentPredictorId) {
+            alert('请先选择一个预测方案');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/predictors/${this.currentPredictorId}/predict-now`, {
+                method: 'POST',
+                credentials: 'include'
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '立即预测失败');
+            }
+
+            await this.loadPredictorDashboard(this.currentPredictorId);
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async logout() {
+        await fetch('/api/auth/logout', {
+            method: 'POST',
+            credentials: 'include'
+        });
+        window.location.href = '/login';
+    }
+
+    toggleTheme() {
+        this.darkMode = !this.darkMode;
+        localStorage.setItem('pc28Theme', this.darkMode ? 'dark' : 'light');
+        this.applyTheme();
+        if (this.chart) {
+            this.chart.dispose();
+            this.chart = null;
+        }
+        if (this.currentPredictorId) {
+            this.loadPredictorDashboard(this.currentPredictorId);
+        }
+    }
+
+    applyTheme() {
+        document.body.classList.toggle('dark', this.darkMode);
+        const icon = document.querySelector('#themeToggle i');
+        if (icon) {
+            icon.className = this.darkMode ? 'bi bi-sun' : 'bi bi-moon-stars';
+        }
+    }
+
+    updatePredictorActionState(predictor) {
+        const toggleButton = document.getElementById('togglePredictorBtn');
+        const predictNowButton = document.getElementById('predictNowBtn');
+
+        if (!toggleButton || !predictNowButton) {
+            return;
+        }
+
+        if (!predictor) {
+            toggleButton.disabled = true;
+            toggleButton.innerHTML = '<i class="bi bi-pause-circle"></i> 暂停方案';
+            predictNowButton.disabled = true;
+            return;
+        }
+
+        toggleButton.disabled = false;
+        toggleButton.innerHTML = predictor.enabled
+            ? '<i class="bi bi-pause-circle"></i> 暂停方案'
+            : '<i class="bi bi-play-circle"></i> 恢复方案';
+        predictNowButton.disabled = false;
+    }
+
+    targetLabel(target) {
+        const mapping = {
+            number: '号码',
+            big_small: '大小',
+            odd_even: '单双',
+            combo: '组合'
+        };
+        return mapping[target] || target;
+    }
+
+    predictionStatusLabel(status) {
+        const mapping = {
+            pending: '待开奖',
+            settled: '已结算',
+            failed: '执行失败'
+        };
+        return mapping[status] || status;
+    }
+
+    renderBadge(text) {
+        return `<span class="tag">${this.escapeHtml(text)}</span>`;
+    }
+
+    formatPercent(value) {
+        if (value === null || value === undefined || value === '') {
+            return '--';
+        }
+        return `${Number(value).toFixed(2)}%`;
     }
 
     escapeHtml(text) {
-        if (!text) return '';
+        if (text === null || text === undefined) {
+            return '';
+        }
+
+        const value = String(text);
         const map = {
             '&': '&amp;',
             '<': '&lt;',
@@ -60,998 +920,8 @@ class TradingApp {
             '"': '&quot;',
             "'": '&#039;'
         };
-        return text.replace(/[&<>"']/g, m => map[m]);
-    }
-
-    initEventListeners() {
-        document.getElementById('addModelBtn').addEventListener('click', () => this.showModal());
-        document.getElementById('closeModalBtn').addEventListener('click', () => this.hideModal());
-        document.getElementById('cancelBtn').addEventListener('click', () => this.hideModal());
-        document.getElementById('submitBtn').addEventListener('click', () => this.submitModel());
-        document.getElementById('refreshBtn').addEventListener('click', () => this.refresh());
-        document.getElementById('themeToggle').addEventListener('click', () => this.toggleTheme());
-        document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
-
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => this.switchTab(e.target.dataset.tab));
-        });
-
-        document.getElementById('klineSelect').addEventListener('change', (e) => {
-            this.currentKlineCoin = e.target.value;
-            this.loadKlineData();
-        });
-
-        document.getElementById('klineColorToggle').addEventListener('click', () => {
-            this.toggleKlineColor();
-        });
-
-        // 加载保存的主题
-        this.loadTheme();
-    }
-
-    async logout() {
-        try {
-            await fetch('/api/auth/logout', {
-                method: 'POST',
-                credentials: 'include'
-            });
-            window.location.href = '/login';
-        } catch (error) {
-            console.error('Logout failed:', error);
-            window.location.href = '/login';
-        }
-    }
-
-    async loadModels() {
-        try {
-            const response = await fetch('/api/models', {
-                credentials: 'include'
-            });
-
-            if (response.status === 401) {
-                window.location.href = '/login';
-                return;
-            }
-
-            const models = await response.json();
-            this.renderModels(models);
-
-            if (models.length > 0 && !this.currentModelId) {
-                this.selectModel(models[0].id);
-            }
-        } catch (error) {
-            console.error('Failed to load models:', error);
-        }
-    }
-
-    renderModels(models) {
-        const container = document.getElementById('modelList');
-        
-        if (models.length === 0) {
-            container.innerHTML = '<div class="empty-state">暂无模型</div>';
-            return;
-        }
-
-        container.innerHTML = models.map(model => `
-            <div class="model-item ${model.id === this.currentModelId ? 'active' : ''}"
-                 onclick="app.selectModel(${model.id})">
-                <div class="model-name">${model.name}</div>
-                <div class="model-info">
-                    <span>${model.model_name}</span>
-                    <div class="model-actions">
-                        <span class="model-edit" onclick="event.stopPropagation(); app.editModel(${model.id})" title="编辑策略">
-                            <i class="bi bi-pencil"></i>
-                        </span>
-                        <span class="model-delete" onclick="event.stopPropagation(); app.deleteModel(${model.id})" title="删除模型">
-                            <i class="bi bi-trash"></i>
-                        </span>
-                    </div>
-                </div>
-            </div>
-        `).join('');
-    }
-
-    async selectModel(modelId) {
-        this.currentModelId = modelId;
-        this.loadModels();
-        await this.loadModelData();
-    }
-
-    async loadModelData() {
-        if (!this.currentModelId) return;
-
-        try {
-            // 添加超时控制
-            const timeout = (ms) => new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Request timeout')), ms)
-            );
-
-            const fetchWithTimeout = (url, ms = 10000) =>
-                Promise.race([
-                    fetch(url, { credentials: 'include' }),
-                    timeout(ms)
-                ]);
-
-            const [portfolioRes, tradesRes, conversationsRes] = await Promise.all([
-                fetchWithTimeout(`/api/models/${this.currentModelId}/portfolio`),
-                fetchWithTimeout(`/api/models/${this.currentModelId}/trades?limit=50`),
-                fetchWithTimeout(`/api/models/${this.currentModelId}/conversations?limit=20`)
-            ]);
-
-            // 检查响应状态
-            if (portfolioRes.status === 401 || tradesRes.status === 401 || conversationsRes.status === 401) {
-                console.warn('Session expired, redirecting to login...');
-                window.location.href = '/login';
-                return;
-            }
-
-            const [portfolio, trades, conversations] = await Promise.all([
-                portfolioRes.json(),
-                tradesRes.json(),
-                conversationsRes.json()
-            ]);
-
-            this.updateStats(portfolio.portfolio);
-            this.updateChart(portfolio.account_value_history, portfolio.portfolio.total_value);
-            this.updatePositions(portfolio.portfolio.positions);
-            this.updateTrades(trades);
-            this.updateConversations(conversations);
-        } catch (error) {
-            console.error('Failed to load model data:', error);
-
-            // 显示错误提示
-            if (error.message === 'Request timeout') {
-                console.warn('Request timeout, retrying...');
-                // 3秒后重试
-                setTimeout(() => this.loadModelData(), 3000);
-            } else if (error.message.includes('Failed to fetch')) {
-                console.error('Network error, please check your connection');
-            }
-        }
-    }
-
-    updateStats(portfolio) {
-        const stats = [
-            { value: portfolio.total_value || 0, class: portfolio.total_value > portfolio.initial_capital ? 'positive' : portfolio.total_value < portfolio.initial_capital ? 'negative' : '' },
-            { value: portfolio.cash || 0, class: '' },
-            { value: portfolio.realized_pnl || 0, class: portfolio.realized_pnl > 0 ? 'positive' : portfolio.realized_pnl < 0 ? 'negative' : '' },
-            { value: portfolio.unrealized_pnl || 0, class: portfolio.unrealized_pnl > 0 ? 'positive' : portfolio.unrealized_pnl < 0 ? 'negative' : '' }
-        ];
-
-        document.querySelectorAll('.stat-value').forEach((el, index) => {
-            if (stats[index]) {
-                el.textContent = `$${Math.abs(stats[index].value).toFixed(2)}`;
-                el.className = `stat-value ${stats[index].class}`;
-            }
-        });
-    }
-
-    updateChart(history, currentValue) {
-        const chartDom = document.getElementById('accountChart');
-        
-        if (!this.chart) {
-            this.chart = echarts.init(chartDom);
-            window.addEventListener('resize', () => {
-                if (this.chart) {
-                    this.chart.resize();
-                }
-            });
-        }
-
-        const data = history.reverse().map(h => ({
-            // 后端返回ISO 8601格式（带时区），JavaScript会自动转换成本地时区
-            time: new Date(h.timestamp).toLocaleTimeString('zh-CN', {
-                hour: '2-digit',
-                minute: '2-digit'
-            }),
-            value: h.total_value
-        }));
-
-        if (currentValue !== undefined && currentValue !== null) {
-            const now = new Date();
-            const currentTime = now.toLocaleTimeString('zh-CN', { 
-                timeZone: 'Asia/Shanghai',
-                hour: '2-digit', 
-                minute: '2-digit' 
-            });
-            data.push({
-                time: currentTime,
-                value: currentValue
-            });
-        }
-
-        const option = {
-            grid: {
-                left: '60',
-                right: '20',
-                bottom: '30',
-                top: '20',
-                containLabel: false
-            },
-            xAxis: {
-                type: 'category',
-                boundaryGap: false,
-                data: data.map(d => d.time),
-                axisLine: { lineStyle: { color: '#e5e6eb' } },
-                axisLabel: { color: '#86909c', fontSize: 11 }
-            },
-            yAxis: {
-                type: 'value',
-                scale: true,
-                axisLine: { lineStyle: { color: '#e5e6eb' } },
-                axisLabel: { 
-                    color: '#86909c', 
-                    fontSize: 11,
-                    formatter: (value) => `$${value.toLocaleString()}`
-                },
-                splitLine: { lineStyle: { color: '#f2f3f5' } }
-            },
-            series: [{
-                type: 'line',
-                data: data.map(d => d.value),
-                smooth: true,
-                symbol: 'none',
-                lineStyle: { color: '#3370ff', width: 2 },
-                areaStyle: {
-                    color: {
-                        type: 'linear',
-                        x: 0, y: 0, x2: 0, y2: 1,
-                        colorStops: [
-                            { offset: 0, color: 'rgba(51, 112, 255, 0.2)' },
-                            { offset: 1, color: 'rgba(51, 112, 255, 0)' }
-                        ]
-                    }
-                }
-            }],
-            tooltip: {
-                trigger: 'axis',
-                backgroundColor: 'rgba(255, 255, 255, 0.95)',
-                borderColor: '#e5e6eb',
-                borderWidth: 1,
-                textStyle: { color: '#1d2129' },
-                formatter: (params) => {
-                    const value = params[0].value;
-                    return `${params[0].axisValue}<br/>$${value.toFixed(2)}`;
-                }
-            }
-        };
-
-        this.chart.setOption(option);
-        
-        setTimeout(() => {
-            if (this.chart) {
-                this.chart.resize();
-            }
-        }, 100);
-    }
-
-    updatePositions(positions) {
-        const tbody = document.getElementById('positionsBody');
-        
-        if (positions.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无持仓</td></tr>';
-            return;
-        }
-
-        tbody.innerHTML = positions.map(pos => {
-            const sideClass = pos.side === 'long' ? 'badge-long' : 'badge-short';
-            const sideText = pos.side === 'long' ? '做多' : '做空';
-            
-            const currentPrice = pos.current_price !== null && pos.current_price !== undefined 
-                ? `$${pos.current_price.toFixed(2)}` 
-                : '-';
-            
-            let pnlDisplay = '-';
-            let pnlClass = '';
-            if (pos.pnl !== undefined && pos.pnl !== 0) {
-                pnlClass = pos.pnl > 0 ? 'text-success' : 'text-danger';
-                pnlDisplay = `${pos.pnl > 0 ? '+' : ''}$${pos.pnl.toFixed(2)}`;
-            }
-            
-            return `
-                <tr>
-                    <td><strong>${pos.coin}</strong></td>
-                    <td><span class="badge ${sideClass}">${sideText}</span></td>
-                    <td>${pos.quantity.toFixed(4)}</td>
-                    <td>$${pos.avg_price.toFixed(2)}</td>
-                    <td>${currentPrice}</td>
-                    <td>${pos.leverage}x</td>
-                    <td class="${pnlClass}"><strong>${pnlDisplay}</strong></td>
-                </tr>
-            `;
-        }).join('');
-    }
-
-    updateTrades(trades) {
-        const tbody = document.getElementById('tradesBody');
-        
-        if (trades.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无交易记录</td></tr>';
-            return;
-        }
-
-        tbody.innerHTML = trades.map(trade => {
-            const signalMap = {
-                'buy_to_enter': { badge: 'badge-buy', text: '开多' },
-                'sell_to_enter': { badge: 'badge-sell', text: '开空' },
-                'close_position': { badge: 'badge-close', text: '平仓' }
-            };
-            const signal = signalMap[trade.signal] || { badge: '', text: trade.signal };
-            const pnlClass = trade.pnl > 0 ? 'text-success' : trade.pnl < 0 ? 'text-danger' : '';
-
-            return `
-                <tr>
-                    <td>${new Date(trade.timestamp).toLocaleString('zh-CN')}</td>
-                    <td><strong>${trade.coin}</strong></td>
-                    <td><span class="badge ${signal.badge}">${signal.text}</span></td>
-                    <td>${trade.quantity.toFixed(4)}</td>
-                    <td>$${trade.price.toFixed(2)}</td>
-                    <td class="${pnlClass}">$${trade.pnl.toFixed(2)}</td>
-                </tr>
-            `;
-        }).join('');
-    }
-
-    updateConversations(conversations) {
-        const container = document.getElementById('conversationsBody');
-
-        if (conversations.length === 0) {
-            container.innerHTML = '<div class="empty-state">暂无对话记录</div>';
-            return;
-        }
-
-        container.innerHTML = conversations.map(conv => {
-            // 解析AI响应，提取决策信息
-            const response = conv.ai_response;
-            let decision = '观望';
-            let marketAnalysis = '';
-            let reasoning = '';
-            let confidence = '';
-            let parsedData = null;
-            let coinData = null;
-
-            // 尝试解析JSON格式的响应（支持多种格式）
-            try {
-                // 方法1: 直接解析整个响应
-                try {
-                    parsedData = JSON.parse(response);
-                } catch (e1) {
-                    // 方法2: 提取JSON对象
-                    const jsonMatch = response.match(/\{[\s\S]*\}/);
-                    if (jsonMatch) {
-                        parsedData = JSON.parse(jsonMatch[0]);
-                    }
-                }
-
-                if (parsedData) {
-                    // 检查是否是嵌套格式：{"BTC": {"signal": "hold", "reasoning": {...}}}
-                    const coinKeys = ['BTC', 'ETH', 'SOL', 'BNB', 'DOGE', 'XRP'];
-                    for (const coin of coinKeys) {
-                        if (parsedData[coin]) {
-                            coinData = parsedData[coin];
-                            break;
-                        }
-                    }
-
-                    // 如果是嵌套格式，使用coinData
-                    const data = coinData || parsedData;
-
-                    // 提取决策（支持多种字段名）
-                    decision = data.decision || data.action || data.signal || '观望';
-
-                    // 映射signal到中文
-                    if (decision === 'buy') decision = '买入';
-                    else if (decision === 'sell') decision = '卖出';
-                    else if (decision === 'hold') decision = '持有';
-
-                    // 提取市场分析
-                    if (data.reasoning && typeof data.reasoning === 'object') {
-                        // reasoning是对象格式
-                        marketAnalysis = data.reasoning.market_analysis || '';
-                        reasoning = data.reasoning.decision_rationale || data.reasoning.reasoning || '';
-                    } else {
-                        // reasoning是字符串格式
-                        marketAnalysis = data.market_analysis || data.analysis ||
-                                       data.market_condition || data.market || '';
-                        reasoning = data.reasoning || data.reason ||
-                                  data.rationale || data.explanation || '';
-                    }
-
-                    // 提取信心指数
-                    confidence = data.confidence || data.confidence_level || '';
-                    if (typeof confidence === 'number') {
-                        confidence = `${(confidence * 100).toFixed(0)}%`;
-                    }
-
-                    // 如果有price_target，添加到reasoning
-                    if (data.profit_target && data.profit_target > 0) {
-                        reasoning += `\n目标价格: $${data.profit_target.toFixed(2)}`;
-                    }
-
-                    // 如果有stop_loss，添加到reasoning
-                    if (data.stop_loss && data.stop_loss > 0) {
-                        reasoning += `\n止损价格: $${data.stop_loss.toFixed(2)}`;
-                    }
-
-                    // 如果有leverage，添加到reasoning
-                    if (data.leverage && data.leverage > 1) {
-                        reasoning += `\n杠杆倍数: ${data.leverage}x`;
-                    }
-                }
-            } catch (e) {
-                console.warn('Failed to parse AI response as JSON:', e);
-            }
-
-            // 智能文本解析 - 如果JSON解析失败
-            if (!parsedData || (parsedData && Object.keys(parsedData).length === 0)) {
-                // 尝试从文本中提取信息
-                const textAnalysis = this.extractFromText(response);
-
-                if (textAnalysis.signal) {
-                    decision = textAnalysis.signal;
-                    reasoning = textAnalysis.reasoning;
-                    marketAnalysis = textAnalysis.marketAnalysis;
-                    confidence = textAnalysis.confidence;
-                } else {
-                    // 如果完全无法解析，显示原始文本
-                    decision = '观望';
-                    reasoning = response.length > 500 ? response.substring(0, 500) + '...' : response;
-                }
-            }
-
-            // 决策类型样式
-            let decisionClass = 'decision-hold';
-            let decisionIcon = '⏸';
-            if (decision.includes('买') || decision.includes('BUY') || decision.includes('buy')) {
-                decisionClass = 'decision-buy';
-                decisionIcon = '📈';
-            } else if (decision.includes('卖') || decision.includes('SELL') || decision.includes('sell')) {
-                decisionClass = 'decision-sell';
-                decisionIcon = '📉';
-            } else if (decision.includes('平') || decision.includes('close')) {
-                decisionClass = 'decision-close';
-                decisionIcon = '🔄';
-            }
-
-            // 构建友好的展示内容
-            let displayContent = '';
-            if (parsedData && (marketAnalysis || reasoning || confidence)) {
-                // 结构化展示
-                displayContent = `
-                    <div class="ai-analysis-label">
-                        <i class="bi bi-robot"></i> AI分析
-                    </div>
-                    ${marketAnalysis ? `<div class="analysis-section">
-                        <div class="section-title"><i class="bi bi-graph-up"></i> 市场分析</div>
-                        <div class="section-content">${this.escapeHtml(marketAnalysis)}</div>
-                    </div>` : ''}
-                    ${reasoning ? `<div class="analysis-section">
-                        <div class="section-title"><i class="bi bi-lightbulb"></i> 决策理由</div>
-                        <div class="section-content">${this.escapeHtml(reasoning).replace(/\n/g, '<br>')}</div>
-                    </div>` : ''}
-                    ${confidence ? `<div class="analysis-section">
-                        <div class="section-title"><i class="bi bi-speedometer2"></i> 信心指数</div>
-                        <div class="section-content"><strong>${confidence}</strong></div>
-                    </div>` : ''}
-                `;
-            } else {
-                // 简单文本展示
-                displayContent = `
-                    <div class="ai-analysis-label">
-                        <i class="bi bi-robot"></i> AI分析
-                    </div>
-                    <div class="analysis-section">
-                        <div class="section-content">${this.escapeHtml(reasoning).replace(/\n/g, '<br>')}</div>
-                    </div>
-                `;
-            }
-
-            return `
-                <div class="conversation-item">
-                    <div class="conversation-header">
-                        <div class="conversation-time">
-                            <i class="bi bi-clock"></i>
-                            ${new Date(conv.timestamp).toLocaleString('zh-CN', {
-                                year: 'numeric',
-                                month: '2-digit',
-                                day: '2-digit',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                            })}
-                        </div>
-                        <div class="conversation-decision ${decisionClass}">
-                            ${decisionIcon} ${decision}
-                        </div>
-                    </div>
-                    <div class="conversation-content">
-                        ${displayContent}
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    async loadMarketPrices() {
-        try {
-            const response = await fetch('/api/market/prices');
-            const prices = await response.json();
-            this.renderMarketPrices(prices);
-        } catch (error) {
-            console.error('Failed to load market prices:', error);
-        }
-    }
-
-    renderMarketPrices(prices) {
-        const container = document.getElementById('marketPrices');
-        
-        container.innerHTML = Object.entries(prices).map(([coin, data]) => {
-            const changeClass = data.change_24h >= 0 ? 'positive' : 'negative';
-            const changeIcon = data.change_24h >= 0 ? '▲' : '▼';
-            
-            return `
-                <div class="price-item">
-                    <div>
-                        <div class="price-symbol">${coin}</div>
-                        <div class="price-change ${changeClass}">${changeIcon} ${Math.abs(data.change_24h).toFixed(2)}%</div>
-                    </div>
-                    <div class="price-value">$${data.price.toFixed(2)}</div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    extractFromText(text) {
-        /**
-         * 智能从文本中提取交易决策信息
-         */
-        const result = {
-            signal: '',
-            reasoning: '',
-            marketAnalysis: '',
-            confidence: ''
-        };
-
-        if (!text || text.trim() === '') {
-            return result;
-        }
-
-        const textLower = text.toLowerCase();
-
-        // 提取信号
-        if (textLower.includes('buy') || textLower.includes('买入') || textLower.includes('做多')) {
-            result.signal = '买入';
-        } else if (textLower.includes('sell') || textLower.includes('卖出') || textLower.includes('做空')) {
-            result.signal = '卖出';
-        } else if (textLower.includes('close') || textLower.includes('平仓')) {
-            result.signal = '平仓';
-        } else if (textLower.includes('hold') || textLower.includes('持有') || textLower.includes('观望')) {
-            result.signal = '持有';
-        }
-
-        // 提取市场分析
-        const marketMatch = text.match(/(?:market|市场|分析)[:\s]+([^\n.]{20,200})/i);
-        if (marketMatch) {
-            result.marketAnalysis = marketMatch[1].trim();
-        }
-
-        // 提取推理
-        const reasoningMatch = text.match(/(?:reason|reasoning|理由|原因)[:\s]+([^\n.]{20,300})/i);
-        if (reasoningMatch) {
-            result.reasoning = reasoningMatch[1].trim();
-        } else {
-            // 如果没有找到明确的推理，使用前200字符
-            result.reasoning = text.substring(0, 200).trim();
-        }
-
-        // 提取信心指数
-        const confidenceMatch = text.match(/confidence[:\s]+([0-9.]+)/i);
-        if (confidenceMatch) {
-            let conf = parseFloat(confidenceMatch[1]);
-            if (conf > 1) conf = conf / 100;
-            result.confidence = `${(conf * 100).toFixed(0)}%`;
-        }
-
-        return result;
-    }
-
-    switchTab(tabName) {
-        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-
-        document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
-        document.getElementById(`${tabName}Tab`).classList.add('active');
-    }
-
-    showModal() {
-        document.getElementById('addModelModal').classList.add('show');
-    }
-
-    hideModal() {
-        document.getElementById('addModelModal').classList.remove('show');
-    }
-
-    async submitModel() {
-        const systemPrompt = document.getElementById('systemPrompt').value.trim();
-
-        const data = {
-            name: document.getElementById('modelName').value,
-            api_key: document.getElementById('apiKey').value,
-            api_url: document.getElementById('apiUrl').value,
-            model_name: document.getElementById('modelIdentifier').value,
-            initial_capital: parseFloat(document.getElementById('initialCapital').value),
-            system_prompt: systemPrompt || null  // 如果为空则传null，使用默认prompt
-        };
-
-        if (!data.name || !data.api_key || !data.api_url || !data.model_name) {
-            alert('请填写所有必填字段');
-            return;
-        }
-
-        try {
-            const response = await fetch('/api/models', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-
-            if (response.ok) {
-                this.hideModal();
-                this.loadModels();
-                this.clearForm();
-            }
-        } catch (error) {
-            console.error('Failed to add model:', error);
-            alert('添加模型失败');
-        }
-    }
-
-    async editModel(modelId) {
-        try {
-            // 获取模型详情
-            const response = await fetch(`/api/models/${modelId}`);
-            if (!response.ok) {
-                alert('获取模型信息失败');
-                return;
-            }
-
-            const model = await response.json();
-
-            // 填充编辑表单
-            document.getElementById('editModelId').value = model.id;
-            document.getElementById('editModelName').value = model.name;
-            document.getElementById('editApiKey').value = '••••••••';  // 不显示真实API Key
-            document.getElementById('editApiUrl').value = model.api_url;
-            document.getElementById('editModelIdentifier').value = model.model_name;
-            document.getElementById('editInitialCapital').value = model.initial_capital;
-            document.getElementById('editSystemPrompt').value = model.system_prompt || '';
-
-            // 显示编辑modal
-            document.getElementById('editModelModal').classList.add('show');
-        } catch (error) {
-            console.error('Failed to load model for editing:', error);
-            alert('获取模型信息失败');
-        }
-    }
-
-    async deleteModel(modelId) {
-        if (!confirm('确定要删除这个模型吗？')) return;
-
-        try {
-            const response = await fetch(`/api/models/${modelId}`, {
-                method: 'DELETE'
-            });
-
-            if (response.ok) {
-                if (this.currentModelId === modelId) {
-                    this.currentModelId = null;
-                }
-                this.loadModels();
-            }
-        } catch (error) {
-            console.error('Failed to delete model:', error);
-        }
-    }
-
-    clearForm() {
-        document.getElementById('modelName').value = '';
-        document.getElementById('apiKey').value = '';
-        document.getElementById('apiUrl').value = '';
-        document.getElementById('modelIdentifier').value = '';
-        document.getElementById('initialCapital').value = '10000';
-        document.getElementById('systemPrompt').value = '';
-    }
-
-    async refresh() {
-        await Promise.all([
-            this.loadModels(),
-            this.loadMarketPrices(),
-            this.loadModelData()
-        ]);
-    }
-
-    startRefreshCycles() {
-        this.refreshIntervals.market = setInterval(() => {
-            this.loadMarketPrices();
-        }, 5000);
-
-        this.refreshIntervals.portfolio = setInterval(() => {
-            if (this.currentModelId) {
-                this.loadModelData();
-            }
-        }, 10000);
-    }
-
-    stopRefreshCycles() {
-        Object.values(this.refreshIntervals).forEach(interval => {
-            if (interval) clearInterval(interval);
-        });
-    }
-
-    toggleTheme() {
-        const currentTheme = document.documentElement.getAttribute('data-theme');
-        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-        document.documentElement.setAttribute('data-theme', newTheme);
-        localStorage.setItem('theme', newTheme);
-
-        // 更新图标
-        const icon = document.querySelector('#themeToggle i');
-        if (newTheme === 'dark') {
-            icon.className = 'bi bi-sun-fill';
-        } else {
-            icon.className = 'bi bi-moon-fill';
-        }
-
-        // 重新渲染图表
-        if (this.chart) {
-            this.chart.dispose();
-            this.chart = echarts.init(document.getElementById('accountChart'));
-            this.loadModelData();
-        }
-        if (this.klineChart) {
-            this.klineChart.dispose();
-            this.klineChart = echarts.init(document.getElementById('klineChart'));
-            this.loadKlineData();
-        }
-    }
-
-    loadTheme() {
-        const savedTheme = localStorage.getItem('theme') || 'light';
-        document.documentElement.setAttribute('data-theme', savedTheme);
-
-        const icon = document.querySelector('#themeToggle i');
-        if (savedTheme === 'dark') {
-            icon.className = 'bi bi-sun-fill';
-        } else {
-            icon.className = 'bi bi-moon-fill';
-        }
-    }
-
-    getKlineColors() {
-        if (this.klineColorMode === 'red-up') {
-            // 红涨绿跌（中国大陆）
-            return {
-                color: '#ef4444',        // 涨：红色（实体）
-                color0: '#22c55e',       // 跌：绿色（实体）
-                borderColor: '#ef4444',  // 涨：红色（边框和影线）
-                borderColor0: '#22c55e', // 跌：绿色（边框和影线）
-                borderWidth: 3           // 增加边框宽度，影线更明显
-            };
-        } else {
-            // 绿涨红跌（国际）
-            return {
-                color: '#22c55e',        // 涨：绿色（实体）
-                color0: '#ef4444',       // 跌：红色（实体）
-                borderColor: '#22c55e',  // 涨：绿色（边框和影线）
-                borderColor0: '#ef4444', // 跌：红色（边框和影线）
-                borderWidth: 3           // 增加边框宽度，影线更明显
-            };
-        }
-    }
-
-    toggleKlineColor() {
-        this.klineColorMode = this.klineColorMode === 'red-up' ? 'green-up' : 'red-up';
-        const btn = document.getElementById('klineColorToggle');
-        btn.innerHTML = this.klineColorMode === 'red-up'
-            ? '<i class="bi bi-palette"></i> 绿涨红跌'
-            : '<i class="bi bi-palette"></i> 红涨绿跌';
-        this.loadKlineData(); // 重新加载K线图
-    }
-
-    initKlineChart() {
-        const chartDom = document.getElementById('klineChart');
-        this.klineChart = echarts.init(chartDom);
-        this.loadKlineData();
-    }
-
-    async loadKlineData() {
-        try {
-            const response = await fetch(`/api/market/historical/${this.currentKlineCoin}?days=30`);
-            const data = await response.json();
-
-            if (!data || data.length === 0) {
-                console.warn('No kline data available');
-                return;
-            }
-
-            // 转换数据格式为ECharts K线图格式
-            const klineData = data.map(item => [
-                item.timestamp,
-                item.open || item.price,
-                item.close || item.price,
-                item.low || item.price,
-                item.high || item.price,
-                item.volume || 0
-            ]);
-
-            const option = {
-                title: {
-                    text: `${this.currentKlineCoin}/USDT`,
-                    left: 0
-                },
-                tooltip: {
-                    trigger: 'axis',
-                    axisPointer: {
-                        type: 'cross'
-                    }
-                },
-                legend: {
-                    data: ['K线', '成交量'],
-                    top: 30
-                },
-                grid: [
-                    {
-                        left: '10%',
-                        right: '10%',
-                        top: '15%',
-                        height: '50%'
-                    },
-                    {
-                        left: '10%',
-                        right: '10%',
-                        top: '70%',
-                        height: '15%'
-                    }
-                ],
-                xAxis: [
-                    {
-                        type: 'category',
-                        data: klineData.map(item => new Date(item[0]).toLocaleDateString()),
-                        boundaryGap: false,
-                        axisLine: { onZero: false },
-                        splitLine: { show: false },
-                        min: 'dataMin',
-                        max: 'dataMax'
-                    },
-                    {
-                        type: 'category',
-                        gridIndex: 1,
-                        data: klineData.map(item => new Date(item[0]).toLocaleDateString()),
-                        boundaryGap: false,
-                        axisLine: { onZero: false },
-                        axisTick: { show: false },
-                        splitLine: { show: false },
-                        axisLabel: { show: false },
-                        min: 'dataMin',
-                        max: 'dataMax'
-                    }
-                ],
-                yAxis: [
-                    {
-                        scale: true,
-                        splitArea: {
-                            show: false
-                        },
-                        splitLine: {
-                            show: true,
-                            lineStyle: {
-                                color: '#e5e6eb',
-                                type: 'dashed'
-                            }
-                        },
-                        axisLabel: {
-                            fontSize: 12,
-                            color: '#86909c'
-                        }
-                    },
-                    {
-                        scale: true,
-                        gridIndex: 1,
-                        splitNumber: 2,
-                        axisLabel: { show: false },
-                        axisLine: { show: false },
-                        axisTick: { show: false },
-                        splitLine: { show: false }
-                    }
-                ],
-                dataZoom: [
-                    {
-                        type: 'inside',
-                        xAxisIndex: [0, 1],
-                        start: 50,
-                        end: 100
-                    },
-                    {
-                        show: true,
-                        xAxisIndex: [0, 1],
-                        type: 'slider',
-                        top: '90%',
-                        start: 50,
-                        end: 100
-                    }
-                ],
-                series: [
-                    {
-                        name: 'K线',
-                        type: 'candlestick',
-                        data: klineData.map(item => [item[1], item[2], item[3], item[4]]),
-                        itemStyle: this.getKlineColors(),
-                        barWidth: '90%',           // 更粗的蜡烛
-                        barMaxWidth: 30,           // 增加最大宽度
-                        barMinWidth: 8             // 增加最小宽度
-                    },
-                    {
-                        name: '成交量',
-                        type: 'bar',
-                        xAxisIndex: 1,
-                        yAxisIndex: 1,
-                        data: klineData.map((item, idx) => {
-                            // 根据涨跌设置成交量颜色
-                            const isUp = idx === 0 ? true : item[4] >= klineData[idx-1][4];
-                            return {
-                                value: item[5],
-                                itemStyle: {
-                                    color: isUp ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.4)'
-                                }
-                            };
-                        })
-                    }
-                ]
-            };
-
-            this.klineChart.setOption(option);
-        } catch (error) {
-            console.error('Failed to load kline data:', error);
-        }
+        return value.replace(/[&<>"']/g, (char) => map[char]);
     }
 }
 
-const app = new TradingApp();
-
-// Edit Model Modal事件监听
-document.getElementById('closeEditModalBtn').addEventListener('click', () => {
-    document.getElementById('editModelModal').classList.remove('show');
-});
-
-document.getElementById('cancelEditBtn').addEventListener('click', () => {
-    document.getElementById('editModelModal').classList.remove('show');
-});
-
-document.getElementById('submitEditBtn').addEventListener('click', async () => {
-    const modelId = document.getElementById('editModelId').value;
-    const systemPrompt = document.getElementById('editSystemPrompt').value;
-
-    try {
-        const response = await fetch(`/api/models/${modelId}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                system_prompt: systemPrompt
-            })
-        });
-
-        if (response.ok) {
-            document.getElementById('editModelModal').classList.remove('show');
-            alert('交易策略更新成功！');
-            app.loadModels();
-        } else {
-            const error = await response.json();
-            alert(error.error || '更新失败');
-        }
-    } catch (error) {
-        console.error('Failed to update model:', error);
-        alert('更新失败');
-    }
-});
+const app = new PredictionApp();

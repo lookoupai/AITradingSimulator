@@ -6,6 +6,7 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 ENV/
 build/
 develop-eggs/
@@ -50,3 +51,4 @@ Thumbs.db
 *.bak
 *.backup
 *_backup.*
+.ace-tool/

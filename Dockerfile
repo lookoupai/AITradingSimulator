@@ -22,9 +22,8 @@ EXPOSE 35008
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:35008/api/market/prices', timeout=5)"
+    CMD python -c "import requests; requests.get('http://localhost:35008/api/health', timeout=5)"
 
 # 使用gunicorn运行（生产环境）
 # 如果需要开发模式，可以在docker-compose.yml中覆盖CMD
 CMD ["gunicorn", "--bind", "0.0.0.0:35008", "--workers", "4", "--timeout", "120", "app:app"]
-

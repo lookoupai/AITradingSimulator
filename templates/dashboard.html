@@ -6,285 +6,308 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>AI交易模拟器 - 控制台</title>
+    <title>PC28 预测控制台</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v={{ app_version }}">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/pc28.css?v={{ app_version }}">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v={{ app_version }}">
 </head>
-<body>
-    <div class="app-container">
-        <!-- Header -->
-        <header class="app-header">
-            <div class="header-content">
-                <div class="header-left">
-                    <h1 class="app-title">AI交易模拟器</h1>
-                    <div class="header-status">
-                        <span class="status-dot active"></span>
-                        <span class="status-text">运行中</span>
-                    </div>
-                </div>
-                <div class="header-right">
-                    <a href="/" class="btn-icon" title="返回主页">
-                        <i class="bi bi-house-fill"></i>
-                    </a>
-                    <span class="user-info" id="userInfo">加载中...</span>
-                    <button class="btn-icon" id="themeToggle" title="切换主题">
-                        <i class="bi bi-moon-fill"></i>
-                    </button>
-                    <button class="btn-icon" id="refreshBtn">
-                        <i class="bi bi-arrow-clockwise"></i>
-                    </button>
-                    <button class="btn-secondary" id="logoutBtn">
-                        <i class="bi bi-box-arrow-right"></i>
-                        登出
-                    </button>
-                    <button class="btn-primary" id="addModelBtn">
-                        <i class="bi bi-plus-lg"></i>
-                        添加模型
-                    </button>
-                </div>
+<body class="pc28-theme">
+    <div class="pc28-shell">
+        <header class="pc28-header">
+            <div>
+                <div class="eyebrow">AI Lottery Predictor</div>
+                <h1>PC28 预测控制台</h1>
+                <p>支持多方案、多提示词、多模型独立预测下一期加拿大28结果</p>
+            </div>
+            <div class="header-actions">
+                <span class="header-user" id="userInfo">加载中...</span>
+                <button class="btn ghost" id="themeToggle" title="切换主题">
+                    <i class="bi bi-moon-stars"></i>
+                </button>
+                <button class="btn ghost" id="refreshBtn">
+                    <i class="bi bi-arrow-clockwise"></i>
+                    刷新
+                </button>
+                <a class="btn ghost" href="/">
+                    <i class="bi bi-house-door"></i>
+                    主页
+                </a>
+                <button class="btn ghost" id="logoutBtn">
+                    <i class="bi bi-box-arrow-right"></i>
+                    登出
+                </button>
+                <button class="btn primary" id="addPredictorBtn">
+                    <i class="bi bi-plus-lg"></i>
+                    新建方案
+                </button>
             </div>
         </header>
 
-        <div class="app-body">
-            <!-- Sidebar -->
-            <aside class="app-sidebar">
-                <div class="sidebar-section">
-                    <div class="section-header">
-                        <span>交易模型</span>
+        <div class="pc28-body">
+            <aside class="pc28-sidebar">
+                <section class="panel sticky">
+                    <div class="panel-header compact">
+                        <h3>PC28 实时状态</h3>
+                        <span class="status-badge">自动轮询中</span>
                     </div>
-                    <div id="modelList" class="model-list"></div>
-                </div>
+                    <div id="overviewPanel" class="overview-panel">
+                        <div class="loading-state">加载中...</div>
+                    </div>
+                </section>
 
-                <div class="sidebar-section">
-                    <div class="section-header">
-                        <span>市场行情</span>
+                <section class="panel">
+                    <div class="panel-header compact">
+                        <h3>预测方案</h3>
                     </div>
-                    <div id="marketPrices" class="market-prices"></div>
-                </div>
+                    <div id="predictorList" class="predictor-list">
+                        <div class="empty-panel">暂无预测方案</div>
+                    </div>
+                </section>
             </aside>
 
-            <!-- Main Content -->
-            <main class="app-main">
-                <!-- Stats Cards -->
-                <div class="stats-grid" id="statsGrid">
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">账户总值</span>
-                            <i class="bi bi-wallet2 text-primary"></i>
-                        </div>
-                        <div class="stat-value">$0.00</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">可用现金</span>
-                            <i class="bi bi-cash text-success"></i>
-                        </div>
-                        <div class="stat-value">$0.00</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">已实现盈亏</span>
-                            <i class="bi bi-graph-up text-info"></i>
-                        </div>
-                        <div class="stat-value">$0.00</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">未实现盈亏</span>
-                            <i class="bi bi-graph-down text-warning"></i>
-                        </div>
-                        <div class="stat-value">$0.00</div>
-                    </div>
-                </div>
+            <main class="pc28-main">
+                <section class="stats-grid" id="statsGrid">
+                    <article class="stat-card">
+                        <span class="stat-label">总预测次数</span>
+                        <strong class="stat-value">0</strong>
+                    </article>
+                    <article class="stat-card">
+                        <span class="stat-label">号码命中率</span>
+                        <strong class="stat-value">-</strong>
+                    </article>
+                    <article class="stat-card">
+                        <span class="stat-label">大小命中率</span>
+                        <strong class="stat-value">-</strong>
+                    </article>
+                    <article class="stat-card">
+                        <span class="stat-label">单双命中率</span>
+                        <strong class="stat-value">-</strong>
+                    </article>
+                </section>
 
-                <!-- Chart -->
-                <div class="content-card">
-                    <div class="card-header">
-                        <h3 class="card-title">账户价值走势</h3>
-                    </div>
-                    <div class="card-body">
-                        <div id="accountChart" style="width: 100%; height: 300px;"></div>
-                    </div>
-                </div>
-
-                <!-- K线图 -->
-                <div class="content-card">
-                    <div class="card-header">
-                        <h3 class="card-title">市场K线图</h3>
-                        <div style="display: flex; gap: 12px; align-items: center;">
-                            <select id="klineSelect" class="coin-select">
-                                <option value="BTC">BTC</option>
-                                <option value="ETH">ETH</option>
-                                <option value="SOL">SOL</option>
-                                <option value="BNB">BNB</option>
-                                <option value="XRP">XRP</option>
-                                <option value="DOGE">DOGE</option>
-                            </select>
-                            <button id="klineColorToggle" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;">
-                                <i class="bi bi-palette"></i> 绿涨红跌
+                <section class="panel">
+                    <div class="panel-header">
+                        <div>
+                            <h3>当前预测</h3>
+                            <p class="panel-subtitle">展示当前方案对下一期的最新预测状态</p>
+                        </div>
+                        <div class="panel-actions">
+                            <button class="btn ghost" id="togglePredictorBtn">
+                                <i class="bi bi-pause-circle"></i>
+                                暂停方案
+                            </button>
+                            <button class="btn ghost" id="editPredictorBtn">
+                                <i class="bi bi-pencil"></i>
+                                编辑方案
+                            </button>
+                            <button class="btn primary" id="predictNowBtn">
+                                <i class="bi bi-lightning-charge"></i>
+                                立即预测
                             </button>
                         </div>
                     </div>
-                    <div class="card-body">
-                        <div id="klineChart" style="width: 100%; height: 400px;"></div>
+                    <div id="currentPrediction" class="prediction-summary empty-panel">
+                        请选择预测方案
                     </div>
-                </div>
+                </section>
 
-                <!-- Tabs -->
-                <div class="content-card">
-                    <div class="card-tabs">
-                        <button class="tab-btn active" data-tab="positions">持仓</button>
-                        <button class="tab-btn" data-tab="trades">交易记录</button>
-                        <button class="tab-btn" data-tab="conversations">AI对话</button>
+                <section class="panel">
+                    <div class="panel-header">
+                        <div>
+                            <h3>近 20 期表现</h3>
+                            <p class="panel-subtitle">单期命中得分与 AI 置信度走势</p>
+                        </div>
+                    </div>
+                    <div id="predictionChart" class="chart-box"></div>
+                </section>
+
+                <section class="panel">
+                    <div class="tabs">
+                        <button class="tab-btn active" data-tab="predictions">预测记录</button>
+                        <button class="tab-btn" data-tab="draws">官方开奖</button>
+                        <button class="tab-btn" data-tab="ai">AI 原始输出</button>
                     </div>
 
-                    <div class="tab-content active" id="positionsTab">
-                        <div class="table-container">
+                    <div class="tab-panel active" id="predictionsTab">
+                        <div class="table-wrap">
                             <table class="data-table">
                                 <thead>
                                     <tr>
-                                        <th>币种</th>
-                                        <th>方向</th>
-                                        <th>数量</th>
-                                        <th>开仓价</th>
-                                        <th>当前价</th>
-                                        <th>杠杆</th>
-                                        <th>盈亏</th>
+                                        <th>期号</th>
+                                        <th>状态</th>
+                                        <th>号码</th>
+                                        <th>大小</th>
+                                        <th>单双</th>
+                                        <th>组合</th>
+                                        <th>置信度</th>
+                                        <th>得分</th>
                                     </tr>
                                 </thead>
-                                <tbody id="positionsBody">
-                                    <tr><td colspan="7" class="empty-state">暂无持仓</td></tr>
+                                <tbody id="predictionsBody">
+                                    <tr><td colspan="8" class="empty-cell">暂无预测记录</td></tr>
                                 </tbody>
                             </table>
                         </div>
                     </div>
 
-                    <div class="tab-content" id="tradesTab">
-                        <div class="table-container">
+                    <div class="tab-panel" id="drawsTab">
+                        <div class="table-wrap">
                             <table class="data-table">
                                 <thead>
                                     <tr>
-                                        <th>时间</th>
-                                        <th>币种</th>
-                                        <th>操作</th>
-                                        <th>数量</th>
-                                        <th>价格</th>
-                                        <th>盈亏</th>
+                                        <th>期号</th>
+                                        <th>开奖号码</th>
+                                        <th>大小</th>
+                                        <th>单双</th>
+                                        <th>组合</th>
+                                        <th>开奖时间</th>
                                     </tr>
                                 </thead>
-                                <tbody id="tradesBody">
-                                    <tr><td colspan="6" class="empty-state">暂无交易记录</td></tr>
+                                <tbody id="drawsBody">
+                                    <tr><td colspan="6" class="empty-cell">暂无官方开奖数据</td></tr>
                                 </tbody>
                             </table>
                         </div>
                     </div>
 
-                    <div class="tab-content" id="conversationsTab">
-                        <div id="conversationsBody" class="conversations-list">
-                            <div class="empty-state">暂无对话记录</div>
+                    <div class="tab-panel" id="aiTab">
+                        <div id="aiLogs" class="ai-log-list">
+                            <div class="empty-panel">暂无 AI 输出记录</div>
                         </div>
                     </div>
-                </div>
+                </section>
             </main>
         </div>
     </div>
 
-    <!-- Add Model Modal -->
-    <div class="modal" id="addModelModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>添加交易模型</h3>
-                <button class="btn-close" id="closeModalBtn">
+    <div class="modal" id="predictorModal">
+        <div class="modal-card">
+            <div class="panel-header">
+                <div>
+                    <h3 id="modalTitle">新建预测方案</h3>
+                    <p class="panel-subtitle">每个方案可独立配置模型、提示词与玩法目标</p>
+                </div>
+                <button class="icon-btn" id="closeModalBtn">
                     <i class="bi bi-x-lg"></i>
                 </button>
             </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>名称</label>
-                    <input type="text" id="modelName" placeholder="例如: GPT-4" class="form-input">
-                </div>
-                <div class="form-group">
-                    <label>API密钥</label>
-                    <input type="password" id="apiKey" placeholder="sk-..." class="form-input">
-                </div>
-                <div class="form-group">
-                    <label>API地址</label>
-                    <input type="text" id="apiUrl" placeholder="https://api.openai.com" class="form-input">
-                </div>
-                <div class="form-group">
-                    <label>模型名称</label>
-                    <input type="text" id="modelIdentifier" placeholder="gpt-4" class="form-input">
-                </div>
-                <div class="form-group">
-                    <label>初始资金</label>
-                    <input type="number" id="initialCapital" value="10000" class="form-input">
-                </div>
-                <div class="form-group">
-                    <label>交易策略 (可选)</label>
-                    <textarea id="systemPrompt" placeholder="自定义AI交易策略，留空则使用默认策略..." class="form-textarea" rows="6"></textarea>
-                    <small class="hint-text">提示：你可以设置自己的交易风格、风险偏好、技术指标偏好等</small>
+            <input type="hidden" id="predictorId">
+
+            <div class="form-grid">
+                <label class="form-field">
+                    <span>方案名称</span>
+                    <input type="text" id="predictorName" placeholder="例如：Gemini 数学概率">
+                </label>
+                <label class="form-field">
+                    <span>预测方法</span>
+                    <input type="text" id="predictionMethod" placeholder="例如：常规概率 / 小六爻">
+                </label>
+                <label class="form-field">
+                    <span>API 地址</span>
+                    <input type="text" id="apiUrl" placeholder="https://api.deepseek.com">
+                </label>
+                <label class="form-field">
+                    <span>模型名称</span>
+                    <input type="text" id="modelName" placeholder="deepseek-chat / gemini-2.5-flash">
+                </label>
+                <label class="form-field span-2">
+                    <span>API Key</span>
+                    <input type="password" id="apiKey" placeholder="编辑时留空表示保持原值">
+                </label>
+                <label class="form-field">
+                    <span>历史窗口</span>
+                    <input type="number" id="historyWindow" min="10" max="200" value="60">
+                </label>
+                <label class="form-field">
+                    <span>温度</span>
+                    <input type="number" id="temperature" min="0" max="1" step="0.1" value="0.7">
+                </label>
+                <label class="form-field span-2">
+                    <span>数据注入模式</span>
+                    <select id="dataInjectionMode" class="form-input">
+                        <option value="summary">摘要模式：自动注入开奖摘要、遗漏、今日统计</option>
+                        <option value="raw">原始模式：自动注入期号, 数字1, 数字2, 数字3, 和值</option>
+                    </select>
+                    <small class="field-hint">新手建议先用摘要模式；如果你的提示词明确要求固定输入格式，再切换到原始模式。</small>
+                </label>
+            </div>
+
+            <div class="form-field">
+                <span>预测目标</span>
+                <div class="checkbox-grid">
+                    <label><input type="checkbox" id="targetNumber" checked> 号码</label>
+                    <label><input type="checkbox" id="targetBigSmall" checked> 大小</label>
+                    <label><input type="checkbox" id="targetOddEven" checked> 单双</label>
+                    <label><input type="checkbox" id="targetCombo" checked> 组合</label>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button class="btn-secondary" id="cancelBtn">取消</button>
-                <button class="btn-primary" id="submitBtn">确认添加</button>
+
+            <div class="form-field help-block">
+                <span>方案示例</span>
+                <small class="field-hint">一键填充策略相关字段，帮助新手快速开始；不会清空你已填的 API Key。</small>
+                <div id="presetCards" class="preset-grid"></div>
+                <button type="button" class="btn ghost compact" id="togglePresetListBtn">查看更多示例</button>
+            </div>
+
+            <label class="form-field">
+                <span>自定义提示词</span>
+                <textarea id="systemPrompt" rows="8" placeholder="例如：偏重小六爻解释；或仅使用统计学、遗漏、热冷号分析。"></textarea>
+                <small class="field-hint">支持直接写自然语言，也支持填入变量占位符。未写变量时，平台会按你选择的“数据注入模式”自动把数据放进上下文。</small>
+            </label>
+
+            <div class="form-field help-block">
+                <span>变量说明与示例</span>
+                <div class="variable-grid">
+                    {% raw %}
+                    <span class="tag code-tag">{{recent_draws_summary}}</span>
+                    <span class="tag code-tag">{{recent_draws_csv}}</span>
+                    <span class="tag code-tag">{{recent_draws_json}}</span>
+                    <span class="tag code-tag">{{omission_summary}}</span>
+                    <span class="tag code-tag">{{today_summary}}</span>
+                    <span class="tag code-tag">{{preview_summary}}</span>
+                    <span class="tag code-tag">{{current_time_beijing}}</span>
+                    <span class="tag code-tag">{{current_year}}</span>
+                    <span class="tag code-tag">{{current_month}}</span>
+                    <span class="tag code-tag">{{current_day}}</span>
+                    <span class="tag code-tag">{{current_hour}}</span>
+                    <span class="tag code-tag">{{current_minute}}</span>
+                    <span class="tag code-tag">{{next_issue_no}}</span>
+                    <span class="tag code-tag">{{countdown}}</span>
+                    <span class="tag code-tag">{{prediction_targets}}</span>
+                    <span class="tag code-tag">{{history_window}}</span>
+                    {% endraw %}
+                </div>
+                <div class="help-panel">
+                    <p class="panel-subtitle">常用写法</p>
+                    <pre id="promptTemplateExample">{% raw %}角色：你是一个 PC28 预测引擎。
+
+输入：
+最近 {{history_window}} 期 PC28 数据：
+{{recent_draws_csv}}
+
+当前北京时间：
+{{current_time_beijing}}
+
+下一期期号：
+{{next_issue_no}}
+
+请结合统计模型 + 小六壬输出下一期的和值、大小单双、风险和策略，只输出 JSON。{% endraw %}</pre>
+                </div>
+            </div>
+
+            <label class="toggle-row">
+                <span>启用自动预测</span>
+                <input type="checkbox" id="predictorEnabled" checked>
+            </label>
+
+            <div class="modal-actions">
+                <button class="btn ghost" id="cancelModalBtn">取消</button>
+                <button class="btn primary" id="savePredictorBtn">保存方案</button>
             </div>
         </div>
     </div>
-
-    <!-- Edit Model Modal -->
-    <div class="modal" id="editModelModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>编辑交易策略</h3>
-                <button class="btn-close" id="closeEditModalBtn">
-                    <i class="bi bi-x-lg"></i>
-                </button>
-            </div>
-            <div class="modal-body">
-                <input type="hidden" id="editModelId">
-                <div class="form-group">
-                    <label>名称</label>
-                    <input type="text" id="editModelName" class="form-input" disabled>
-                    <small class="hint-text">模型名称不可修改</small>
-                </div>
-                <div class="form-group">
-                    <label>API密钥</label>
-                    <input type="password" id="editApiKey" class="form-input" disabled value="••••••••">
-                    <small class="hint-text">API密钥不可修改</small>
-                </div>
-                <div class="form-group">
-                    <label>API地址</label>
-                    <input type="text" id="editApiUrl" class="form-input" disabled>
-                    <small class="hint-text">API地址不可修改</small>
-                </div>
-                <div class="form-group">
-                    <label>模型名称</label>
-                    <input type="text" id="editModelIdentifier" class="form-input" disabled>
-                    <small class="hint-text">模型名称不可修改</small>
-                </div>
-                <div class="form-group">
-                    <label>初始资金</label>
-                    <input type="number" id="editInitialCapital" class="form-input" disabled>
-                    <small class="hint-text">初始资金不可修改</small>
-                </div>
-                <div class="form-group">
-                    <label>交易策略</label>
-                    <textarea id="editSystemPrompt" placeholder="自定义AI交易策略..." class="form-textarea" rows="8"></textarea>
-                    <small class="hint-text" style="color: #3370FF; font-weight: 500;">✓ 只有交易策略可以修改</small>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-secondary" id="cancelEditBtn">取消</button>
-                <button class="btn-primary" id="submitEditBtn">保存修改</button>
-            </div>
-        </div>
-    </div>
-
 
     <script src="/static/app.js?v={{ app_version }}"></script>
 </body>
 </html>
-

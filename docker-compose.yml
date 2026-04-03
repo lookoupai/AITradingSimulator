@@ -3,14 +3,14 @@ version: '3.8'
 services:
   web:
     build: .
-    container_name: ai-trade-simulator
+    container_name: ai-pc28-predictor
     ports:
       - "35008:35008"
     volumes:
       - ./data:/app/data
     environment:
       # 数据库配置
-      - DATABASE_PATH=/app/data/trading_bot.db
+      - DATABASE_PATH=/app/data/pc28_predictor.db
 
       # 服务器配置
       - HOST=0.0.0.0
@@ -25,16 +25,15 @@ services:
       - LINUX_DO_CLIENT_SECRET=${LINUX_DO_CLIENT_SECRET:-}
       - LINUX_DO_REDIRECT_URI=${LINUX_DO_REDIRECT_URI:-}
 
-      # 交易配置
-      - AUTO_TRADING=True
-      - TRADING_INTERVAL=180
+      # 自动预测配置
+      - AUTO_PREDICTION=True
+      - PREDICTION_POLL_INTERVAL=20
 
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:35008/api/market/prices', timeout=5)"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:35008/api/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
-
