@@ -748,6 +748,33 @@ a {
     margin-top: 12px;
 }
 
+.test-result {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.test-result.info {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.2);
+    color: #2563eb;
+}
+
+.test-result.success {
+    background: rgba(16, 185, 129, 0.12);
+    border-color: rgba(16, 185, 129, 0.2);
+    color: var(--success);
+}
+
+.test-result.error {
+    background: rgba(220, 38, 38, 0.1);
+    border-color: rgba(220, 38, 38, 0.2);
+    color: var(--danger);
+}
+
 .home-hero {
     align-items: stretch;
 }

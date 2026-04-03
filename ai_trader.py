@@ -57,6 +57,17 @@ class AIPredictor:
             raise Exception(f'{last_error}；原始响应：{last_response[:300]}')
         raise Exception(last_error)
 
+    def run_connectivity_test(self) -> dict:
+        """测试模型连通性与基础输出能力"""
+        test_prompt = 'Reply with OK only.'
+        raw_response = self._call_llm(test_prompt)
+        preview = raw_response.strip()
+        return {
+            'success': bool(preview),
+            'raw_response': raw_response,
+            'response_preview': preview[:200]
+        }
+
     def _build_prompt(self, context: dict, predictor_config: dict) -> str:
         targets = normalize_target_list(predictor_config.get('prediction_targets'))
         target_labels = [self._target_label(target) for target in targets]

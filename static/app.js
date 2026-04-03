@@ -90,6 +90,7 @@ class PredictionApp {
         document.getElementById('closeModalBtn').addEventListener('click', () => this.hideModal());
         document.getElementById('cancelModalBtn').addEventListener('click', () => this.hideModal());
         document.getElementById('savePredictorBtn').addEventListener('click', () => this.submitPredictor());
+        document.getElementById('testPredictorBtn').addEventListener('click', () => this.testPredictorConfig());
         document.getElementById('predictNowBtn').addEventListener('click', () => this.predictNow());
         document.getElementById('editPredictorBtn').addEventListener('click', () => this.openEditModal());
         document.getElementById('togglePredictorBtn').addEventListener('click', () => this.toggleCurrentPredictor());
@@ -613,6 +614,7 @@ class PredictionApp {
     }
 
     showModal() {
+        this.hideTestResult();
         document.getElementById('predictorModal').classList.add('show');
     }
 
@@ -635,6 +637,7 @@ class PredictionApp {
         document.getElementById('targetBigSmall').checked = true;
         document.getElementById('targetOddEven').checked = true;
         document.getElementById('targetCombo').checked = true;
+        this.hideTestResult();
     }
 
     renderPresetCards() {
@@ -744,6 +747,38 @@ class PredictionApp {
             await this.refresh(true);
         } catch (error) {
             alert(error.message);
+        }
+    }
+
+    async testPredictorConfig() {
+        const predictorId = document.getElementById('predictorId').value;
+        const payload = this.collectFormData();
+        payload.predictor_id = predictorId ? Number(predictorId) : null;
+
+        const button = document.getElementById('testPredictorBtn');
+        button.disabled = true;
+        button.textContent = '测试中...';
+        this.showTestResult('info', '正在测试模型连通性，请稍候...');
+
+        try {
+            const response = await fetch('/api/predictors/test', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '模型测试失败');
+            }
+
+            const preview = data.response_preview || '模型已返回响应';
+            this.showTestResult('success', `测试成功：${preview}`);
+        } catch (error) {
+            this.showTestResult('error', error.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = '测试模型';
         }
     }
 
@@ -875,6 +910,26 @@ class PredictionApp {
             ? '<i class="bi bi-pause-circle"></i> 暂停方案'
             : '<i class="bi bi-play-circle"></i> 恢复方案';
         predictNowButton.disabled = false;
+    }
+
+    showTestResult(type, message) {
+        const result = document.getElementById('testPredictorResult');
+        if (!result) {
+            return;
+        }
+        result.className = `test-result ${type}`;
+        result.textContent = message;
+        result.style.display = 'block';
+    }
+
+    hideTestResult() {
+        const result = document.getElementById('testPredictorResult');
+        if (!result) {
+            return;
+        }
+        result.textContent = '';
+        result.className = 'test-result';
+        result.style.display = 'none';
     }
 
     targetLabel(target) {

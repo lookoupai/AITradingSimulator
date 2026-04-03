@@ -10,6 +10,7 @@ from flask import Flask, jsonify, redirect, render_template, request
 from flask_cors import CORS
 
 import config
+from ai_trader import AIPredictor
 from database import Database
 from services.pc28_service import PC28Service
 from services.prediction_engine import PredictionEngine
@@ -553,6 +554,45 @@ def create_predictor():
         'message': '预测方案创建成功',
         'predictor': _serialize_predictor(predictor)
     })
+
+
+@app.route('/api/predictors/test', methods=['POST'])
+@login_required
+def test_predictor():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+
+    predictor_id = data.get('predictor_id')
+    existing = None
+    if predictor_id:
+        if not db.predictor_exists_for_user(int(predictor_id), user_id):
+            return jsonify({'error': '无权访问此预测方案'}), 403
+        existing = db.get_predictor(int(predictor_id), include_secret=True)
+
+    fallback_api_url = existing.get('api_url') if existing else ''
+    fallback_model_name = existing.get('model_name') if existing else ''
+    api_key = str(data.get('api_key') or '').strip() or (existing.get('api_key') if existing else '')
+    api_url = str(data.get('api_url') or fallback_api_url).strip()
+    model_name = str(data.get('model_name') or fallback_model_name).strip()
+
+    if not api_key:
+        return jsonify({'error': '请填写 API Key，或在编辑已有方案时使用已保存的 Key'}), 400
+    if not api_url:
+        return jsonify({'error': 'API 地址不能为空'}), 400
+    if not model_name:
+        return jsonify({'error': '模型名称不能为空'}), 400
+
+    tester = AIPredictor(api_key=api_key, api_url=api_url, model_name=model_name, temperature=0)
+
+    try:
+        result = tester.run_connectivity_test()
+        return jsonify({
+            'message': '连接测试成功',
+            'response_preview': result['response_preview'],
+            'raw_response': result['raw_response'][:1000]
+        })
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/api/predictors/<int:predictor_id>', methods=['PUT'])
