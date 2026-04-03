@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -70,11 +71,15 @@ class AIPredictor:
     def run_connectivity_test(self) -> dict:
         """测试模型连通性与基础输出能力"""
         test_prompt = 'Return a minimal JSON object only: {"status":"ok"}'
-        raw_response = self._call_llm(test_prompt)
+        result = self._call_llm_with_metadata(test_prompt)
+        raw_response = result['raw_response']
         preview = raw_response.strip()
         return {
             'success': bool(preview),
-            'api_mode': self._resolve_api_mode(),
+            'api_mode': result['api_mode'],
+            'response_model': result['response_model'],
+            'finish_reason': result['finish_reason'],
+            'latency_ms': result['latency_ms'],
             'raw_response': raw_response,
             'response_preview': preview[:200]
         }
@@ -283,6 +288,9 @@ class AIPredictor:
         return '摘要模式'
 
     def _call_llm(self, prompt: str) -> str:
+        return self._call_llm_with_metadata(prompt)['raw_response']
+
+    def _call_llm_with_metadata(self, prompt: str) -> dict:
         last_error: Optional[Exception] = None
         system_prompt = (
             "你是 PC28 预测助手。你必须遵守字段契约，只输出单个 JSON 对象。"
@@ -295,6 +303,7 @@ class AIPredictor:
                     api_key=self.api_key,
                     base_url=base_url
                 )
+                start_time = time.perf_counter()
                 if resolved_api_mode == 'responses':
                     response = client.responses.create(
                         model=self.model_name,
@@ -308,7 +317,14 @@ class AIPredictor:
                             }
                         }
                     )
-                    return self._extract_response_output_text(response)
+                    raw_response = self._extract_response_output_text(response)
+                    return {
+                        'raw_response': raw_response,
+                        'api_mode': resolved_api_mode,
+                        'response_model': getattr(response, 'model', self.model_name),
+                        'finish_reason': self._extract_responses_finish_reason(response),
+                        'latency_ms': int((time.perf_counter() - start_time) * 1000)
+                    }
 
                 response = client.chat.completions.create(
                     model=self.model_name,
@@ -319,7 +335,15 @@ class AIPredictor:
                     temperature=self.temperature,
                     max_tokens=1200
                 )
-                return self._extract_message_text(response)
+                raw_response = self._extract_message_text(response)
+                choice = response.choices[0] if getattr(response, 'choices', None) else None
+                return {
+                    'raw_response': raw_response,
+                    'api_mode': resolved_api_mode,
+                    'response_model': getattr(response, 'model', self.model_name),
+                    'finish_reason': getattr(choice, 'finish_reason', None) or 'unknown',
+                    'latency_ms': int((time.perf_counter() - start_time) * 1000)
+                }
             except (APIConnectionError, APIError, Exception) as exc:
                 last_error = exc
                 continue
@@ -365,6 +389,17 @@ class AIPredictor:
 
         response_dump = self._safe_model_dump(response)
         raise ValueError(f'Responses API 返回为空，原始响应片段：{response_dump[:500]}')
+
+    def _extract_responses_finish_reason(self, response) -> str:
+        status = getattr(response, 'status', None)
+        incomplete_details = getattr(response, 'incomplete_details', None)
+        if incomplete_details is not None:
+            reason = getattr(incomplete_details, 'reason', None)
+            if reason:
+                return str(reason)
+        if status:
+            return str(status)
+        return 'unknown'
 
     def _extract_message_text(self, response) -> str:
         choices = getattr(response, 'choices', None) or []

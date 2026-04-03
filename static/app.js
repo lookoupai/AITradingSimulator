@@ -783,8 +783,7 @@ class PredictionApp {
             }
 
             const preview = data.response_preview || '模型已返回响应';
-            const modeText = data.api_mode ? `（模式：${data.api_mode}）` : '';
-            this.showTestResult('success', `测试成功${modeText}：${preview}`);
+            this.showTestResult('success', this.buildTestResultMessage(data, preview));
         } catch (error) {
             this.showTestResult('error', error.message);
         } finally {
@@ -921,6 +920,24 @@ class PredictionApp {
             ? '<i class="bi bi-pause-circle"></i> 暂停方案'
             : '<i class="bi bi-play-circle"></i> 恢复方案';
         predictNowButton.disabled = false;
+    }
+
+    buildTestResultMessage(data, preview) {
+        const details = [];
+        if (data.api_mode) {
+            details.push(`模式：${data.api_mode}`);
+        }
+        if (data.response_model) {
+            details.push(`模型：${data.response_model}`);
+        }
+        if (data.finish_reason) {
+            details.push(`finish_reason：${data.finish_reason}`);
+        }
+        if (data.latency_ms !== null && data.latency_ms !== undefined) {
+            details.push(`耗时：${data.latency_ms}ms`);
+        }
+
+        return `测试成功\n${details.join(' | ')}\n响应预览：${preview}`;
     }
 
     showTestResult(type, message) {

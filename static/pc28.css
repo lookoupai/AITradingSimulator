@@ -755,6 +755,7 @@ a {
     border: 1px solid var(--border);
     font-size: 13px;
     line-height: 1.6;
+    white-space: pre-wrap;
 }
 
 .test-result.info {

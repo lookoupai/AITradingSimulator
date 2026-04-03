@@ -602,6 +602,9 @@ def test_predictor():
         return jsonify({
             'message': '连接测试成功',
             'api_mode': result['api_mode'],
+            'response_model': result['response_model'],
+            'finish_reason': result['finish_reason'],
+            'latency_ms': result['latency_ms'],
             'response_preview': result['response_preview'],
             'raw_response': result['raw_response'][:1000]
         })
