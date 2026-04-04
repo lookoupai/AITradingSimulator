@@ -95,9 +95,10 @@ class PC28Service:
             preview = {}
 
         latest_draw = draws[0] if draws else None
-        next_issue = keno_snapshot.get('next_issue_no')
-        if not next_issue and latest_draw:
-            next_issue = next_issue_no(latest_draw['issue_no'])
+        next_issue = self._resolve_next_issue_no(
+            keno_snapshot.get('next_issue_no'),
+            next_issue_no(latest_draw['issue_no']) if latest_draw else None
+        )
 
         return {
             'lottery_type': 'pc28',
@@ -110,6 +111,18 @@ class PC28Service:
             'preview': preview,
             'generated_at': get_current_beijing_time_str()
         }
+
+    def _resolve_next_issue_no(self, *candidates: Optional[str]) -> Optional[str]:
+        valid_candidates = []
+        for candidate in candidates:
+            text = str(candidate or '').strip()
+            if text.isdigit():
+                valid_candidates.append(text)
+
+        if not valid_candidates:
+            return None
+
+        return max(valid_candidates, key=lambda value: int(value))
 
     def _normalize_draw(self, item: dict) -> Optional[dict]:
         issue_no = str(item.get('nbr') or '').strip()
