@@ -326,6 +326,7 @@ class PredictionApp {
 
     async loadPredictorDashboard(predictorId) {
         try {
+            const previousPredictorId = this.currentPredictor?.id || null;
             const response = await fetch(`/api/predictors/${predictorId}/dashboard`, {
                 credentials: 'include'
             });
@@ -341,7 +342,16 @@ class PredictionApp {
             this.currentPredictor = data.predictor;
             this.currentStats = data.stats || null;
             this.currentPredictions = data.recent_predictions || [];
-            this.selectedStatsMetric = data.stats?.primary_metric || 'big_small';
+            const availableMetrics = Object.keys((data.stats && data.stats.metrics) || {});
+            const defaultMetric = data.stats?.primary_metric || 'big_small';
+            const shouldResetMetric =
+                previousPredictorId !== predictorId ||
+                !this.selectedStatsMetric ||
+                !availableMetrics.includes(this.selectedStatsMetric);
+
+            if (shouldResetMetric) {
+                this.selectedStatsMetric = defaultMetric;
+            }
             document.getElementById('statsMetricView').value = this.selectedStatsMetric;
             this.updatePredictorActionState(data.predictor);
             this.renderStats(this.currentStats);
