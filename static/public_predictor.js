@@ -5,6 +5,7 @@ class PublicPredictorPage {
         this.selectedProfitMetric = null;
         this.selectedProfitOddsProfile = 'regular';
         this.profitChart = null;
+        this.refreshTimer = null;
         this.init();
     }
 
@@ -13,7 +14,8 @@ class PublicPredictorPage {
             return;
         }
         this.initEventListeners();
-        await this.loadDetail();
+        await this.loadDetail(true);
+        this.refreshTimer = setInterval(() => this.loadDetail(false), 10000);
     }
 
     initEventListeners() {
@@ -35,7 +37,7 @@ class PublicPredictorPage {
         }
     }
 
-    async loadDetail() {
+    async loadDetail(resetProfitMetric = false) {
         try {
             const response = await fetch(`/api/public/predictors/${this.predictorId}`);
             const data = await response.json();
@@ -49,7 +51,7 @@ class PublicPredictorPage {
             this.renderMetricStats(data.stats);
             this.renderStreakStats(data.stats);
             this.renderPredictions(data.recent_predictions || []);
-            this.renderProfitControls(this.currentPredictor, true);
+            this.renderProfitControls(this.currentPredictor, resetProfitMetric);
             await this.loadProfitSimulation();
         } catch (error) {
             const hero = document.getElementById('publicPredictorHero');
