@@ -24,7 +24,7 @@ from utils.auth import (
     set_current_user,
     verify_password
 )
-from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_primary_metric, normalize_share_level, normalize_target_list
+from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_primary_metric, normalize_profit_metric, normalize_share_level, normalize_target_list
 from utils.timezone import get_current_beijing_time_str, utc_to_beijing
 
 
@@ -119,6 +119,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'model_name': predictor['model_name'],
         'api_mode': predictor.get('api_mode') or 'auto',
         'primary_metric': predictor.get('primary_metric') or 'combo',
+        'profit_default_metric': predictor.get('profit_default_metric') or default_simulation_metric,
         'share_level': share_level,
         'share_level_label': _share_level_label(share_level),
         'share_predictions': share_level != 'stats_only',
@@ -328,6 +329,7 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'model_name': predictor['model_name'],
             'primary_metric': predictor.get('primary_metric') or 'combo',
             'primary_metric_label': stats.get('primary_metric_label') or '组合投注',
+            'profit_default_metric': predictor.get('profit_default_metric') or profit_simulator.get_default_metric(predictor),
             'prediction_method': predictor.get('prediction_method') or '自定义策略',
             'prediction_targets': predictor.get('prediction_targets') or [],
             'simulation_metrics': profit_simulator.get_metric_options(predictor),
@@ -364,6 +366,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     fallback_model_name = existing_predictor.get('model_name') if existing_predictor else ''
     fallback_api_mode = existing_predictor.get('api_mode') if existing_predictor else 'auto'
     fallback_primary_metric = existing_predictor.get('primary_metric') if existing_predictor else 'big_small'
+    fallback_profit_default_metric = existing_predictor.get('profit_default_metric') if existing_predictor else fallback_primary_metric
     fallback_share_level = existing_predictor.get('share_level') if existing_predictor else ('records' if (existing_predictor and existing_predictor.get('share_predictions')) else 'stats_only')
     fallback_method = existing_predictor.get('prediction_method') if existing_predictor else ''
     fallback_prompt = existing_predictor.get('system_prompt') if existing_predictor else ''
@@ -375,6 +378,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     model_name = str(data.get('model_name') or fallback_model_name).strip()
     api_mode = normalize_api_mode(data.get('api_mode') or fallback_api_mode)
     primary_metric = normalize_primary_metric(data.get('primary_metric') or fallback_primary_metric)
+    profit_default_metric = normalize_profit_metric(data.get('profit_default_metric') or fallback_profit_default_metric)
     share_level = normalize_share_level(data.get('share_level') or fallback_share_level)
     prediction_method = str(data.get('prediction_method') or fallback_method).strip()
     system_prompt = str(data.get('system_prompt') or fallback_prompt).strip()
@@ -405,6 +409,8 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
         errors.append('主玩法必须包含在预测目标中')
     if primary_metric in {'double_group', 'kill_group'} and 'combo' not in prediction_targets:
         errors.append('双组/杀组统计依赖组合预测，请勾选组合目标')
+    if profit_default_metric not in prediction_targets:
+        errors.append('默认收益玩法必须包含在预测目标中')
 
     try:
         history_window = int(history_window)
@@ -425,6 +431,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
         'model_name': model_name,
         'api_mode': api_mode,
         'primary_metric': primary_metric,
+        'profit_default_metric': profit_default_metric,
         'share_level': share_level,
         'share_predictions': share_level != 'stats_only',
         'prediction_method': prediction_method or '自定义策略',
@@ -492,6 +499,7 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
     fallback_model_name = existing.get('model_name') if existing else ''
     fallback_api_mode = existing.get('api_mode') if existing else 'auto'
     fallback_primary_metric = existing.get('primary_metric') if existing else 'big_small'
+    fallback_profit_default_metric = existing.get('profit_default_metric') if existing else fallback_primary_metric
     fallback_method = existing.get('prediction_method') if existing else ''
     fallback_prompt = existing.get('system_prompt') if existing else ''
     fallback_injection_mode = existing.get('data_injection_mode') if existing else 'summary'
@@ -504,6 +512,7 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
         'model_name': str(data.get('model_name') or fallback_model_name).strip(),
         'api_mode': normalize_api_mode(data.get('api_mode') or fallback_api_mode),
         'primary_metric': normalize_primary_metric(data.get('primary_metric') or fallback_primary_metric),
+        'profit_default_metric': normalize_profit_metric(data.get('profit_default_metric') or fallback_profit_default_metric),
         'prediction_method': str(data.get('prediction_method') or fallback_method).strip(),
         'system_prompt': str(data.get('system_prompt') or fallback_prompt).strip(),
         'data_injection_mode': normalize_injection_mode(data.get('data_injection_mode') or fallback_injection_mode),
@@ -828,6 +837,7 @@ def create_predictor():
         model_name=payload['model_name'],
         api_mode=payload['api_mode'],
         primary_metric=payload['primary_metric'],
+        profit_default_metric=payload['profit_default_metric'],
         share_level=payload['share_level'],
         prediction_method=payload['prediction_method'],
         system_prompt=payload['system_prompt'],
@@ -993,6 +1003,7 @@ def update_predictor(predictor_id: int):
         'model_name': payload['model_name'],
         'api_mode': payload['api_mode'],
         'primary_metric': payload['primary_metric'],
+        'profit_default_metric': payload['profit_default_metric'],
         'share_level': payload['share_level'],
         'share_predictions': payload['share_predictions'],
         'prediction_method': payload['prediction_method'],

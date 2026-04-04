@@ -122,6 +122,10 @@ class PredictionApp {
                 this.renderStats(this.currentStats);
             }
         });
+        document.getElementById('primaryMetric').addEventListener('change', () => this.syncProfitMetricOptions());
+        ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo'].forEach((id) => {
+            document.getElementById(id).addEventListener('change', () => this.syncProfitMetricOptions());
+        });
         document.getElementById('predictionStatusFilter').addEventListener('change', (event) => {
             this.predictionStatusFilter = event.target.value;
             this.renderPredictionsTable(this.currentPredictions || []);
@@ -1143,6 +1147,7 @@ class PredictionApp {
         document.getElementById('temperature').value = data.temperature ?? 0.7;
         document.getElementById('dataInjectionMode').value = data.data_injection_mode || 'summary';
         document.getElementById('primaryMetric').value = data.primary_metric || 'combo';
+        document.getElementById('profitDefaultMetric').value = data.profit_default_metric || data.default_simulation_metric || 'big_small';
         document.getElementById('systemPrompt').value = data.system_prompt || '';
         document.getElementById('predictorEnabled').checked = Boolean(data.enabled);
         document.getElementById('shareLevel').value = data.share_level || (data.share_predictions ? 'records' : 'stats_only');
@@ -1150,6 +1155,7 @@ class PredictionApp {
         document.getElementById('targetBigSmall').checked = data.prediction_targets.includes('big_small');
         document.getElementById('targetOddEven').checked = data.prediction_targets.includes('odd_even');
         document.getElementById('targetCombo').checked = data.prediction_targets.includes('combo');
+        this.syncProfitMetricOptions();
         this.presetExpanded = false;
         this.renderPresetCards();
         this.showModal();
@@ -1176,6 +1182,7 @@ class PredictionApp {
         document.getElementById('temperature').value = '0.7';
         document.getElementById('dataInjectionMode').value = 'summary';
         document.getElementById('primaryMetric').value = 'big_small';
+        document.getElementById('profitDefaultMetric').value = 'big_small';
         document.getElementById('systemPrompt').value = '';
         document.getElementById('predictorEnabled').checked = true;
         document.getElementById('shareLevel').value = 'stats_only';
@@ -1183,6 +1190,7 @@ class PredictionApp {
         document.getElementById('targetBigSmall').checked = true;
         document.getElementById('targetOddEven').checked = true;
         document.getElementById('targetCombo').checked = true;
+        this.syncProfitMetricOptions();
         this.hideTestResult();
         this.hidePromptAssistantResult();
     }
@@ -1245,11 +1253,13 @@ class PredictionApp {
         document.getElementById('temperature').value = String(preset.temperature);
         document.getElementById('dataInjectionMode').value = preset.injectionMode;
         document.getElementById('primaryMetric').value = preset.primaryMetric || 'combo';
+        document.getElementById('profitDefaultMetric').value = preset.profitDefaultMetric || (['big_small', 'odd_even', 'combo', 'number'].includes(preset.primaryMetric) ? preset.primaryMetric : 'combo');
         document.getElementById('systemPrompt').value = preset.prompt;
         document.getElementById('targetNumber').checked = preset.targets.includes('number');
         document.getElementById('targetBigSmall').checked = preset.targets.includes('big_small');
         document.getElementById('targetOddEven').checked = preset.targets.includes('odd_even');
         document.getElementById('targetCombo').checked = preset.targets.includes('combo');
+        this.syncProfitMetricOptions();
     }
 
     collectFormData() {
@@ -1270,11 +1280,46 @@ class PredictionApp {
             temperature: Number(document.getElementById('temperature').value || 0.7),
             data_injection_mode: document.getElementById('dataInjectionMode').value,
             primary_metric: document.getElementById('primaryMetric').value,
+            profit_default_metric: document.getElementById('profitDefaultMetric').value,
             system_prompt: document.getElementById('systemPrompt').value.trim(),
             enabled: document.getElementById('predictorEnabled').checked,
             share_level: document.getElementById('shareLevel').value,
             prediction_targets: predictionTargets
         };
+    }
+
+    syncProfitMetricOptions() {
+        const select = document.getElementById('profitDefaultMetric');
+        if (!select) {
+            return;
+        }
+
+        const options = [];
+        if (document.getElementById('targetBigSmall').checked) {
+            options.push({ key: 'big_small', label: '大/小：默认按大小单双盘看当盘日盈亏' });
+        }
+        if (document.getElementById('targetOddEven').checked) {
+            options.push({ key: 'odd_even', label: '单/双：默认按单双盘看当盘日盈亏' });
+        }
+        if (document.getElementById('targetCombo').checked) {
+            options.push({ key: 'combo', label: '组合投注：默认按组合票面看当盘日盈亏' });
+        }
+        if (document.getElementById('targetNumber').checked) {
+            options.push({ key: 'number', label: '单点：默认按精确和值看当盘日盈亏' });
+        }
+
+        const previousValue = select.value;
+        if (!options.length) {
+            select.innerHTML = '<option value="">暂无可用收益玩法</option>';
+            select.disabled = true;
+            return;
+        }
+
+        select.innerHTML = options.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        select.disabled = false;
+        select.value = options.some((item) => item.key === previousValue) ? previousValue : options[0].key;
     }
 
     async submitPredictor() {

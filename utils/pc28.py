@@ -11,6 +11,7 @@ ALLOWED_TARGETS = ('number', 'big_small', 'odd_even', 'combo')
 ALLOWED_INJECTION_MODES = ('summary', 'raw')
 ALLOWED_API_MODES = ('auto', 'chat_completions', 'responses')
 ALLOWED_PRIMARY_METRICS = ('combo', 'number', 'big_small', 'odd_even', 'double_group', 'kill_group')
+ALLOWED_PROFIT_METRICS = ('combo', 'number', 'big_small', 'odd_even')
 ALLOWED_SHARE_LEVELS = ('stats_only', 'records', 'analysis')
 
 TARGET_LABELS = {
@@ -79,6 +80,14 @@ def normalize_share_level(value: Optional[str]) -> str:
     if text in ALLOWED_SHARE_LEVELS:
         return text
     return 'stats_only'
+
+
+def normalize_profit_metric(value: Optional[str]) -> str:
+    """规范化默认收益玩法"""
+    text = str(value or '').strip().lower()
+    if text in ALLOWED_PROFIT_METRICS:
+        return text
+    return 'big_small'
 
 
 def parse_pc28_number(value) -> Optional[int]:

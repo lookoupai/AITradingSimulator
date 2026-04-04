@@ -82,9 +82,12 @@ class ProfitSimulator:
     def get_available_metrics(self, predictor: dict) -> list[str]:
         targets = predictor.get('prediction_targets') or []
         metrics = [metric for metric in targets if metric in SUPPORTED_SIMULATION_METRICS]
+        profit_default_metric = predictor.get('profit_default_metric')
         primary_metric = predictor.get('primary_metric')
 
-        if primary_metric in {'double_group', 'kill_group'} and 'combo' in metrics:
+        if profit_default_metric in metrics:
+            metrics = [profit_default_metric] + [metric for metric in metrics if metric != profit_default_metric]
+        elif primary_metric in {'double_group', 'kill_group'} and 'combo' in metrics:
             metrics = ['combo'] + [metric for metric in metrics if metric != 'combo']
         elif primary_metric in metrics:
             metrics = [primary_metric] + [metric for metric in metrics if metric != primary_metric]

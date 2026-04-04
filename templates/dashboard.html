@@ -345,6 +345,16 @@
                     </select>
                     <small class="field-hint">当前连中、最大连中和后续公开页默认排序会优先使用这里选择的主玩法。</small>
                 </label>
+                <label class="form-field span-2">
+                    <span>默认收益玩法</span>
+                    <select id="profitDefaultMetric" class="form-input">
+                        <option value="big_small">大/小：默认按大小单双盘看当盘日盈亏</option>
+                        <option value="odd_even">单/双：默认按单双盘看当盘日盈亏</option>
+                        <option value="combo">组合投注：默认按组合票面看当盘日盈亏</option>
+                        <option value="number">单点：默认按精确和值看当盘日盈亏</option>
+                    </select>
+                    <small class="field-hint">这个字段只影响收益模拟默认玩法，不影响方案统计、公开榜单和主玩法身份。</small>
+                </label>
             </div>
 
             <div class="form-field">

@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-from utils.pc28 import derive_double_group, derive_kill_group, normalize_primary_metric
+from utils.pc28 import derive_double_group, derive_kill_group, normalize_primary_metric, normalize_profit_metric
 
 
 class Database:
@@ -48,6 +48,7 @@ class Database:
                 model_name TEXT NOT NULL,
                 api_mode TEXT NOT NULL DEFAULT 'auto',
                 primary_metric TEXT NOT NULL DEFAULT 'big_small',
+                profit_default_metric TEXT NOT NULL DEFAULT '',
                 share_predictions INTEGER NOT NULL DEFAULT 0,
                 share_level TEXT NOT NULL DEFAULT 'stats_only',
                 prediction_method TEXT DEFAULT '',
@@ -149,6 +150,10 @@ class Database:
         except Exception:
             pass
         try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN profit_default_metric TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+        try:
             cursor.execute("ALTER TABLE predictors ADD COLUMN share_predictions INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass
@@ -182,6 +187,7 @@ class Database:
         model_name: str,
         api_mode: str,
         primary_metric: str,
+        profit_default_metric: str,
         share_level: str,
         prediction_method: str,
         system_prompt: str,
@@ -197,11 +203,11 @@ class Database:
         cursor.execute(
             '''
             INSERT INTO predictors (
-                user_id, name, lottery_type, api_key, api_url, model_name, api_mode, primary_metric, share_predictions, share_level,
+                user_id, name, lottery_type, api_key, api_url, model_name, api_mode, primary_metric, profit_default_metric, share_predictions, share_level,
                 prediction_method, system_prompt, data_injection_mode,
                 prediction_targets, history_window, temperature, enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 user_id,
@@ -212,6 +218,7 @@ class Database:
                 model_name,
                 api_mode,
                 primary_metric,
+                profit_default_metric,
                 1 if share_level != 'stats_only' else 0,
                 share_level,
                 prediction_method,
@@ -237,6 +244,10 @@ class Database:
         for key, value in fields.items():
             if key == 'prediction_targets':
                 value = json.dumps(value, ensure_ascii=False)
+            if key == 'primary_metric':
+                value = normalize_primary_metric(value)
+            if key == 'profit_default_metric':
+                value = normalize_profit_metric(value)
             if key == 'enabled':
                 value = 1 if value else 0
             updates.append(f'{key} = ?')
@@ -757,6 +768,7 @@ class Database:
         data['enabled'] = bool(data.get('enabled'))
         data['api_mode'] = data.get('api_mode') or 'auto'
         data['primary_metric'] = normalize_primary_metric(data.get('primary_metric'))
+        data['profit_default_metric'] = normalize_profit_metric(data.get('profit_default_metric') or data.get('primary_metric'))
         data['share_level'] = data.get('share_level') or ('records' if data.get('share_predictions') else 'stats_only')
         data['share_predictions'] = bool(data.get('share_predictions'))
         data['data_injection_mode'] = data.get('data_injection_mode') or 'summary'
