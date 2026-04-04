@@ -155,7 +155,7 @@ class HomePage {
     renderPublicPredictors(items) {
         const tbody = document.getElementById('publicPredictorBody');
         if (!items.length) {
-            tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">暂无公开方案数据</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" class="empty-cell">暂无公开方案数据</td></tr>';
             return;
         }
 
@@ -166,6 +166,7 @@ class HomePage {
                     <strong>${this.escapeHtml(item.predictor_name)}</strong><br>
                     <span class="hint-text">${this.escapeHtml(item.username)} · ${this.escapeHtml(item.model_name)}</span>
                 </td>
+                <td>${this.escapeHtml(item.primary_metric_label || '--')}</td>
                 <td>${this.escapeHtml(item.metric_label || '--')}</td>
                 <td>${this.formatRatioRate(item.recent_20)}</td>
                 <td>${this.formatRatioRate(item.recent_100)}</td>
