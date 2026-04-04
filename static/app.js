@@ -526,12 +526,12 @@ class PredictionApp {
             <tr>
                 <td>${this.escapeHtml(prediction.issue_no)}</td>
                 <td><span class="status-chip ${prediction.status}">${this.predictionStatusLabel(prediction.status)}</span></td>
-                <td>${prediction.prediction_number !== null && prediction.prediction_number !== undefined ? String(prediction.prediction_number).padStart(2, '0') : '--'}</td>
-                <td>${prediction.prediction_big_small || '--'}</td>
-                <td>${prediction.prediction_odd_even || '--'}</td>
-                <td>${prediction.prediction_combo || '--'}</td>
+                <td>${this.renderPredictionResult(prediction)}</td>
+                <td>${this.renderActualResult(prediction)}</td>
+                <td>${this.renderHitSummary(prediction)}</td>
                 <td>${this.formatPercent(prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null)}</td>
                 <td>${this.formatPercent(prediction.score_percentage)}</td>
+                <td>${this.escapeHtml(prediction.settled_at || '--')}</td>
             </tr>
         `).join('');
     }
@@ -1262,6 +1262,75 @@ class PredictionApp {
             failed: '执行失败'
         };
         return mapping[status] || status;
+    }
+
+    renderPredictionResult(prediction) {
+        const number = prediction.prediction_number !== null && prediction.prediction_number !== undefined
+            ? String(prediction.prediction_number).padStart(2, '0')
+            : '--';
+        return `
+            <div class="result-stack">
+                <strong>${this.escapeHtml(number)}</strong>
+                <span class="result-meta-text">${this.escapeHtml(prediction.prediction_big_small || '--')} / ${this.escapeHtml(prediction.prediction_odd_even || '--')} / ${this.escapeHtml(prediction.prediction_combo || '--')}</span>
+            </div>
+        `;
+    }
+
+    renderActualResult(prediction) {
+        if (prediction.status === 'pending') {
+            return '<span class="hint-text">等待开奖</span>';
+        }
+        if (prediction.status === 'expired') {
+            return '<span class="hint-text">超出可追溯窗口</span>';
+        }
+        if (prediction.actual_number === null || prediction.actual_number === undefined) {
+            return '<span class="hint-text">无</span>';
+        }
+
+        const number = String(prediction.actual_number).padStart(2, '0');
+        return `
+            <div class="result-stack">
+                <strong>${this.escapeHtml(number)}</strong>
+                <span class="result-meta-text">${this.escapeHtml(prediction.actual_big_small || '--')} / ${this.escapeHtml(prediction.actual_odd_even || '--')} / ${this.escapeHtml(prediction.actual_combo || '--')}</span>
+            </div>
+        `;
+    }
+
+    renderHitSummary(prediction) {
+        if (prediction.status === 'pending') {
+            return '<span class="hint-text">未结算</span>';
+        }
+        if (prediction.status === 'expired') {
+            return '<span class="hint-text">未补结算</span>';
+        }
+        if (prediction.status === 'failed') {
+            return '<span class="hint-text">无结果</span>';
+        }
+
+        const items = [
+            { label: '号', value: prediction.hit_number },
+            { label: '大', value: prediction.hit_big_small },
+            { label: '单', value: prediction.hit_odd_even },
+            { label: '组', value: prediction.hit_combo }
+        ];
+
+        return `
+            <div class="hit-list">
+                ${items.map((item) => `<span class="hit-pill ${this.hitClass(item.value)}">${item.label}${this.hitMark(item.value)}</span>`).join('')}
+            </div>
+        `;
+    }
+
+    hitClass(value) {
+        if (value === 1) return 'hit';
+        if (value === 0) return 'miss';
+        return 'unknown';
+    }
+
+    hitMark(value) {
+        if (value === 1) return '✓';
+        if (value === 0) return '✗';
+        return '-';
     }
 
     renderBadge(text) {

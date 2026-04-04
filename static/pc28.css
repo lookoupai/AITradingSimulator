@@ -532,6 +532,50 @@ a {
     padding: 14px 12px;
     border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent 20%);
     font-size: 14px;
+    vertical-align: top;
+}
+
+.result-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.result-meta-text {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.hit-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.hit-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 42px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    border: 1px solid var(--border);
+    background: var(--panel-soft);
+}
+
+.hit-pill.hit {
+    color: var(--success);
+    border-color: rgba(16, 185, 129, 0.3);
+    background: rgba(16, 185, 129, 0.12);
+}
+
+.hit-pill.miss {
+    color: var(--danger);
+    border-color: rgba(220, 38, 38, 0.3);
+    background: rgba(220, 38, 38, 0.1);
 }
 
 .empty-cell,
