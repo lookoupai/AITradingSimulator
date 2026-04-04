@@ -8,6 +8,8 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+from utils.pc28 import derive_double_group, derive_kill_group, normalize_primary_metric
+
 
 class Database:
     def __init__(self, db_path: str = 'pc28_predictor.db'):
@@ -45,6 +47,7 @@ class Database:
                 api_url TEXT NOT NULL,
                 model_name TEXT NOT NULL,
                 api_mode TEXT NOT NULL DEFAULT 'auto',
+                primary_metric TEXT NOT NULL DEFAULT 'combo',
                 prediction_method TEXT DEFAULT '',
                 system_prompt TEXT DEFAULT '',
                 data_injection_mode TEXT NOT NULL DEFAULT 'summary',
@@ -139,6 +142,10 @@ class Database:
             cursor.execute("ALTER TABLE predictors ADD COLUMN api_mode TEXT NOT NULL DEFAULT 'auto'")
         except Exception:
             pass
+        try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN primary_metric TEXT NOT NULL DEFAULT 'combo'")
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
@@ -153,6 +160,7 @@ class Database:
         api_url: str,
         model_name: str,
         api_mode: str,
+        primary_metric: str,
         prediction_method: str,
         system_prompt: str,
         data_injection_mode: str,
@@ -167,11 +175,11 @@ class Database:
         cursor.execute(
             '''
             INSERT INTO predictors (
-                user_id, name, lottery_type, api_key, api_url, model_name, api_mode,
+                user_id, name, lottery_type, api_key, api_url, model_name, api_mode, primary_metric,
                 prediction_method, system_prompt, data_injection_mode,
                 prediction_targets, history_window, temperature, enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 user_id,
@@ -181,6 +189,7 @@ class Database:
                 api_url,
                 model_name,
                 api_mode,
+                primary_metric,
                 prediction_method,
                 system_prompt,
                 data_injection_mode,
@@ -460,18 +469,28 @@ class Database:
         conn.close()
         return self._prepare_prediction(row) if row else None
 
-    def get_recent_predictions(self, predictor_id: int, limit: int = 20) -> list[dict]:
+    def get_recent_predictions(self, predictor_id: int, limit: Optional[int] = 20) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            '''
-            SELECT * FROM predictions
-            WHERE predictor_id = ?
-            ORDER BY CAST(issue_no AS INTEGER) DESC
-            LIMIT ?
-            ''',
-            (predictor_id, limit)
-        )
+        if limit is None:
+            cursor.execute(
+                '''
+                SELECT * FROM predictions
+                WHERE predictor_id = ?
+                ORDER BY CAST(issue_no AS INTEGER) DESC
+                ''',
+                (predictor_id,)
+            )
+        else:
+            cursor.execute(
+                '''
+                SELECT * FROM predictions
+                WHERE predictor_id = ?
+                ORDER BY CAST(issue_no AS INTEGER) DESC
+                LIMIT ?
+                ''',
+                (predictor_id, limit)
+            )
         rows = cursor.fetchall()
         conn.close()
         return [self._prepare_prediction(row) for row in rows]
@@ -494,32 +513,48 @@ class Database:
         return [self._prepare_prediction(row) for row in rows]
 
     def get_predictor_stats(self, predictor_id: int) -> dict:
-        rows = self.get_recent_predictions(predictor_id, limit=500)
+        predictor = self.get_predictor(predictor_id, include_secret=True) or {}
+        rows = self.get_recent_predictions(predictor_id, limit=None)
         settled_rows = [row for row in rows if row['status'] == 'settled']
-        recent_rows = settled_rows[:20]
-
-        def _rate(items: list[dict], key: str) -> Optional[float]:
-            attempted = [item for item in items if item[key] is not None]
-            if not attempted:
-                return None
-            return round(sum(item[key] for item in attempted) / len(attempted) * 100, 2)
-
         latest_settled = settled_rows[0] if settled_rows else None
+
+        metric_keys = ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group']
+        windows = {
+            'recent_20': settled_rows[:20],
+            'recent_100': settled_rows[:100],
+            'overall': settled_rows
+        }
+
+        metrics = {}
+        for metric_key in metric_keys:
+            metrics[metric_key] = {
+                'label': self._metric_label(metric_key),
+                'recent_20': self._build_metric_stats(windows['recent_20'], metric_key),
+                'recent_100': self._build_metric_stats(windows['recent_100'], metric_key),
+                'overall': self._build_metric_stats(windows['overall'], metric_key)
+            }
+
+        primary_metric = normalize_primary_metric(predictor.get('primary_metric'))
+        streaks = self._build_streak_stats(settled_rows, primary_metric)
 
         return {
             'total_predictions': len(rows),
             'settled_predictions': len(settled_rows),
             'pending_predictions': len([row for row in rows if row['status'] == 'pending']),
             'failed_predictions': len([row for row in rows if row['status'] == 'failed']),
-            'number_hit_rate': _rate(settled_rows, 'hit_number'),
-            'big_small_hit_rate': _rate(settled_rows, 'hit_big_small'),
-            'odd_even_hit_rate': _rate(settled_rows, 'hit_odd_even'),
-            'combo_hit_rate': _rate(settled_rows, 'hit_combo'),
-            'recent_number_hit_rate': _rate(recent_rows, 'hit_number'),
-            'recent_big_small_hit_rate': _rate(recent_rows, 'hit_big_small'),
-            'recent_odd_even_hit_rate': _rate(recent_rows, 'hit_odd_even'),
-            'recent_combo_hit_rate': _rate(recent_rows, 'hit_combo'),
-            'latest_settled_issue': latest_settled['issue_no'] if latest_settled else None
+            'latest_settled_issue': latest_settled['issue_no'] if latest_settled else None,
+            'primary_metric': primary_metric,
+            'primary_metric_label': self._metric_label(primary_metric),
+            'metrics': metrics,
+            'streaks': streaks,
+            'number_hit_rate': metrics['number']['overall']['hit_rate'],
+            'big_small_hit_rate': metrics['big_small']['overall']['hit_rate'],
+            'odd_even_hit_rate': metrics['odd_even']['overall']['hit_rate'],
+            'combo_hit_rate': metrics['combo']['overall']['hit_rate'],
+            'recent_number_hit_rate': metrics['number']['recent_20']['hit_rate'],
+            'recent_big_small_hit_rate': metrics['big_small']['recent_20']['hit_rate'],
+            'recent_odd_even_hit_rate': metrics['odd_even']['recent_20']['hit_rate'],
+            'recent_combo_hit_rate': metrics['combo']['recent_20']['hit_rate']
         }
 
     # ============ Scheduler Lease ============
@@ -636,6 +671,7 @@ class Database:
         data['prediction_targets'] = self._decode_json_list(data.get('prediction_targets'))
         data['enabled'] = bool(data.get('enabled'))
         data['api_mode'] = data.get('api_mode') or 'auto'
+        data['primary_metric'] = normalize_primary_metric(data.get('primary_metric'))
         data['data_injection_mode'] = data.get('data_injection_mode') or 'summary'
         if not include_secret:
             data.pop('api_key', None)
@@ -659,6 +695,94 @@ class Database:
             return parsed if isinstance(parsed, list) else []
         except (TypeError, json.JSONDecodeError):
             return []
+
+    def _metric_label(self, metric_key: str) -> str:
+        labels = {
+            'number': '号码',
+            'big_small': '大小',
+            'odd_even': '单双',
+            'combo': '组合',
+            'double_group': '双组',
+            'kill_group': '杀组'
+        }
+        return labels.get(metric_key, metric_key)
+
+    def _extract_metric_hit(self, row: dict, metric_key: str) -> Optional[int]:
+        if metric_key == 'number':
+            return row.get('hit_number')
+        if metric_key == 'big_small':
+            return row.get('hit_big_small')
+        if metric_key == 'odd_even':
+            return row.get('hit_odd_even')
+        if metric_key == 'combo':
+            return row.get('hit_combo')
+        if metric_key == 'double_group':
+            predicted_group = derive_double_group(row.get('prediction_combo'))
+            actual_group = derive_double_group(row.get('actual_combo'))
+            if predicted_group is None or actual_group is None:
+                return None
+            return 1 if predicted_group == actual_group else 0
+        if metric_key == 'kill_group':
+            kill_group = derive_kill_group(row.get('prediction_combo'))
+            actual_combo = row.get('actual_combo')
+            if kill_group is None or actual_combo is None:
+                return None
+            return 1 if actual_combo != kill_group else 0
+        return None
+
+    def _build_metric_stats(self, rows: list[dict], metric_key: str) -> dict:
+        outcomes = [self._extract_metric_hit(row, metric_key) for row in rows]
+        attempted = [item for item in outcomes if item is not None]
+        hit_count = sum(attempted) if attempted else 0
+        sample_count = len(attempted)
+        hit_rate = round(hit_count / sample_count * 100, 2) if sample_count else None
+
+        return {
+            'hit_count': hit_count,
+            'sample_count': sample_count,
+            'hit_rate': hit_rate,
+            'ratio_text': f'{hit_count}/{sample_count}' if sample_count else '--'
+        }
+
+    def _build_streak_stats(self, rows: list[dict], metric_key: str) -> dict:
+        outcomes = [self._extract_metric_hit(row, metric_key) for row in rows]
+        attempted = [item for item in outcomes if item is not None]
+        recent_100 = attempted[:100]
+
+        current_hit_streak = 0
+        current_miss_streak = 0
+        for outcome in attempted:
+            if outcome == 1:
+                if current_miss_streak == 0:
+                    current_hit_streak += 1
+                else:
+                    break
+            else:
+                if current_hit_streak == 0:
+                    current_miss_streak += 1
+                else:
+                    break
+
+        return {
+            'current_hit_streak': current_hit_streak,
+            'current_miss_streak': current_miss_streak,
+            'recent_100_max_hit_streak': self._max_streak(recent_100, 1),
+            'recent_100_max_miss_streak': self._max_streak(recent_100, 0),
+            'historical_max_hit_streak': self._max_streak(attempted, 1),
+            'historical_max_miss_streak': self._max_streak(attempted, 0)
+        }
+
+    def _max_streak(self, outcomes: list[int], expected: int) -> int:
+        best = 0
+        current = 0
+        for outcome in outcomes:
+            if outcome == expected:
+                current += 1
+                if current > best:
+                    best = current
+            else:
+                current = 0
+        return best
 
     def _parse_timestamp(self, value: Any) -> Optional[datetime]:
         if not value:

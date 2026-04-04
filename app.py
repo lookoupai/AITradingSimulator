@@ -22,7 +22,7 @@ from utils.auth import (
     set_current_user,
     verify_password
 )
-from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_target_list
+from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_primary_metric, normalize_target_list
 from utils.timezone import get_current_beijing_time_str, utc_to_beijing
 
 
@@ -111,6 +111,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'api_url': predictor['api_url'],
         'model_name': predictor['model_name'],
         'api_mode': predictor.get('api_mode') or 'auto',
+        'primary_metric': predictor.get('primary_metric') or 'combo',
         'prediction_method': predictor.get('prediction_method') or '',
         'system_prompt': predictor.get('system_prompt') or '',
         'data_injection_mode': predictor.get('data_injection_mode') or 'summary',
@@ -183,6 +184,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     fallback_api_url = existing_predictor.get('api_url') if existing_predictor else ''
     fallback_model_name = existing_predictor.get('model_name') if existing_predictor else ''
     fallback_api_mode = existing_predictor.get('api_mode') if existing_predictor else 'auto'
+    fallback_primary_metric = existing_predictor.get('primary_metric') if existing_predictor else 'combo'
     fallback_method = existing_predictor.get('prediction_method') if existing_predictor else ''
     fallback_prompt = existing_predictor.get('system_prompt') if existing_predictor else ''
     fallback_injection_mode = existing_predictor.get('data_injection_mode') if existing_predictor else 'summary'
@@ -192,6 +194,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     api_url = str(data.get('api_url') or fallback_api_url).strip()
     model_name = str(data.get('model_name') or fallback_model_name).strip()
     api_mode = normalize_api_mode(data.get('api_mode') or fallback_api_mode)
+    primary_metric = normalize_primary_metric(data.get('primary_metric') or fallback_primary_metric)
     prediction_method = str(data.get('prediction_method') or fallback_method).strip()
     system_prompt = str(data.get('system_prompt') or fallback_prompt).strip()
     data_injection_mode = normalize_injection_mode(data.get('data_injection_mode') or fallback_injection_mode)
@@ -217,6 +220,11 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     if not model_name:
         errors.append('模型名称不能为空')
 
+    if primary_metric in {'number', 'big_small', 'odd_even', 'combo'} and primary_metric not in prediction_targets:
+        errors.append('主玩法必须包含在预测目标中')
+    if primary_metric in {'double_group', 'kill_group'} and 'combo' not in prediction_targets:
+        errors.append('双组/杀组统计依赖组合预测，请勾选组合目标')
+
     try:
         history_window = int(history_window)
     except (TypeError, ValueError):
@@ -235,6 +243,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
         'api_url': api_url,
         'model_name': model_name,
         'api_mode': api_mode,
+        'primary_metric': primary_metric,
         'prediction_method': prediction_method or '自定义策略',
         'system_prompt': system_prompt,
         'data_injection_mode': data_injection_mode,
@@ -543,6 +552,7 @@ def create_predictor():
         api_url=payload['api_url'],
         model_name=payload['model_name'],
         api_mode=payload['api_mode'],
+        primary_metric=payload['primary_metric'],
         prediction_method=payload['prediction_method'],
         system_prompt=payload['system_prompt'],
         data_injection_mode=payload['data_injection_mode'],
@@ -634,6 +644,7 @@ def update_predictor(predictor_id: int):
         'api_url': payload['api_url'],
         'model_name': payload['model_name'],
         'api_mode': payload['api_mode'],
+        'primary_metric': payload['primary_metric'],
         'prediction_method': payload['prediction_method'],
         'system_prompt': payload['system_prompt'],
         'data_injection_mode': payload['data_injection_mode'],

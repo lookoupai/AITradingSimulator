@@ -10,12 +10,27 @@ from typing import Iterable, Optional
 ALLOWED_TARGETS = ('number', 'big_small', 'odd_even', 'combo')
 ALLOWED_INJECTION_MODES = ('summary', 'raw')
 ALLOWED_API_MODES = ('auto', 'chat_completions', 'responses')
+ALLOWED_PRIMARY_METRICS = ('combo', 'number', 'big_small', 'odd_even', 'double_group', 'kill_group')
 
 TARGET_LABELS = {
     'number': '号码',
     'big_small': '大小',
     'odd_even': '单双',
-    'combo': '组合'
+    'combo': '组合',
+    'double_group': '双组',
+    'kill_group': '杀组'
+}
+
+DOUBLE_GROUP_LABELS = {
+    '单组': {'大单', '小双'},
+    '双组': {'大双', '小单'}
+}
+
+OPPOSITE_COMBO_MAP = {
+    '大单': '小双',
+    '小双': '大单',
+    '大双': '小单',
+    '小单': '大双'
 }
 
 
@@ -47,6 +62,14 @@ def normalize_api_mode(value: Optional[str]) -> str:
     if text in ALLOWED_API_MODES:
         return text
     return 'auto'
+
+
+def normalize_primary_metric(value: Optional[str]) -> str:
+    """规范化主玩法"""
+    text = str(value or '').strip().lower()
+    if text in ALLOWED_PRIMARY_METRICS:
+        return text
+    return 'combo'
 
 
 def parse_pc28_number(value) -> Optional[int]:
@@ -167,6 +190,23 @@ def build_combo(big_small: Optional[str], odd_even: Optional[str]) -> Optional[s
     if big_small not in {'大', '小'} or odd_even not in {'单', '双'}:
         return None
     return f'{big_small}{odd_even}'
+
+
+def derive_double_group(combo: Optional[str]) -> Optional[str]:
+    """由组合派生双组/单组"""
+    if not combo:
+        return None
+    for label, combos in DOUBLE_GROUP_LABELS.items():
+        if combo in combos:
+            return label
+    return None
+
+
+def derive_kill_group(combo: Optional[str]) -> Optional[str]:
+    """由组合派生杀组，当前口径为杀对角组合"""
+    if not combo:
+        return None
+    return OPPOSITE_COMBO_MAP.get(combo)
 
 
 def derive_pc28_attributes(number: int) -> dict:

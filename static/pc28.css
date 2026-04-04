@@ -454,6 +454,39 @@ a {
     font-weight: 800;
 }
 
+.stats-detail-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.compact-table {
+    min-width: 560px;
+}
+
+.compact-table tbody td:first-child {
+    font-weight: 700;
+}
+
+.streak-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.streak-card {
+    padding: 16px;
+    border-radius: 18px;
+    border: 1px solid var(--border);
+    background: var(--panel-soft);
+}
+
+.streak-value {
+    font-size: 24px;
+    font-weight: 800;
+}
+
 .prediction-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1003,6 +1036,10 @@ a {
     .insight-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+
+    .stats-detail-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 @media (max-width: 768px) {
@@ -1036,7 +1073,8 @@ a {
     .insight-grid,
     .form-grid,
     .checkbox-grid,
-    .preset-grid {
+    .preset-grid,
+    .streak-grid {
         grid-template-columns: 1fr;
     }
 
