@@ -167,6 +167,25 @@ a {
     font-size: 12px;
 }
 
+.public-metric-hint {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--panel-soft);
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.hint-separator {
+    opacity: 0.6;
+}
+
 .icon-btn {
     width: 38px;
     height: 38px;
