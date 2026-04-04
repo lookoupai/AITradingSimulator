@@ -66,9 +66,9 @@
                         <tr>
                             <th>期号</th>
                             <th>开奖号码</th>
-                            <th>大小</th>
-                            <th>单双</th>
-                            <th>组合</th>
+                            <th>大/小</th>
+                            <th>单/双</th>
+                            <th>组合结果</th>
                             <th>开奖时间</th>
                         </tr>
                     </thead>
@@ -93,7 +93,7 @@
             <article class="feature-card">
                 <div class="feature-icon"><i class="bi bi-bar-chart"></i></div>
                 <h3>命中统计</h3>
-                <p>自动保存预测结果并在开奖后结算，按号码、大小、单双、组合统计命中表现。</p>
+                <p>自动保存预测结果并在开奖后结算，按单点、大/小、单/双、组合投注统计命中表现。</p>
             </article>
         </section>
 
@@ -105,16 +105,16 @@
                 </div>
                 <div class="panel-actions">
                     <select id="publicMetricSelect" class="home-select">
-                        <option value="combo">组合</option>
-                        <option value="number">号码</option>
-                        <option value="big_small">大小</option>
-                        <option value="odd_even">单双</option>
-                        <option value="double_group">双组</option>
-                        <option value="kill_group">杀组</option>
+                        <option value="combo">组合投注</option>
+                        <option value="number">单点</option>
+                        <option value="big_small">大/小</option>
+                        <option value="odd_even">单/双</option>
+                        <option value="double_group">组合分组统计</option>
+                        <option value="kill_group">排除统计</option>
                     </select>
                     <select id="publicSortSelect" class="home-select">
-                        <option value="recent100">按100期胜率</option>
-                        <option value="recent20">按20期胜率</option>
+                        <option value="recent100">按100期命中率</option>
+                        <option value="recent20">按20期命中率</option>
                         <option value="current_streak">按当前连中</option>
                         <option value="historical_streak">按历史最大连中</option>
                     </select>

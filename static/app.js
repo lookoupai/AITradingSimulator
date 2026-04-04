@@ -79,8 +79,11 @@ class PredictionApp {
         this.currentPredictions = [];
         this.currentStats = null;
         this.selectedStatsMetric = null;
+        this.selectedProfitMetric = null;
+        this.selectedProfitOddsProfile = 'regular';
         this.overview = null;
         this.chart = null;
+        this.profitChart = null;
         this.refreshTimer = null;
         this.darkMode = localStorage.getItem('pc28Theme') === 'dark';
         this.presetExpanded = false;
@@ -126,6 +129,14 @@ class PredictionApp {
         document.getElementById('predictionOutcomeFilter').addEventListener('change', (event) => {
             this.predictionOutcomeFilter = event.target.value;
             this.renderPredictionsTable(this.currentPredictions || []);
+        });
+        document.getElementById('profitMetricView').addEventListener('change', (event) => {
+            this.selectedProfitMetric = event.target.value;
+            this.loadProfitSimulation();
+        });
+        document.getElementById('profitOddsProfileView').addEventListener('change', (event) => {
+            this.selectedProfitOddsProfile = event.target.value;
+            this.loadProfitSimulation();
         });
         document.getElementById('publicSharePanel').addEventListener('click', (event) => {
             const button = event.target.closest('[data-action="copy-public-url"]');
@@ -364,6 +375,8 @@ class PredictionApp {
             this.renderStats(this.currentStats);
             this.renderCurrentPrediction(data.current_prediction, data.latest_prediction, data.predictor);
             this.renderPublicSharePanel(data.predictor);
+            this.renderProfitControls(data.predictor, previousPredictorId !== predictorId);
+            await this.loadProfitSimulation();
             this.renderPredictionsTable(this.currentPredictions);
             this.renderDrawsTable(data.overview?.recent_draws || data.recent_draws || []);
             this.renderAILogs(this.currentPredictions);
@@ -583,7 +596,7 @@ class PredictionApp {
                     </div>
                     <span class="tag">仅展示模型命中口径</span>
                 </div>
-                <p>四分类组合由大小和单双拼装而成；二选一组与排除对角组为统计派生口径，不代表模型额外输出了新的独立下注项。</p>
+                <p>组合结果由大/小和单/双拼装而成；组合投注与排除对角组为统计派生口径，不代表模型额外输出了新的独立下注项。</p>
                 <p class="metric-hint-foot">当前页面不会直接折算赔率、回本或真实盘口收益。</p>
             </div>
             <div class="prediction-section">
@@ -596,9 +609,9 @@ class PredictionApp {
                 <div class="prediction-grid prediction-grid-compact">
                     ${this.renderCurrentPredictionCard('预测期号', prediction.issue_no || '--')}
                     ${this.renderCurrentPredictionCard('预测号码', predictionSnapshot.numberText || '--')}
-                    ${this.renderCurrentPredictionCard('大小', predictionSnapshot.bigSmall || '--')}
-                    ${this.renderCurrentPredictionCard('单双', predictionSnapshot.oddEven || '--')}
-                    ${this.renderCurrentPredictionCard('四分类组合', predictionSnapshot.combo || '--', predictionSnapshot.combo ? '由大小 + 单双自动拼装' : '当前无可用组合标签')}
+                    ${this.renderCurrentPredictionCard('大/小', predictionSnapshot.bigSmall || '--')}
+                    ${this.renderCurrentPredictionCard('单/双', predictionSnapshot.oddEven || '--')}
+                    ${this.renderCurrentPredictionCard('组合结果', predictionSnapshot.combo || '--', predictionSnapshot.combo ? '组合结果固定为小双 / 小单 / 大双 / 大单' : '当前无可用组合标签')}
                     ${this.renderCurrentPredictionCard('置信度', confidenceText)}
                 </div>
             </div>
@@ -606,13 +619,13 @@ class PredictionApp {
                 <div class="prediction-section-head">
                     <div>
                         <span class="mini-label">派生玩法映射</span>
-                        <p class="section-hint">把四分类组合翻译成更容易对照盘口的统计口径。</p>
+                        <p class="section-hint">把组合结果翻译成真实可下注的组合投注分组。</p>
                     </div>
                 </div>
                 <div class="prediction-grid prediction-grid-compact">
-                    ${this.renderCurrentPredictionCard('二选一组', predictionSnapshot.doubleGroup || '--', predictionSnapshot.doubleGroup ? '双组 = 大双/小单，单组 = 大单/小双' : '依赖四分类组合')}
-                    ${this.renderCurrentPredictionCard('对应二选一票', predictionSnapshot.pairTicket || '--', predictionSnapshot.pairTicket ? '仅用于展示映射，不是单独存储字段' : '依赖四分类组合')}
-                    ${this.renderCurrentPredictionCard('排除对角组', predictionSnapshot.killGroup ? `杀${predictionSnapshot.killGroup}` : '--', predictionSnapshot.killGroup ? '实际未开出该组合即计为命中' : '依赖四分类组合')}
+                    ${this.renderCurrentPredictionCard('组合分组', predictionSnapshot.doubleGroup || '--', predictionSnapshot.doubleGroup ? '用于辅助解释组合投注的分组口径' : '依赖组合结果')}
+                    ${this.renderCurrentPredictionCard('组合投注', predictionSnapshot.pairTicket || '--', predictionSnapshot.pairTicket ? '真实下注按这个组合票面结算' : '依赖组合结果')}
+                    ${this.renderCurrentPredictionCard('排除对角组', predictionSnapshot.killGroup ? `杀${predictionSnapshot.killGroup}` : '--', predictionSnapshot.killGroup ? '实际未开出该组合即计为命中' : '依赖组合结果')}
                     ${this.renderCurrentPredictionCard('更新时间', prediction.updated_at || prediction.created_at || '--')}
                 </div>
             </div>
@@ -675,6 +688,216 @@ class PredictionApp {
                 ${openButton}
             </div>
         `;
+    }
+
+    renderProfitControls(predictor, resetMetric = false) {
+        const metricSelect = document.getElementById('profitMetricView');
+        const oddsSelect = document.getElementById('profitOddsProfileView');
+        const metrics = predictor?.simulation_metrics || [];
+
+        if (!metrics.length) {
+            metricSelect.innerHTML = '<option value="">暂无玩法</option>';
+            metricSelect.disabled = true;
+            oddsSelect.disabled = true;
+            return;
+        }
+
+        if (
+            resetMetric ||
+            !this.selectedProfitMetric ||
+            !metrics.some((item) => item.key === this.selectedProfitMetric)
+        ) {
+            this.selectedProfitMetric = predictor.default_simulation_metric || metrics[0].key;
+        }
+
+        metricSelect.innerHTML = metrics.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        metricSelect.value = this.selectedProfitMetric;
+        metricSelect.disabled = false;
+        oddsSelect.disabled = false;
+        oddsSelect.value = this.selectedProfitOddsProfile;
+    }
+
+    async loadProfitSimulation() {
+        const predictor = this.currentPredictor;
+        if (!predictor || !this.currentPredictorId) {
+            this.renderProfitSimulationEmpty('请选择预测方案');
+            return;
+        }
+
+        const metrics = predictor.simulation_metrics || [];
+        if (!metrics.length) {
+            this.renderProfitSimulationEmpty('当前方案没有可用于收益模拟的玩法');
+            return;
+        }
+
+        if (!this.selectedProfitMetric || !metrics.some((item) => item.key === this.selectedProfitMetric)) {
+            this.selectedProfitMetric = predictor.default_simulation_metric || metrics[0].key;
+            document.getElementById('profitMetricView').value = this.selectedProfitMetric;
+        }
+
+        try {
+            const response = await fetch(
+                `/api/predictors/${this.currentPredictorId}/simulation?metric=${encodeURIComponent(this.selectedProfitMetric)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}`,
+                { credentials: 'include' }
+            );
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '加载收益模拟失败');
+            }
+
+            this.renderProfitSimulation(data.simulation, predictor);
+        } catch (error) {
+            console.error('Failed to load profit simulation:', error);
+            this.renderProfitSimulationEmpty(error.message);
+        }
+    }
+
+    renderProfitSimulation(simulation, predictor) {
+        this.renderProfitSimulationHint(simulation, predictor);
+        this.renderProfitSummary(simulation);
+        this.renderProfitChart(simulation.records || []);
+        this.renderProfitTable(simulation.records || []);
+    }
+
+    renderProfitSimulationHint(simulation, predictor) {
+        const container = document.getElementById('profitSimulationHint');
+        const period = simulation.period || {};
+        const summary = simulation.summary || {};
+        const primaryMetric = predictor?.primary_metric || '';
+        const fallbackText = primaryMetric && primaryMetric !== simulation.metric
+            ? `当前方案主玩法为 ${this.escapeHtml(this.targetLabel(primaryMetric))}，收益模拟已回退为 ${this.escapeHtml(simulation.metric_label || '--')}。`
+            : '当前默认按方案主玩法计算；切换其他玩法时才会额外发起计算。';
+
+        container.className = 'metric-hint';
+        container.innerHTML = `
+            <div class="metric-hint-head">
+                <div>
+                    <strong>${this.escapeHtml(simulation.metric_label || '--')} · ${this.escapeHtml(simulation.odds_profile_label || '--')}</strong>
+                    <span class="metric-hint-alias">盘日区间：${this.escapeHtml(period.start_time || '--')} 至 ${this.escapeHtml(period.end_time || '--')} 前</span>
+                </div>
+                <span class="tag">每期固定下注 ${this.formatUsd(simulation.stake_amount || 0)}</span>
+            </div>
+            <p>${fallbackText}</p>
+            <p class="metric-hint-foot">今日共计下注 ${summary.bet_count || 0} 期，命中 ${summary.hit_count || 0} 期，回本 ${summary.refund_count || 0} 期，未中 ${summary.miss_count || 0} 期。</p>
+        `;
+    }
+
+    renderProfitSummary(simulation) {
+        const container = document.getElementById('profitSummaryGrid');
+        const summary = simulation.summary || {};
+        const cards = [
+            ['当前玩法', simulation.metric_label || '--'],
+            ['赔率盘', simulation.odds_profile_label || '--'],
+            ['总下注', this.formatUsd(summary.total_stake || 0)],
+            ['净收益', this.formatSignedUsd(summary.net_profit || 0)],
+            ['ROI', this.formatPercent(summary.roi_percentage || 0)],
+            ['单注平均收益', this.formatSignedUsd(summary.average_profit || 0)],
+            ['命中 / 回本 / 未中', `${summary.hit_count || 0} / ${summary.refund_count || 0} / ${summary.miss_count || 0}`]
+        ];
+
+        container.innerHTML = cards.map(([label, value]) => `
+            <article class="stat-card">
+                <span class="stat-label">${this.escapeHtml(label)}</span>
+                <strong class="stat-value ${this.profitValueClass(label === 'ROI' ? summary.roi_percentage || 0 : summary.net_profit || 0, label)}">${this.escapeHtml(String(value))}</strong>
+            </article>
+        `).join('');
+    }
+
+    renderProfitChart(records) {
+        const chartDom = document.getElementById('profitSimulationChart');
+        if (!this.profitChart) {
+            this.profitChart = echarts.init(chartDom, this.darkMode ? 'dark' : null);
+        }
+
+        if (!records.length) {
+            this.profitChart.clear();
+            this.profitChart.setOption({
+                title: {
+                    text: '当前盘日暂无收益数据',
+                    left: 'center',
+                    top: 'middle',
+                    textStyle: { color: this.darkMode ? '#94a3b8' : '#64748b', fontSize: 14 }
+                }
+            });
+            return;
+        }
+
+        this.profitChart.setOption({
+            animation: false,
+            tooltip: { trigger: 'axis' },
+            grid: { top: 36, left: 36, right: 24, bottom: 36, containLabel: true },
+            xAxis: {
+                type: 'category',
+                data: records.map((item) => item.issue_no),
+                axisLabel: { color: this.darkMode ? '#94a3b8' : '#64748b' },
+                axisLine: { lineStyle: { color: this.darkMode ? '#334155' : '#cbd5e1' } }
+            },
+            yAxis: {
+                type: 'value',
+                axisLabel: {
+                    formatter: (value) => `${value}U`,
+                    color: this.darkMode ? '#94a3b8' : '#64748b'
+                },
+                splitLine: { lineStyle: { color: this.darkMode ? '#1e293b' : '#e2e8f0' } }
+            },
+            series: [
+                {
+                    name: '累计盈亏',
+                    type: 'line',
+                    smooth: true,
+                    data: records.map((item) => item.cumulative_profit),
+                    lineStyle: { width: 3, color: '#f59e0b' },
+                    itemStyle: { color: '#f59e0b' }
+                }
+            ]
+        });
+    }
+
+    renderProfitTable(records) {
+        const tbody = document.getElementById('profitSimulationBody');
+        if (!records.length) {
+            tbody.innerHTML = '<tr><td colspan="9" class="empty-cell">当前盘日暂无收益模拟记录</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = records.map((item) => `
+            <tr>
+                <td>${this.escapeHtml(item.issue_no || '--')}</td>
+                <td>${this.escapeHtml(item.open_time || '--')}</td>
+                <td>${this.escapeHtml(item.ticket_label || '--')}</td>
+                <td>${this.escapeHtml(item.predicted_value || '--')}</td>
+                <td>${this.escapeHtml(item.actual_value || '--')}</td>
+                <td>${this.formatOdds(item.odds)}</td>
+                <td>${this.renderProfitResult(item)}</td>
+                <td><strong class="${this.profitValueClass(item.net_profit)}">${this.escapeHtml(this.formatSignedUsd(item.net_profit))}</strong></td>
+                <td><strong class="${this.profitValueClass(item.cumulative_profit)}">${this.escapeHtml(this.formatSignedUsd(item.cumulative_profit))}</strong></td>
+            </tr>
+        `).join('');
+    }
+
+    renderProfitResult(item) {
+        const reasonText = item.refund_reason ? `<span class="result-meta-text">${this.escapeHtml(item.refund_reason)}</span>` : '';
+        return `
+            <div class="hit-summary-block">
+                <span class="hit-pill ${this.profitResultClass(item.result_type)}">${this.escapeHtml(item.result_label || '--')}</span>
+                ${reasonText}
+            </div>
+        `;
+    }
+
+    renderProfitSimulationEmpty(message) {
+        document.getElementById('profitSimulationHint').className = 'metric-hint empty-panel';
+        document.getElementById('profitSimulationHint').textContent = message || '暂无收益模拟数据';
+        document.getElementById('profitSummaryGrid').innerHTML = '';
+        document.getElementById('profitSimulationBody').innerHTML = '<tr><td colspan="9" class="empty-cell">暂无收益模拟数据</td></tr>';
+        this.renderProfitChart([]);
     }
 
     renderPredictionsTable(predictions) {
@@ -848,6 +1071,7 @@ class PredictionApp {
     renderEmptyPredictorState() {
         this.currentStats = null;
         this.selectedStatsMetric = null;
+        this.selectedProfitMetric = null;
         this.currentPredictions = [];
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
@@ -858,10 +1082,21 @@ class PredictionApp {
         document.getElementById('statsMetricHint').textContent = '请选择玩法查看统计口径';
         document.getElementById('metricStatsBody').innerHTML = '<tr><td colspan="4" class="empty-cell">暂无统计数据</td></tr>';
         document.getElementById('streakStats').innerHTML = '<div class="empty-panel">暂无连中连挂数据</div>';
+        document.getElementById('profitMetricView').innerHTML = '<option value="">暂无玩法</option>';
+        document.getElementById('profitMetricView').disabled = true;
+        document.getElementById('profitOddsProfileView').value = this.selectedProfitOddsProfile;
+        document.getElementById('profitOddsProfileView').disabled = true;
+        document.getElementById('profitSimulationHint').className = 'metric-hint empty-panel';
+        document.getElementById('profitSimulationHint').textContent = '请选择预测方案';
+        document.getElementById('profitSummaryGrid').innerHTML = '';
+        document.getElementById('profitSimulationBody').innerHTML = '<tr><td colspan="9" class="empty-cell">暂无收益模拟数据</td></tr>';
         document.getElementById('predictionsBody').innerHTML = '<tr><td colspan="8" class="empty-cell">暂无预测记录</td></tr>';
         document.getElementById('aiLogs').innerHTML = '<div class="empty-panel">暂无 AI 输出记录</div>';
         if (this.chart) {
             this.chart.clear();
+        }
+        if (this.profitChart) {
+            this.profitChart.clear();
         }
     }
 
@@ -1467,8 +1702,8 @@ class PredictionApp {
         return `
             <div class="result-stack">
                 <strong>${this.escapeHtml(snapshot.numberText || '--')}</strong>
-                <span class="result-meta-text">大小：${this.escapeHtml(snapshot.bigSmall || '--')} · 单双：${this.escapeHtml(snapshot.oddEven || '--')} · 四分类组合：${this.escapeHtml(snapshot.combo || '--')}</span>
-                <span class="result-meta-text">二选一组：${this.escapeHtml(this.formatDoubleGroupText(snapshot))} · 排除对角组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}` : '--')}</span>
+                <span class="result-meta-text">大/小：${this.escapeHtml(snapshot.bigSmall || '--')} · 单/双：${this.escapeHtml(snapshot.oddEven || '--')} · 组合结果：${this.escapeHtml(snapshot.combo || '--')}</span>
+                <span class="result-meta-text">组合投注：${this.escapeHtml(snapshot.pairTicket || '--')} · 排除对角组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}` : '--')}</span>
             </div>
         `;
     }
@@ -1493,8 +1728,8 @@ class PredictionApp {
         return `
             <div class="result-stack">
                 <strong>${this.escapeHtml(snapshot.numberText || '--')}</strong>
-                <span class="result-meta-text">大小：${this.escapeHtml(snapshot.bigSmall || '--')} · 单双：${this.escapeHtml(snapshot.oddEven || '--')} · 四分类组合：${this.escapeHtml(snapshot.combo || '--')}</span>
-                <span class="result-meta-text">二选一组：${this.escapeHtml(this.formatDoubleGroupText(snapshot))} · 排除对角组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}` : '--')}</span>
+                <span class="result-meta-text">大/小：${this.escapeHtml(snapshot.bigSmall || '--')} · 单/双：${this.escapeHtml(snapshot.oddEven || '--')} · 组合结果：${this.escapeHtml(snapshot.combo || '--')}</span>
+                <span class="result-meta-text">组合投注：${this.escapeHtml(snapshot.pairTicket || '--')} · 排除对角组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}` : '--')}</span>
             </div>
         `;
     }
@@ -1609,11 +1844,11 @@ class PredictionApp {
 
     renderSnapshotDetails(snapshot) {
         const rows = [
-            { label: '号码', value: snapshot.numberText || '--' },
-            { label: '大小', value: snapshot.bigSmall || '--' },
-            { label: '单双', value: snapshot.oddEven || '--' },
-            { label: '四分类组合', value: snapshot.combo || '--' },
-            { label: '二选一组', value: this.formatDoubleGroupText(snapshot) },
+            { label: '单点', value: snapshot.numberText || '--' },
+            { label: '大/小', value: snapshot.bigSmall || '--' },
+            { label: '单/双', value: snapshot.oddEven || '--' },
+            { label: '组合结果', value: snapshot.combo || '--' },
+            { label: '组合投注', value: snapshot.pairTicket || '--' },
             { label: '排除对角组', value: snapshot.killGroup ? `杀${snapshot.killGroup}` : '--' }
         ];
 
@@ -1633,27 +1868,27 @@ class PredictionApp {
         const items = [];
 
         if (prediction.hit_number !== null && prediction.hit_number !== undefined) {
-            items.push({ label: '号码', value: prediction.hit_number });
+            items.push({ label: '单点', value: prediction.hit_number });
         }
         if (prediction.hit_big_small !== null && prediction.hit_big_small !== undefined) {
-            items.push({ label: '大小', value: prediction.hit_big_small });
+            items.push({ label: '大/小', value: prediction.hit_big_small });
         }
         if (prediction.hit_odd_even !== null && prediction.hit_odd_even !== undefined) {
-            items.push({ label: '单双', value: prediction.hit_odd_even });
+            items.push({ label: '单/双', value: prediction.hit_odd_even });
         }
         if (prediction.hit_combo !== null && prediction.hit_combo !== undefined) {
-            items.push({ label: '四分类组合', value: prediction.hit_combo });
+            items.push({ label: '组合结果', value: prediction.hit_combo });
         }
 
         const predictedGroup = this.deriveDoubleGroup(prediction.prediction_combo);
         const actualGroup = this.deriveDoubleGroup(prediction.actual_combo);
         if (predictedGroup && actualGroup) {
-            items.push({ label: '二选一组', value: predictedGroup === actualGroup ? 1 : 0 });
+            items.push({ label: '组合分组', value: predictedGroup === actualGroup ? 1 : 0 });
         }
 
         const killGroup = this.deriveKillGroup(prediction.prediction_combo);
         if (killGroup && prediction.actual_combo) {
-            items.push({ label: '排除对角组', value: prediction.actual_combo !== killGroup ? 1 : 0 });
+            items.push({ label: '排除统计', value: prediction.actual_combo !== killGroup ? 1 : 0 });
         }
 
         return items;
@@ -1662,45 +1897,45 @@ class PredictionApp {
     metricMeta(metricKey) {
         const mapping = {
             number: {
-                label: '号码',
+                label: '单点',
                 alias: '和值号码',
                 shortRule: '精确匹配',
-                description: '按精确和值是否命中统计，命中率最低，但口径最直接。',
-                formula: '预测号码 = 开奖号码'
+                description: '按精确和值投注，直接对应 00-27 的单点玩法。',
+                formula: '预测单点 = 开奖和值'
             },
             big_small: {
-                label: '大小',
+                label: '大/小',
                 alias: null,
                 shortRule: '二分类',
-                description: '把和值分成小(0-13)与大(14-27)，适合保守口径。',
-                formula: '预测大小 = 开奖大小'
+                description: '把和值分成小(00-13)与大(14-27)，按单独的大/小玩法结算。',
+                formula: '预测大/小 = 开奖大/小'
             },
             odd_even: {
-                label: '单双',
+                label: '单/双',
                 alias: null,
                 shortRule: '二分类',
-                description: '按和值奇偶统计，适合和大小并行观察。',
-                formula: '预测单双 = 开奖单双'
+                description: '按和值奇偶结算，单独对应单/双玩法。',
+                formula: '预测单/双 = 开奖单/双'
             },
             combo: {
-                label: '四分类组合',
-                alias: '旧显示名：组合',
-                shortRule: '四分类',
-                description: '由大小和单双拼成大单 / 大双 / 小单 / 小双，不是盘口里的二选一组合玩法。',
-                formula: '预测四分类组合 = 开奖四分类组合'
+                label: '组合投注',
+                alias: '组合结果为：小双 / 小单 / 大双 / 大单',
+                shortRule: '二组选一',
+                description: '模型先给出组合结果，再映射到真实可下注的组合投注：小单/大双 或 大单/小双。',
+                formula: '预测组合结果映射到对应组合投注票面'
             },
             double_group: {
-                label: '二选一组',
-                alias: '旧显示名：双组',
+                label: '组合分组统计',
+                alias: '辅助统计口径',
                 shortRule: '组别匹配',
-                description: '把四分类组合合并成两组：大双 / 小单 为“双组”，大单 / 小双 为“单组”。',
+                description: '把组合结果合并成两组：大双 / 小单 为“双组”，大单 / 小双 为“单组”。',
                 formula: '预测组别 = 开奖组别'
             },
             kill_group: {
-                label: '排除对角组',
+                label: '排除统计',
                 alias: '旧显示名：杀组',
                 shortRule: '排除统计',
-                description: '按预测四分类组合的对角组合做排除，只要实际没开出被杀组合，就算命中。',
+                description: '按预测组合结果的对角组合做排除，只要实际没开出被杀组合，就算命中。',
                 formula: '开奖结果 ≠ 被杀组合'
             }
         };
@@ -1843,6 +2078,41 @@ class PredictionApp {
             return '--';
         }
         return `${stat.hit_count}/${stat.sample_count} (${this.formatPercent(stat.hit_rate)})`;
+    }
+
+    formatUsd(value) {
+        const amount = Number(value || 0);
+        return `${amount.toFixed(2)} USDT`;
+    }
+
+    formatSignedUsd(value) {
+        const amount = Number(value || 0);
+        const prefix = amount > 0 ? '+' : '';
+        return `${prefix}${amount.toFixed(2)} USDT`;
+    }
+
+    formatOdds(value) {
+        if (value === null || value === undefined || value === '') {
+            return '--';
+        }
+        return `${Number(value).toFixed(2)} 倍`;
+    }
+
+    profitResultClass(resultType) {
+        if (resultType === 'hit') return 'hit';
+        if (resultType === 'refund') return 'refund';
+        if (resultType === 'miss') return 'miss';
+        return 'unknown';
+    }
+
+    profitValueClass(value, label = '') {
+        const amount = Number(value || 0);
+        if (label === '当前玩法' || label === '赔率盘' || label === '总下注' || label === '命中 / 回本 / 未中') {
+            return '';
+        }
+        if (amount > 0) return 'profit-positive';
+        if (amount < 0) return 'profit-negative';
+        return 'profit-neutral';
     }
 
     escapeHtml(text) {

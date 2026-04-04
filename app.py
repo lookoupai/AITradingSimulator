@@ -13,6 +13,7 @@ import config
 from ai_trader import AIPredictor
 from database import Database
 from services.pc28_service import PC28Service
+from services.profit_simulator import DEFAULT_ODDS_PROFILE, ODDS_PROFILE_LABELS, ProfitSimulator
 from services.prediction_engine import PredictionEngine
 from utils.prompt_assistant import analyze_prompt, build_optimizer_prompt
 from utils.auth import (
@@ -36,6 +37,7 @@ APP_VERSION = str(int(time.time()))
 db = Database(config.DATABASE_PATH)
 pc28_service = PC28Service()
 prediction_engine = PredictionEngine(db, pc28_service)
+profit_simulator = ProfitSimulator(db)
 
 _init_lock = threading.Lock()
 _app_initialized = False
@@ -106,6 +108,8 @@ def prediction_loop():
 def _serialize_predictor(predictor: dict) -> dict:
     share_level = predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')
     public_links = _build_public_links(predictor['id'])
+    simulation_metrics = profit_simulator.get_metric_options(predictor)
+    default_simulation_metric = profit_simulator.get_default_metric(predictor)
     data = {
         'id': predictor['id'],
         'user_id': predictor['user_id'],
@@ -122,6 +126,8 @@ def _serialize_predictor(predictor: dict) -> dict:
         'system_prompt': predictor.get('system_prompt') or '',
         'data_injection_mode': predictor.get('data_injection_mode') or 'summary',
         'prediction_targets': predictor.get('prediction_targets') or [],
+        'simulation_metrics': simulation_metrics,
+        'default_simulation_metric': default_simulation_metric,
         'history_window': predictor.get('history_window'),
         'temperature': predictor.get('temperature'),
         'enabled': bool(predictor.get('enabled')),
@@ -200,6 +206,19 @@ def _serialize_public_prediction_with_level(prediction: dict, share_level: str) 
     return data
 
 
+def _serialize_profit_simulation(simulation: dict, include_records: bool = True) -> dict:
+    payload = {
+        **simulation,
+        'odds_profiles': [
+            {'key': key, 'label': label}
+            for key, label in ODDS_PROFILE_LABELS.items()
+        ]
+    }
+    if not include_records:
+        payload['records'] = []
+    return payload
+
+
 def _share_level_label(share_level: str) -> str:
     mapping = {
         'stats_only': '只公开统计',
@@ -246,7 +265,7 @@ def _build_public_predictor_rankings(sort_by: str = 'recent100', metric: str = '
             'share_level_label': _share_level_label(predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')),
             'share_predictions': bool(predictor.get('share_predictions')),
             'primary_metric': predictor.get('primary_metric') or 'combo',
-            'primary_metric_label': stats.get('primary_metric_label') or '组合',
+            'primary_metric_label': stats.get('primary_metric_label') or '组合投注',
             'metric': metric,
             'metric_label': metric_stats.get('label') or metric,
             'recent_20': recent20,
@@ -308,9 +327,11 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'username': user['username'] if user else 'unknown',
             'model_name': predictor['model_name'],
             'primary_metric': predictor.get('primary_metric') or 'combo',
-            'primary_metric_label': stats.get('primary_metric_label') or '组合',
+            'primary_metric_label': stats.get('primary_metric_label') or '组合投注',
             'prediction_method': predictor.get('prediction_method') or '自定义策略',
             'prediction_targets': predictor.get('prediction_targets') or [],
+            'simulation_metrics': profit_simulator.get_metric_options(predictor),
+            'default_simulation_metric': profit_simulator.get_default_metric(predictor),
             'history_window': predictor.get('history_window'),
             'share_level': share_level,
             'share_level_label': _share_level_label(share_level),
@@ -737,6 +758,34 @@ def get_public_predictor_detail(predictor_id: int):
     return jsonify(detail)
 
 
+@app.route('/api/public/predictors/<int:predictor_id>/simulation', methods=['GET'])
+def get_public_predictor_simulation(predictor_id: int):
+    detail = _get_public_predictor_detail(predictor_id)
+    if not detail:
+        return jsonify({'error': '该方案未开放预测内容'}), 404
+
+    predictor = detail['predictor']
+    requested_metric = request.args.get('metric') or predictor.get('default_simulation_metric')
+    odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
+    include_records = predictor.get('can_view_records', False)
+
+    try:
+        simulation = profit_simulator.build_today_simulation(
+            predictor_id,
+            requested_metric=requested_metric,
+            odds_profile=odds_profile,
+            include_records=include_records
+        )
+        return jsonify({
+            'predictor_id': predictor_id,
+            'share_level': predictor.get('share_level'),
+            'can_view_records': include_records,
+            'simulation': _serialize_profit_simulation(simulation, include_records=include_records)
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
 # ============ Predictor APIs ============
 
 
@@ -992,6 +1041,32 @@ def get_predictor_stats(predictor_id: int):
         return jsonify({'error': '无权访问此预测方案'}), 403
 
     return jsonify(db.get_predictor_stats(predictor_id))
+
+
+@app.route('/api/predictors/<int:predictor_id>/simulation', methods=['GET'])
+@login_required
+def get_predictor_simulation(predictor_id: int):
+    user_id = get_current_user_id()
+    if not db.predictor_exists_for_user(predictor_id, user_id):
+        return jsonify({'error': '无权访问此预测方案'}), 403
+
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    requested_metric = request.args.get('metric') or (profit_simulator.get_default_metric(predictor) if predictor else None)
+    odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
+
+    try:
+        simulation = profit_simulator.build_today_simulation(
+            predictor_id,
+            requested_metric=requested_metric,
+            odds_profile=odds_profile,
+            include_records=True
+        )
+        return jsonify({
+            'predictor_id': predictor_id,
+            'simulation': _serialize_profit_simulation(simulation, include_records=True)
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
 
 @app.route('/api/predictors/<int:predictor_id>/predict-now', methods=['POST'])

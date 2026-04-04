@@ -14,12 +14,12 @@ ALLOWED_PRIMARY_METRICS = ('combo', 'number', 'big_small', 'odd_even', 'double_g
 ALLOWED_SHARE_LEVELS = ('stats_only', 'records', 'analysis')
 
 TARGET_LABELS = {
-    'number': '号码',
-    'big_small': '大小',
-    'odd_even': '单双',
-    'combo': '组合',
-    'double_group': '双组',
-    'kill_group': '杀组'
+    'number': '单点',
+    'big_small': '大/小',
+    'odd_even': '单/双',
+    'combo': '组合投注',
+    'double_group': '组合分组统计',
+    'kill_group': '排除统计'
 }
 
 DOUBLE_GROUP_LABELS = {
@@ -257,6 +257,58 @@ def mask_api_key(api_key: Optional[str]) -> str:
         return '*' * len(text)
 
     return f'{text[:4]}{"*" * (len(text) - 8)}{text[-4:]}'
+
+
+def parse_pc28_triplet(value) -> Optional[tuple[int, int, int]]:
+    """解析 PC28 三球原始号码"""
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if '+' in text:
+        parts = [part.strip() for part in text.split('+')]
+    elif ',' in text:
+        parts = [part.strip() for part in text.split(',')]
+    else:
+        parts = re.findall(r'\d', text)
+
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return None
+
+    digits = tuple(int(part) for part in parts)
+    if any(digit < 0 or digit > 9 for digit in digits):
+        return None
+    return digits
+
+
+def is_pc28_baozi(triplet: Optional[tuple[int, int, int]]) -> bool:
+    """判断是否豹子"""
+    return bool(triplet and len(set(triplet)) == 1)
+
+
+def is_pc28_pair(triplet: Optional[tuple[int, int, int]]) -> bool:
+    """判断是否对子（豹子不算对子）"""
+    return bool(triplet and not is_pc28_baozi(triplet) and len(set(triplet)) == 2)
+
+
+def is_pc28_straight(triplet: Optional[tuple[int, int, int]]) -> bool:
+    """判断是否顺子，支持 890 / 901 / 012 这类循环顺子"""
+    if not triplet or len(set(triplet)) != 3:
+        return False
+
+    values = set(triplet)
+    for start in range(10):
+        sequence = {
+            start % 10,
+            (start + 1) % 10,
+            (start + 2) % 10
+        }
+        if values == sequence:
+            return True
+    return False
 
 
 def parse_pc28_triplet(value) -> list[int]:

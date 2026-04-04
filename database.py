@@ -407,6 +407,33 @@ class Database:
         conn.close()
         return self._prepare_draw(row) if row else None
 
+    def get_draws_by_issues(self, lottery_type: str, issue_nos: list[str]) -> dict[str, dict]:
+        if not issue_nos:
+            return {}
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        rows = []
+        unique_issue_nos = list(dict.fromkeys(issue_nos))
+
+        for start in range(0, len(unique_issue_nos), 500):
+            batch = unique_issue_nos[start:start + 500]
+            placeholders = ','.join('?' for _ in batch)
+            cursor.execute(
+                f'''
+                SELECT * FROM lottery_draws
+                WHERE lottery_type = ? AND issue_no IN ({placeholders})
+                ''',
+                (lottery_type, *batch)
+            )
+            rows.extend(cursor.fetchall())
+
+        conn.close()
+        return {
+            row['issue_no']: self._prepare_draw(row)
+            for row in rows
+        }
+
     def get_oldest_pending_issue(self, lottery_type: str = 'pc28') -> Optional[str]:
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -758,12 +785,12 @@ class Database:
 
     def _metric_label(self, metric_key: str) -> str:
         labels = {
-            'number': '号码',
-            'big_small': '大小',
-            'odd_even': '单双',
-            'combo': '组合',
-            'double_group': '双组',
-            'kill_group': '杀组'
+            'number': '单点',
+            'big_small': '大/小',
+            'odd_even': '单/双',
+            'combo': '组合投注',
+            'double_group': '组合分组统计',
+            'kill_group': '排除统计'
         }
         return labels.get(metric_key, metric_key)
 

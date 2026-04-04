@@ -77,12 +77,12 @@
                         </div>
                         <div class="panel-actions">
                             <select id="statsMetricView" class="home-select">
-                                <option value="big_small">查看玩法：大小</option>
-                                <option value="odd_even">查看玩法：单双</option>
-                                <option value="combo">查看玩法：四分类组合</option>
-                                <option value="number">查看玩法：号码</option>
-                                <option value="double_group">查看玩法：二选一组</option>
-                                <option value="kill_group">查看玩法：排除对角组</option>
+                                <option value="big_small">查看玩法：大/小</option>
+                                <option value="odd_even">查看玩法：单/双</option>
+                                <option value="combo">查看玩法：组合投注</option>
+                                <option value="number">查看玩法：单点</option>
+                                <option value="double_group">查看玩法：组合分组统计</option>
+                                <option value="kill_group">查看玩法：排除统计</option>
                             </select>
                         </div>
                     </div>
@@ -153,6 +153,47 @@
                 <section class="panel">
                     <div class="panel-header">
                         <div>
+                            <h3>收益模拟</h3>
+                            <p class="panel-subtitle">默认按主玩法模拟当盘日收益，其他玩法按需点击计算。</p>
+                        </div>
+                        <div class="panel-actions">
+                            <select id="profitMetricView" class="home-select"></select>
+                            <select id="profitOddsProfileView" class="home-select">
+                                <option value="regular">常规盘</option>
+                                <option value="abc">ABC盘</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="profitSimulationHint" class="metric-hint empty-panel">
+                        请选择预测方案
+                    </div>
+                    <div id="profitSummaryGrid" class="stats-grid"></div>
+                    <div id="profitSimulationChart" class="chart-box"></div>
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>期号</th>
+                                    <th>开奖时间</th>
+                                    <th>下注内容</th>
+                                    <th>预测值</th>
+                                    <th>实际值</th>
+                                    <th>赔率</th>
+                                    <th>结果</th>
+                                    <th>单期盈亏</th>
+                                    <th>累计盈亏</th>
+                                </tr>
+                            </thead>
+                            <tbody id="profitSimulationBody">
+                                <tr><td colspan="9" class="empty-cell">暂无收益模拟数据</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-header">
+                        <div>
                             <h3>近 20 期表现</h3>
                             <p class="panel-subtitle">单期命中得分与 AI 置信度走势</p>
                         </div>
@@ -210,9 +251,9 @@
                                     <tr>
                                         <th>期号</th>
                                         <th>开奖号码</th>
-                                        <th>大小</th>
-                                        <th>单双</th>
-                                        <th>四分类组合</th>
+                                        <th>大/小</th>
+                                        <th>单/双</th>
+                                        <th>组合结果</th>
                                         <th>开奖时间</th>
                                     </tr>
                                 </thead>
@@ -295,12 +336,12 @@
                 <label class="form-field span-2">
                     <span>主玩法统计口径</span>
                     <select id="primaryMetric" class="form-input">
-                        <option value="combo">组合：适合看连中、公开排序和综合稳定性</option>
-                        <option value="number">号码：只按精确和值判断连中</option>
-                        <option value="big_small">大小：适合保守玩法</option>
-                        <option value="odd_even">单双：适合保守玩法</option>
-                        <option value="double_group">双组：大双/小单 vs 大单/小双</option>
-                        <option value="kill_group">杀组：按预测组合的对角组合做排除统计</option>
+                        <option value="combo">组合投注：适合看组合票面的稳定性</option>
+                        <option value="number">单点：只按精确和值判断连中</option>
+                        <option value="big_small">大/小：适合保守玩法</option>
+                        <option value="odd_even">单/双：适合保守玩法</option>
+                        <option value="double_group">组合分组统计：大双/小单 vs 大单/小双</option>
+                        <option value="kill_group">排除统计：按预测组合结果的对角组合做排除统计</option>
                     </select>
                     <small class="field-hint">当前连中、最大连中和后续公开页默认排序会优先使用这里选择的主玩法。</small>
                 </label>
@@ -309,10 +350,10 @@
             <div class="form-field">
                 <span>预测目标</span>
                 <div class="checkbox-grid">
-                    <label><input type="checkbox" id="targetNumber" checked> 号码</label>
-                    <label><input type="checkbox" id="targetBigSmall" checked> 大小</label>
-                    <label><input type="checkbox" id="targetOddEven" checked> 单双</label>
-                    <label><input type="checkbox" id="targetCombo" checked> 组合</label>
+                    <label><input type="checkbox" id="targetNumber" checked> 单点</label>
+                    <label><input type="checkbox" id="targetBigSmall" checked> 大/小</label>
+                    <label><input type="checkbox" id="targetOddEven" checked> 单/双</label>
+                    <label><input type="checkbox" id="targetCombo" checked> 组合投注</label>
                 </div>
             </div>
 

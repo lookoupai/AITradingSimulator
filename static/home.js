@@ -211,28 +211,28 @@ class HomePage {
     metricInfo(metric) {
         const mapping = {
             number: {
-                label: '号码',
-                description: '按精确和值是否命中统计，命中率通常最低，但最直接。'
+                label: '单点',
+                description: '按精确和值是否命中统计，直接对应 00-27 的单点玩法。'
             },
             big_small: {
-                label: '大小',
-                description: '按和值落在小(0-13)还是大(14-27)统计，最适合做默认稳定口径。'
+                label: '大/小',
+                description: '按和值落在小(00-13)还是大(14-27)统计，适合保守玩法。'
             },
             odd_even: {
-                label: '单双',
+                label: '单/双',
                 description: '按和值奇偶统计，适合偏保守的提示词。'
             },
             combo: {
-                label: '组合',
-                description: '按大单 / 大双 / 小单 / 小双四类组合统计，兼顾方向和奇偶。'
+                label: '组合投注',
+                description: '模型先给出小双 / 小单 / 大双 / 大单，再映射到真实可下注的组合投注票面。'
             },
             double_group: {
-                label: '双组',
+                label: '组合分组统计',
                 description: '按分组口径统计：大双/小单为“双组”，大单/小双为“单组”。'
             },
             kill_group: {
-                label: '杀组',
-                description: '按排除口径统计：预测某组合的对角组合不出现即视为命中。'
+                label: '排除统计',
+                description: '按排除口径统计：预测某组合结果的对角组合不出现即视为命中。'
             }
         };
         return mapping[metric] || { label: metric || '--', description: '当前玩法说明暂未定义。' };
