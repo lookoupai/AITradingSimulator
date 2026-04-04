@@ -48,6 +48,7 @@ class Database:
                 model_name TEXT NOT NULL,
                 api_mode TEXT NOT NULL DEFAULT 'auto',
                 primary_metric TEXT NOT NULL DEFAULT 'combo',
+                share_predictions INTEGER NOT NULL DEFAULT 0,
                 prediction_method TEXT DEFAULT '',
                 system_prompt TEXT DEFAULT '',
                 data_injection_mode TEXT NOT NULL DEFAULT 'summary',
@@ -146,6 +147,10 @@ class Database:
             cursor.execute("ALTER TABLE predictors ADD COLUMN primary_metric TEXT NOT NULL DEFAULT 'combo'")
         except Exception:
             pass
+        try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN share_predictions INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
@@ -161,6 +166,7 @@ class Database:
         model_name: str,
         api_mode: str,
         primary_metric: str,
+        share_predictions: bool,
         prediction_method: str,
         system_prompt: str,
         data_injection_mode: str,
@@ -175,11 +181,11 @@ class Database:
         cursor.execute(
             '''
             INSERT INTO predictors (
-                user_id, name, lottery_type, api_key, api_url, model_name, api_mode, primary_metric,
+                user_id, name, lottery_type, api_key, api_url, model_name, api_mode, primary_metric, share_predictions,
                 prediction_method, system_prompt, data_injection_mode,
                 prediction_targets, history_window, temperature, enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 user_id,
@@ -190,6 +196,7 @@ class Database:
                 model_name,
                 api_mode,
                 primary_metric,
+                1 if share_predictions else 0,
                 prediction_method,
                 system_prompt,
                 data_injection_mode,
@@ -685,6 +692,7 @@ class Database:
         data['enabled'] = bool(data.get('enabled'))
         data['api_mode'] = data.get('api_mode') or 'auto'
         data['primary_metric'] = normalize_primary_metric(data.get('primary_metric'))
+        data['share_predictions'] = bool(data.get('share_predictions'))
         data['data_injection_mode'] = data.get('data_injection_mode') or 'summary'
         if not include_secret:
             data.pop('api_key', None)

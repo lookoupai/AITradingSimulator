@@ -162,6 +162,11 @@ a {
     font: inherit;
 }
 
+.hint-text {
+    color: var(--muted);
+    font-size: 12px;
+}
+
 .icon-btn {
     width: 38px;
     height: 38px;
