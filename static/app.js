@@ -127,6 +127,13 @@ class PredictionApp {
             this.predictionOutcomeFilter = event.target.value;
             this.renderPredictionsTable(this.currentPredictions || []);
         });
+        document.getElementById('publicSharePanel').addEventListener('click', (event) => {
+            const button = event.target.closest('[data-action="copy-public-url"]');
+            if (!button) {
+                return;
+            }
+            this.copyPublicUrl(button);
+        });
 
         document.querySelectorAll('.tab-btn').forEach((button) => {
             button.addEventListener('click', (event) => this.switchTab(event.currentTarget.dataset.tab));
@@ -356,6 +363,7 @@ class PredictionApp {
             this.updatePredictorActionState(data.predictor);
             this.renderStats(this.currentStats);
             this.renderCurrentPrediction(data.current_prediction, data.latest_prediction, data.predictor);
+            this.renderPublicSharePanel(data.predictor);
             this.renderPredictionsTable(this.currentPredictions);
             this.renderDrawsTable(data.overview?.recent_draws || data.recent_draws || []);
             this.renderAILogs(this.currentPredictions);
@@ -372,7 +380,7 @@ class PredictionApp {
         const recent20 = currentMetric.recent_20 || {};
         const recent100 = currentMetric.recent_100 || {};
         const streaks = this.resolveMetricStreaks(stats, currentMetricKey);
-        const metricLabel = currentMetric.label || this.targetLabel(currentMetricKey);
+        const metricLabel = this.targetLabel(currentMetricKey);
 
         container.innerHTML = `
             <article class="stat-card">
@@ -392,11 +400,11 @@ class PredictionApp {
                 <strong class="stat-value">${this.escapeHtml(metricLabel || '--')}</strong>
             </article>
             <article class="stat-card">
-                <span class="stat-label">20期胜率</span>
+                <span class="stat-label">20期命中率</span>
                 <strong class="stat-value">${this.formatRatioRate(recent20)}</strong>
             </article>
             <article class="stat-card">
-                <span class="stat-label">100期胜率</span>
+                <span class="stat-label">100期命中率</span>
                 <strong class="stat-value">${this.formatRatioRate(recent100)}</strong>
             </article>
             <article class="stat-card">
@@ -405,37 +413,70 @@ class PredictionApp {
             </article>
         `;
 
+        this.renderStatsMetricHint(currentMetricKey);
         this.renderMetricStats(stats.metrics || {});
         this.renderStreakStats(stats, currentMetricKey);
+    }
+
+    renderStatsMetricHint(metricKey) {
+        const container = document.getElementById('statsMetricHint');
+        if (!container) {
+            return;
+        }
+
+        const meta = this.metricMeta(metricKey);
+        const aliasText = meta.alias ? `<span class="metric-hint-alias">${this.escapeHtml(meta.alias)}</span>` : '';
+
+        container.className = 'metric-hint';
+        container.innerHTML = `
+            <div class="metric-hint-head">
+                <div>
+                    <strong>${this.escapeHtml(meta.label)}</strong>
+                    ${aliasText}
+                </div>
+                <span class="tag">${this.escapeHtml(meta.shortRule)}</span>
+            </div>
+            <p>${this.escapeHtml(meta.description)}</p>
+            <p class="metric-hint-foot">统计规则：${this.escapeHtml(meta.formula)}</p>
+        `;
     }
 
     renderMetricStats(metrics) {
         const tbody = document.getElementById('metricStatsBody');
         const metricOrder = ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group'];
         const rows = metricOrder
-            .map((key) => metrics[key])
-            .filter(Boolean);
+            .map((key) => ({ key, metric: metrics[key] }))
+            .filter((item) => item.metric);
 
         if (!rows.length) {
             tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">暂无统计数据</td></tr>';
             return;
         }
 
-        tbody.innerHTML = rows.map((metric) => `
-            <tr>
-                <td>${this.escapeHtml(metric.label || '--')}</td>
-                <td>${this.formatRatioRate(metric.recent_20)}</td>
-                <td>${this.formatRatioRate(metric.recent_100)}</td>
-                <td>${this.formatRatioRate(metric.overall)}</td>
-            </tr>
-        `).join('');
+        tbody.innerHTML = rows.map(({ key, metric }) => {
+            const meta = this.metricMeta(key);
+            const aliasText = meta.alias ? `<span class="metric-alias">${this.escapeHtml(meta.alias)}</span>` : '';
+
+            return `
+                <tr>
+                    <td>
+                        <div class="metric-label-stack">
+                            <strong>${this.escapeHtml(meta.label)}</strong>
+                            ${aliasText}
+                        </div>
+                    </td>
+                    <td>${this.formatRatioRate(metric.recent_20)}</td>
+                    <td>${this.formatRatioRate(metric.recent_100)}</td>
+                    <td>${this.formatRatioRate(metric.overall)}</td>
+                </tr>
+            `;
+        }).join('');
     }
 
     renderStreakStats(stats, metricKey) {
         const container = document.getElementById('streakStats');
         const streaks = this.resolveMetricStreaks(stats, metricKey);
-        const metrics = stats.metrics || {};
-        const metricLabel = (metrics[metricKey] || {}).label || this.targetLabel(metricKey);
+        const metricLabel = this.targetLabel(metricKey);
 
         container.innerHTML = `
             <article class="streak-card">
@@ -502,10 +543,25 @@ class PredictionApp {
             return;
         }
 
-        const statusText = prediction.status === 'pending' ? '待开奖' : prediction.status === 'settled' ? '已结算' : '执行失败';
+        const statusText = this.predictionStatusLabel(prediction.status);
         const errorBlock = prediction.error_message
             ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>`
             : '';
+        const predictionSnapshot = this.buildPlaySnapshot(
+            prediction.prediction_number,
+            prediction.prediction_big_small,
+            prediction.prediction_odd_even,
+            prediction.prediction_combo
+        );
+        const actualSnapshot = this.buildPlaySnapshot(
+            prediction.actual_number,
+            prediction.actual_big_small,
+            prediction.actual_odd_even,
+            prediction.actual_combo
+        );
+        const confidenceText = this.formatPercent(
+            prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null
+        );
 
         container.className = 'prediction-summary';
         container.innerHTML = `
@@ -520,28 +576,47 @@ class PredictionApp {
                 </div>
             </div>
             ${errorBlock}
-            <div class="prediction-grid">
-                <div class="prediction-card">
-                    <span class="mini-label">预测期号</span>
-                    <strong>${this.escapeHtml(prediction.issue_no || '--')}</strong>
+            <div class="metric-hint prediction-note">
+                <div class="metric-hint-head">
+                    <div>
+                        <strong>展示口径说明</strong>
+                    </div>
+                    <span class="tag">仅展示模型命中口径</span>
                 </div>
-                <div class="prediction-card">
-                    <span class="mini-label">预测号码</span>
-                    <strong>${prediction.prediction_number !== null && prediction.prediction_number !== undefined ? String(prediction.prediction_number).padStart(2, '0') : '--'}</strong>
-                </div>
-                <div class="prediction-card">
-                    <span class="mini-label">大小 / 单双 / 组合</span>
-                    <div class="badge-row">
-                        ${this.renderBadge(prediction.prediction_big_small || '--')}
-                        ${this.renderBadge(prediction.prediction_odd_even || '--')}
-                        ${this.renderBadge(prediction.prediction_combo || '--')}
+                <p>四分类组合由大小和单双拼装而成；二选一组与排除对角组为统计派生口径，不代表模型额外输出了新的独立下注项。</p>
+                <p class="metric-hint-foot">当前页面不会直接折算赔率、回本或真实盘口收益。</p>
+            </div>
+            <div class="prediction-section">
+                <div class="prediction-section-head">
+                    <div>
+                        <span class="mini-label">本期原始输出</span>
+                        <p class="section-hint">先看模型直接输出的号码和基础标签。</p>
                     </div>
                 </div>
-                <div class="prediction-card">
-                    <span class="mini-label">置信度</span>
-                    <strong>${this.formatPercent(prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null)}</strong>
+                <div class="prediction-grid prediction-grid-compact">
+                    ${this.renderCurrentPredictionCard('预测期号', prediction.issue_no || '--')}
+                    ${this.renderCurrentPredictionCard('预测号码', predictionSnapshot.numberText || '--')}
+                    ${this.renderCurrentPredictionCard('大小', predictionSnapshot.bigSmall || '--')}
+                    ${this.renderCurrentPredictionCard('单双', predictionSnapshot.oddEven || '--')}
+                    ${this.renderCurrentPredictionCard('四分类组合', predictionSnapshot.combo || '--', predictionSnapshot.combo ? '由大小 + 单双自动拼装' : '当前无可用组合标签')}
+                    ${this.renderCurrentPredictionCard('置信度', confidenceText)}
                 </div>
             </div>
+            <div class="prediction-section">
+                <div class="prediction-section-head">
+                    <div>
+                        <span class="mini-label">派生玩法映射</span>
+                        <p class="section-hint">把四分类组合翻译成更容易对照盘口的统计口径。</p>
+                    </div>
+                </div>
+                <div class="prediction-grid prediction-grid-compact">
+                    ${this.renderCurrentPredictionCard('二选一组', predictionSnapshot.doubleGroup || '--', predictionSnapshot.doubleGroup ? '双组 = 大双/小单，单组 = 大单/小双' : '依赖四分类组合')}
+                    ${this.renderCurrentPredictionCard('对应二选一票', predictionSnapshot.pairTicket || '--', predictionSnapshot.pairTicket ? '仅用于展示映射，不是单独存储字段' : '依赖四分类组合')}
+                    ${this.renderCurrentPredictionCard('排除对角组', predictionSnapshot.killGroup ? `杀${predictionSnapshot.killGroup}` : '--', predictionSnapshot.killGroup ? '实际未开出该组合即计为命中' : '依赖四分类组合')}
+                    ${this.renderCurrentPredictionCard('更新时间', prediction.updated_at || prediction.created_at || '--')}
+                </div>
+            </div>
+            ${this.renderCurrentSettlement(prediction, predictionSnapshot, actualSnapshot)}
             <div class="summary-foot">
                 <div>
                     <span class="mini-label">简要说明</span>
@@ -551,6 +626,53 @@ class PredictionApp {
                     <span class="mini-label">更新时间</span>
                     <p>${this.escapeHtml(prediction.updated_at || prediction.created_at || '--')}</p>
                 </div>
+            </div>
+        `;
+    }
+
+    renderPublicSharePanel(predictor) {
+        const container = document.getElementById('publicSharePanel');
+        if (!container) {
+            return;
+        }
+
+        if (!predictor) {
+            container.className = 'prediction-summary empty-panel';
+            container.textContent = '请选择预测方案';
+            return;
+        }
+
+        const publicUrl = predictor.public_url || predictor.public_path || '--';
+        const isAvailable = Boolean(predictor.public_page_available);
+        const availabilityText = isAvailable ? '公开页可访问' : '方案已停用，公开页当前不可访问';
+        const availabilityHint = isAvailable
+            ? '当前地址可直接分享给访客；访客能看到的内容取决于公开层级。'
+            : '启用自动预测后，公开页才会重新出现在首页榜单和公开详情中。';
+        const disabledAttr = isAvailable ? '' : 'disabled';
+        const openButton = isAvailable
+            ? `<a class="btn ghost compact" href="${this.escapeHtml(publicUrl)}" target="_blank" rel="noopener noreferrer">打开公开页</a>`
+            : '<button class="btn ghost compact" disabled>打开公开页</button>';
+
+        container.className = 'prediction-summary';
+        container.innerHTML = `
+            <div class="summary-head">
+                <div>
+                    <h4>${this.escapeHtml(predictor.name || '--')}</h4>
+                    <p>${this.escapeHtml(predictor.share_level_label || '--')} · ${this.escapeHtml(availabilityText)}</p>
+                </div>
+                <div class="badge-row">
+                    <span class="tag">${this.escapeHtml(this.targetLabel(predictor.primary_metric || 'combo'))}</span>
+                    <span class="tag">${this.escapeHtml(predictor.share_level_label || '--')}</span>
+                </div>
+            </div>
+            <div class="prediction-card">
+                <span class="mini-label">公开地址</span>
+                <strong class="share-link-text">${this.escapeHtml(publicUrl)}</strong>
+                <span class="card-hint">${this.escapeHtml(availabilityHint)}</span>
+            </div>
+            <div class="share-panel-actions">
+                <button class="btn primary compact" data-action="copy-public-url" data-url="${this.escapeHtml(publicUrl)}" ${disabledAttr}>复制地址</button>
+                ${openButton}
             </div>
         `;
     }
@@ -588,12 +710,7 @@ class PredictionApp {
                 return true;
             }
 
-            const hitValues = [
-                prediction.hit_number,
-                prediction.hit_big_small,
-                prediction.hit_odd_even,
-                prediction.hit_combo
-            ].filter((value) => value !== null && value !== undefined);
+            const hitValues = this.buildHitItems(prediction).map((item) => item.value);
 
             if (!hitValues.length) {
                 return false;
@@ -734,7 +851,11 @@ class PredictionApp {
         this.currentPredictions = [];
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
+        document.getElementById('publicSharePanel').className = 'prediction-summary empty-panel';
+        document.getElementById('publicSharePanel').textContent = '暂无预测方案，请先新建方案';
         document.getElementById('statsGrid').innerHTML = '';
+        document.getElementById('statsMetricHint').className = 'metric-hint empty-panel';
+        document.getElementById('statsMetricHint').textContent = '请选择玩法查看统计口径';
         document.getElementById('metricStatsBody').innerHTML = '<tr><td colspan="4" class="empty-cell">暂无统计数据</td></tr>';
         document.getElementById('streakStats').innerHTML = '<div class="empty-panel">暂无连中连挂数据</div>';
         document.getElementById('predictionsBody').innerHTML = '<tr><td colspan="8" class="empty-cell">暂无预测记录</td></tr>';
@@ -1323,13 +1444,7 @@ class PredictionApp {
     }
 
     targetLabel(target) {
-        const mapping = {
-            number: '号码',
-            big_small: '大小',
-            odd_even: '单双',
-            combo: '组合'
-        };
-        return mapping[target] || target;
+        return this.metricMeta(target).label;
     }
 
     predictionStatusLabel(status) {
@@ -1343,13 +1458,17 @@ class PredictionApp {
     }
 
     renderPredictionResult(prediction) {
-        const number = prediction.prediction_number !== null && prediction.prediction_number !== undefined
-            ? String(prediction.prediction_number).padStart(2, '0')
-            : '--';
+        const snapshot = this.buildPlaySnapshot(
+            prediction.prediction_number,
+            prediction.prediction_big_small,
+            prediction.prediction_odd_even,
+            prediction.prediction_combo
+        );
         return `
             <div class="result-stack">
-                <strong>${this.escapeHtml(number)}</strong>
-                <span class="result-meta-text">${this.escapeHtml(prediction.prediction_big_small || '--')} / ${this.escapeHtml(prediction.prediction_odd_even || '--')} / ${this.escapeHtml(prediction.prediction_combo || '--')}</span>
+                <strong>${this.escapeHtml(snapshot.numberText || '--')}</strong>
+                <span class="result-meta-text">大小：${this.escapeHtml(snapshot.bigSmall || '--')} · 单双：${this.escapeHtml(snapshot.oddEven || '--')} · 四分类组合：${this.escapeHtml(snapshot.combo || '--')}</span>
+                <span class="result-meta-text">二选一组：${this.escapeHtml(this.formatDoubleGroupText(snapshot))} · 排除对角组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}` : '--')}</span>
             </div>
         `;
     }
@@ -1365,16 +1484,22 @@ class PredictionApp {
             return '<span class="hint-text">无</span>';
         }
 
-        const number = String(prediction.actual_number).padStart(2, '0');
+        const snapshot = this.buildPlaySnapshot(
+            prediction.actual_number,
+            prediction.actual_big_small,
+            prediction.actual_odd_even,
+            prediction.actual_combo
+        );
         return `
             <div class="result-stack">
-                <strong>${this.escapeHtml(number)}</strong>
-                <span class="result-meta-text">${this.escapeHtml(prediction.actual_big_small || '--')} / ${this.escapeHtml(prediction.actual_odd_even || '--')} / ${this.escapeHtml(prediction.actual_combo || '--')}</span>
+                <strong>${this.escapeHtml(snapshot.numberText || '--')}</strong>
+                <span class="result-meta-text">大小：${this.escapeHtml(snapshot.bigSmall || '--')} · 单双：${this.escapeHtml(snapshot.oddEven || '--')} · 四分类组合：${this.escapeHtml(snapshot.combo || '--')}</span>
+                <span class="result-meta-text">二选一组：${this.escapeHtml(this.formatDoubleGroupText(snapshot))} · 排除对角组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}` : '--')}</span>
             </div>
         `;
     }
 
-    renderHitSummary(prediction) {
+    renderHitSummary(prediction, options = {}) {
         if (prediction.status === 'pending') {
             return '<span class="hint-text">未结算</span>';
         }
@@ -1385,18 +1510,309 @@ class PredictionApp {
             return '<span class="hint-text">无结果</span>';
         }
 
-        const items = [
-            { label: '号', value: prediction.hit_number },
-            { label: '大', value: prediction.hit_big_small },
-            { label: '单', value: prediction.hit_odd_even },
-            { label: '组', value: prediction.hit_combo }
+        const items = this.buildHitItems(prediction);
+        if (!items.length) {
+            return '<span class="hint-text">无可统计结果</span>';
+        }
+
+        const hitCount = items.filter((item) => item.value === 1).length;
+        const summaryText = `本期纳入统计 ${items.length} 项，命中 ${hitCount} 项`;
+
+        return `
+            <div class="hit-summary-block">
+                <div class="hit-list ${options.detailed ? 'detailed' : ''}">
+                    ${items.map((item) => `<span class="hit-pill ${this.hitClass(item.value)}">${this.escapeHtml(item.label)} ${this.hitMark(item.value)}</span>`).join('')}
+                </div>
+                ${options.detailed ? `<span class="result-meta-text">${this.escapeHtml(summaryText)}</span>` : ''}
+            </div>
+        `;
+    }
+
+    renderCurrentPredictionCard(label, value, hint = '') {
+        return `
+            <div class="prediction-card">
+                <span class="mini-label">${this.escapeHtml(label)}</span>
+                <strong>${this.escapeHtml(value)}</strong>
+                ${hint ? `<span class="card-hint">${this.escapeHtml(hint)}</span>` : ''}
+            </div>
+        `;
+    }
+
+    renderCurrentSettlement(prediction, predictionSnapshot, actualSnapshot) {
+        if (prediction.status === 'pending') {
+            return `
+                <div class="prediction-section">
+                    <div class="prediction-section-head">
+                        <div>
+                            <span class="mini-label">结算状态</span>
+                            <p class="section-hint">等待官方开奖后，会自动补出开奖快照和派生玩法命中情况。</p>
+                        </div>
+                    </div>
+                    <div class="prediction-card">
+                        <span class="mini-label">当前状态</span>
+                        <strong>待开奖</strong>
+                        <span class="card-hint">当前只能查看预测侧映射，不能判断命中。</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        if (prediction.status === 'expired') {
+            return `
+                <div class="prediction-section">
+                    <div class="prediction-card">
+                        <span class="mini-label">结算状态</span>
+                        <strong>过期未结算</strong>
+                        <span class="card-hint">当前记录已超出补结算窗口，无法生成完整开奖对照。</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        if (prediction.status === 'failed') {
+            return `
+                <div class="prediction-section">
+                    <div class="prediction-card">
+                        <span class="mini-label">结算状态</span>
+                        <strong>执行失败</strong>
+                        <span class="card-hint">本期没有有效预测结果，因此不存在开奖对照和命中统计。</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        return `
+            <div class="prediction-section">
+                <div class="prediction-section-head">
+                    <div>
+                        <span class="mini-label">最新结算对照</span>
+                        <p class="section-hint">同一期开奖结果会同时展示基础标签和派生玩法，便于直接核对。</p>
+                    </div>
+                </div>
+                <div class="prediction-compare-grid">
+                    <div class="prediction-card">
+                        <span class="mini-label">预测快照</span>
+                        ${this.renderSnapshotDetails(predictionSnapshot)}
+                    </div>
+                    <div class="prediction-card">
+                        <span class="mini-label">开奖快照</span>
+                        ${this.renderSnapshotDetails(actualSnapshot)}
+                    </div>
+                    <div class="prediction-card">
+                        <span class="mini-label">命中明细</span>
+                        ${this.renderHitSummary(prediction, { detailed: true })}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    renderSnapshotDetails(snapshot) {
+        const rows = [
+            { label: '号码', value: snapshot.numberText || '--' },
+            { label: '大小', value: snapshot.bigSmall || '--' },
+            { label: '单双', value: snapshot.oddEven || '--' },
+            { label: '四分类组合', value: snapshot.combo || '--' },
+            { label: '二选一组', value: this.formatDoubleGroupText(snapshot) },
+            { label: '排除对角组', value: snapshot.killGroup ? `杀${snapshot.killGroup}` : '--' }
         ];
 
         return `
-            <div class="hit-list">
-                ${items.map((item) => `<span class="hit-pill ${this.hitClass(item.value)}">${item.label}${this.hitMark(item.value)}</span>`).join('')}
+            <div class="detail-list">
+                ${rows.map((row) => `
+                    <div class="detail-row">
+                        <span class="detail-label">${this.escapeHtml(row.label)}</span>
+                        <strong>${this.escapeHtml(row.value)}</strong>
+                    </div>
+                `).join('')}
             </div>
         `;
+    }
+
+    buildHitItems(prediction) {
+        const items = [];
+
+        if (prediction.hit_number !== null && prediction.hit_number !== undefined) {
+            items.push({ label: '号码', value: prediction.hit_number });
+        }
+        if (prediction.hit_big_small !== null && prediction.hit_big_small !== undefined) {
+            items.push({ label: '大小', value: prediction.hit_big_small });
+        }
+        if (prediction.hit_odd_even !== null && prediction.hit_odd_even !== undefined) {
+            items.push({ label: '单双', value: prediction.hit_odd_even });
+        }
+        if (prediction.hit_combo !== null && prediction.hit_combo !== undefined) {
+            items.push({ label: '四分类组合', value: prediction.hit_combo });
+        }
+
+        const predictedGroup = this.deriveDoubleGroup(prediction.prediction_combo);
+        const actualGroup = this.deriveDoubleGroup(prediction.actual_combo);
+        if (predictedGroup && actualGroup) {
+            items.push({ label: '二选一组', value: predictedGroup === actualGroup ? 1 : 0 });
+        }
+
+        const killGroup = this.deriveKillGroup(prediction.prediction_combo);
+        if (killGroup && prediction.actual_combo) {
+            items.push({ label: '排除对角组', value: prediction.actual_combo !== killGroup ? 1 : 0 });
+        }
+
+        return items;
+    }
+
+    metricMeta(metricKey) {
+        const mapping = {
+            number: {
+                label: '号码',
+                alias: '和值号码',
+                shortRule: '精确匹配',
+                description: '按精确和值是否命中统计，命中率最低，但口径最直接。',
+                formula: '预测号码 = 开奖号码'
+            },
+            big_small: {
+                label: '大小',
+                alias: null,
+                shortRule: '二分类',
+                description: '把和值分成小(0-13)与大(14-27)，适合保守口径。',
+                formula: '预测大小 = 开奖大小'
+            },
+            odd_even: {
+                label: '单双',
+                alias: null,
+                shortRule: '二分类',
+                description: '按和值奇偶统计，适合和大小并行观察。',
+                formula: '预测单双 = 开奖单双'
+            },
+            combo: {
+                label: '四分类组合',
+                alias: '旧显示名：组合',
+                shortRule: '四分类',
+                description: '由大小和单双拼成大单 / 大双 / 小单 / 小双，不是盘口里的二选一组合玩法。',
+                formula: '预测四分类组合 = 开奖四分类组合'
+            },
+            double_group: {
+                label: '二选一组',
+                alias: '旧显示名：双组',
+                shortRule: '组别匹配',
+                description: '把四分类组合合并成两组：大双 / 小单 为“双组”，大单 / 小双 为“单组”。',
+                formula: '预测组别 = 开奖组别'
+            },
+            kill_group: {
+                label: '排除对角组',
+                alias: '旧显示名：杀组',
+                shortRule: '排除统计',
+                description: '按预测四分类组合的对角组合做排除，只要实际没开出被杀组合，就算命中。',
+                formula: '开奖结果 ≠ 被杀组合'
+            }
+        };
+
+        return mapping[metricKey] || {
+            label: metricKey || '--',
+            alias: null,
+            shortRule: '未定义',
+            description: '当前玩法说明暂未定义。',
+            formula: '--'
+        };
+    }
+
+    buildPlaySnapshot(number, bigSmall, oddEven, combo) {
+        const resolvedCombo = combo || this.buildCombo(bigSmall, oddEven);
+        const numberText = number !== null && number !== undefined
+            ? String(number).padStart(2, '0')
+            : null;
+        const doubleGroup = this.deriveDoubleGroup(resolvedCombo);
+        const pairTicket = this.derivePairTicket(resolvedCombo);
+        const killGroup = this.deriveKillGroup(resolvedCombo);
+
+        return {
+            numberText,
+            bigSmall: bigSmall || null,
+            oddEven: oddEven || null,
+            combo: resolvedCombo || null,
+            doubleGroup,
+            pairTicket,
+            killGroup
+        };
+    }
+
+    buildCombo(bigSmall, oddEven) {
+        if (!bigSmall || !oddEven) {
+            return null;
+        }
+        if (!['大', '小'].includes(bigSmall) || !['单', '双'].includes(oddEven)) {
+            return null;
+        }
+        return `${bigSmall}${oddEven}`;
+    }
+
+    deriveDoubleGroup(combo) {
+        if (!combo) {
+            return null;
+        }
+        if (combo === '大单' || combo === '小双') {
+            return '单组';
+        }
+        if (combo === '大双' || combo === '小单') {
+            return '双组';
+        }
+        return null;
+    }
+
+    derivePairTicket(combo) {
+        const group = this.deriveDoubleGroup(combo);
+        if (!group) {
+            return null;
+        }
+        return group === '单组' ? '大单 / 小双' : '大双 / 小单';
+    }
+
+    deriveKillGroup(combo) {
+        const mapping = {
+            大单: '小双',
+            小双: '大单',
+            大双: '小单',
+            小单: '大双'
+        };
+        return mapping[combo] || null;
+    }
+
+    formatDoubleGroupText(snapshot) {
+        if (!snapshot.doubleGroup) {
+            return '--';
+        }
+        if (!snapshot.pairTicket) {
+            return snapshot.doubleGroup;
+        }
+        return `${snapshot.doubleGroup}（${snapshot.pairTicket}）`;
+    }
+
+    async copyPublicUrl(button) {
+        const url = button?.dataset?.url;
+        if (!url || button.disabled) {
+            return;
+        }
+
+        const originalText = button.textContent;
+
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(url);
+            } else {
+                const input = document.createElement('input');
+                input.value = url;
+                document.body.appendChild(input);
+                input.select();
+                document.execCommand('copy');
+                input.remove();
+            }
+            button.textContent = '已复制';
+        } catch (error) {
+            console.error('Failed to copy public url:', error);
+            button.textContent = '复制失败';
+        }
+
+        window.setTimeout(() => {
+            button.textContent = originalText;
+        }, 1500);
     }
 
     hitClass(value) {

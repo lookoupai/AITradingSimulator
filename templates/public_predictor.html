@@ -46,8 +46,11 @@
             <div class="panel-header">
                 <div>
                     <h3>玩法统计</h3>
-                    <p class="panel-subtitle">展示号码、大小、单双、组合、双组、杀组的最近 20 期、最近 100 期和历史表现。</p>
+                    <p class="panel-subtitle">展示号码、大小、单双、四分类组合、二选一组、排除对角组的最近 20 期、最近 100 期和历史表现。</p>
                 </div>
+            </div>
+            <div id="publicMetricHint" class="metric-hint empty-panel">
+                当前公开页将按主玩法解释统计口径
             </div>
             <div class="stats-detail-grid">
                 <div class="table-wrap">
@@ -84,15 +87,15 @@
                         <tr>
                             <th>期号</th>
                             <th>状态</th>
-                            <th>预测结果</th>
-                            <th>开奖结果</th>
-                            <th>命中情况</th>
+                            <th>预测明细</th>
+                            <th>开奖明细</th>
+                            <th>命中明细</th>
                             <th>置信度</th>
                             <th>说明</th>
                         </tr>
                     </thead>
                     <tbody id="publicPredictionBody">
-                        <tr><td colspan="8" class="empty-cell">暂无公开预测记录</td></tr>
+                        <tr><td colspan="7" class="empty-cell">暂无公开预测记录</td></tr>
                     </tbody>
                 </table>
             </div>

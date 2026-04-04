@@ -79,12 +79,15 @@
                             <select id="statsMetricView" class="home-select">
                                 <option value="big_small">查看玩法：大小</option>
                                 <option value="odd_even">查看玩法：单双</option>
-                                <option value="combo">查看玩法：组合</option>
+                                <option value="combo">查看玩法：四分类组合</option>
                                 <option value="number">查看玩法：号码</option>
-                                <option value="double_group">查看玩法：双组</option>
-                                <option value="kill_group">查看玩法：杀组</option>
+                                <option value="double_group">查看玩法：二选一组</option>
+                                <option value="kill_group">查看玩法：排除对角组</option>
                             </select>
                         </div>
+                    </div>
+                    <div id="statsMetricHint" class="metric-hint empty-panel">
+                        请选择玩法查看统计口径
                     </div>
                     <div class="stats-detail-grid">
                         <div class="table-wrap">
@@ -106,14 +109,14 @@
                             <div class="empty-panel">暂无连中连挂数据</div>
                         </div>
                     </div>
-                    <p class="field-hint">双组口径：大双/小单为“双组”，大单/小双为“单组”；杀组口径：按预测组合的对角组合做排除统计。</p>
+                    <p class="field-hint">当前页面展示的是模型命中率口径，不含真实盘口赔率、13/14 回本或对子/顺子/豹子回本结算。</p>
                 </section>
 
                 <section class="panel">
                     <div class="panel-header">
                         <div>
                             <h3>当前预测</h3>
-                            <p class="panel-subtitle">展示当前方案对下一期的最新预测状态</p>
+                            <p class="panel-subtitle">展示当前方案对下一期的原始输出、派生玩法映射和最新结算状态</p>
                         </div>
                         <div class="panel-actions">
                             <button class="btn ghost" id="togglePredictorBtn">
@@ -131,6 +134,18 @@
                         </div>
                     </div>
                     <div id="currentPrediction" class="prediction-summary empty-panel">
+                        请选择预测方案
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-header">
+                        <div>
+                            <h3>公开分享</h3>
+                            <p class="panel-subtitle">直接查看当前方案的公开地址、分享层级和可访问状态。</p>
+                        </div>
+                    </div>
+                    <div id="publicSharePanel" class="prediction-summary empty-panel">
                         请选择预测方案
                     </div>
                 </section>
@@ -173,9 +188,9 @@
                                     <tr>
                                         <th>期号</th>
                                         <th>状态</th>
-                                        <th>预测结果</th>
-                                        <th>开奖结果</th>
-                                        <th>命中情况</th>
+                                        <th>预测明细</th>
+                                        <th>开奖明细</th>
+                                        <th>命中明细</th>
                                         <th>置信度</th>
                                         <th>得分</th>
                                         <th>结算时间</th>
@@ -197,7 +212,7 @@
                                         <th>开奖号码</th>
                                         <th>大小</th>
                                         <th>单双</th>
-                                        <th>组合</th>
+                                        <th>四分类组合</th>
                                         <th>开奖时间</th>
                                     </tr>
                                 </thead>

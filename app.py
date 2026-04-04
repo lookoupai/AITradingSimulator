@@ -6,7 +6,7 @@ import time
 import uuid
 
 import requests
-from flask import Flask, jsonify, redirect, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, url_for, has_request_context
 from flask_cors import CORS
 
 import config
@@ -105,6 +105,7 @@ def prediction_loop():
 
 def _serialize_predictor(predictor: dict) -> dict:
     share_level = predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')
+    public_links = _build_public_links(predictor['id'])
     data = {
         'id': predictor['id'],
         'user_id': predictor['user_id'],
@@ -115,6 +116,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'api_mode': predictor.get('api_mode') or 'auto',
         'primary_metric': predictor.get('primary_metric') or 'combo',
         'share_level': share_level,
+        'share_level_label': _share_level_label(share_level),
         'share_predictions': share_level != 'stats_only',
         'prediction_method': predictor.get('prediction_method') or '',
         'system_prompt': predictor.get('system_prompt') or '',
@@ -126,7 +128,10 @@ def _serialize_predictor(predictor: dict) -> dict:
         'created_at': utc_to_beijing(predictor['created_at']) if predictor.get('created_at') else None,
         'updated_at': utc_to_beijing(predictor['updated_at']) if predictor.get('updated_at') else None,
         'masked_api_key': mask_api_key(predictor.get('api_key')),
-        'has_api_key': bool(predictor.get('api_key'))
+        'has_api_key': bool(predictor.get('api_key')),
+        'public_path': public_links['path'],
+        'public_url': public_links['url'],
+        'public_page_available': bool(predictor.get('enabled'))
     }
     return data
 
@@ -202,6 +207,20 @@ def _share_level_label(share_level: str) -> str:
         'analysis': '公开统计 + 预测记录 + 分析说明'
     }
     return mapping.get(share_level, share_level)
+
+
+def _build_public_links(predictor_id: int) -> dict:
+    path = f'/public/predictors/{predictor_id}'
+    url = path
+
+    if has_request_context():
+        path = url_for('public_predictor_page', predictor_id=predictor_id)
+        url = url_for('public_predictor_page', predictor_id=predictor_id, _external=True)
+
+    return {
+        'path': path,
+        'url': url
+    }
 
 
 def _build_public_predictor_rankings(sort_by: str = 'recent100', metric: str = 'combo', limit: int = 10) -> list[dict]:
@@ -280,6 +299,7 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
     current_prediction = next((item for item in predictions if item['status'] == 'pending'), None) if predictions else None
     latest_prediction = predictions[0] if predictions else None
     user = db.get_user_by_id(predictor['user_id'])
+    public_links = _build_public_links(predictor['id'])
 
     return {
         'predictor': {
@@ -296,7 +316,9 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'share_level_label': _share_level_label(share_level),
             'share_predictions': can_view_records,
             'can_view_records': can_view_records,
-            'can_view_analysis': can_view_analysis
+            'can_view_analysis': can_view_analysis,
+            'public_path': public_links['path'],
+            'public_url': public_links['url']
         },
         'stats': stats,
         'current_prediction': _serialize_public_prediction_with_level(current_prediction, share_level),

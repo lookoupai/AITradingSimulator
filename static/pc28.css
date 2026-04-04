@@ -509,6 +509,43 @@ a {
     gap: 12px;
 }
 
+.metric-hint {
+    margin-bottom: 16px;
+    padding: 16px 18px;
+    border-radius: 18px;
+    border: 1px solid var(--border);
+    background: var(--panel-soft);
+}
+
+.metric-hint-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.metric-hint p {
+    margin: 10px 0 0;
+    color: var(--text);
+    line-height: 1.7;
+}
+
+.metric-hint-foot,
+.metric-hint-alias,
+.metric-alias,
+.section-hint,
+.card-hint {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.metric-hint-alias,
+.metric-alias {
+    display: block;
+    margin-top: 4px;
+}
+
 .streak-card {
     padding: 16px;
     border-radius: 18px;
@@ -524,6 +561,54 @@ a {
 .prediction-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.prediction-grid-compact {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.prediction-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.prediction-section-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.prediction-section-head .mini-label {
+    margin-bottom: 4px;
+}
+
+.section-hint,
+.card-hint {
+    display: block;
+}
+
+.card-hint {
+    margin-top: 8px;
+}
+
+.share-panel-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.share-link-text {
+    display: block;
+    word-break: break-all;
+    line-height: 1.5;
+}
+
+.prediction-compare-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 14px;
 }
 
@@ -560,10 +645,43 @@ a {
     gap: 4px;
 }
 
+.metric-label-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .result-meta-text {
     color: var(--muted);
     font-size: 12px;
     line-height: 1.5;
+}
+
+.detail-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.detail-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    padding-bottom: 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, transparent 18%);
+}
+
+.detail-row:last-child {
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.detail-label {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
 }
 
 .hit-list {
@@ -572,17 +690,25 @@ a {
     gap: 6px;
 }
 
+.hit-summary-block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
 .hit-pill {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 42px;
+    min-width: 0;
     padding: 4px 8px;
     border-radius: 999px;
     font-size: 12px;
     font-weight: 700;
     border: 1px solid var(--border);
     background: var(--panel-soft);
+    line-height: 1.4;
+    white-space: normal;
 }
 
 .hit-pill.hit {
@@ -1171,6 +1297,10 @@ a {
     .stats-detail-grid {
         grid-template-columns: 1fr;
     }
+
+    .prediction-compare-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
 @media (max-width: 768px) {
@@ -1201,6 +1331,7 @@ a {
     .stats-grid,
     .summary-grid,
     .prediction-grid,
+    .prediction-compare-grid,
     .insight-grid,
     .form-grid,
     .checkbox-grid,
@@ -1215,7 +1346,10 @@ a {
 
     .overview-primary,
     .summary-head,
-    .summary-foot {
+    .summary-foot,
+    .metric-hint-head,
+    .prediction-section-head,
+    .share-panel-actions {
         flex-direction: column;
     }
 
