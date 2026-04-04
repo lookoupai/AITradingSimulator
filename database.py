@@ -47,7 +47,7 @@ class Database:
                 api_url TEXT NOT NULL,
                 model_name TEXT NOT NULL,
                 api_mode TEXT NOT NULL DEFAULT 'auto',
-                primary_metric TEXT NOT NULL DEFAULT 'combo',
+                primary_metric TEXT NOT NULL DEFAULT 'big_small',
                 share_predictions INTEGER NOT NULL DEFAULT 0,
                 prediction_method TEXT DEFAULT '',
                 system_prompt TEXT DEFAULT '',
@@ -144,7 +144,7 @@ class Database:
         except Exception:
             pass
         try:
-            cursor.execute("ALTER TABLE predictors ADD COLUMN primary_metric TEXT NOT NULL DEFAULT 'combo'")
+            cursor.execute("ALTER TABLE predictors ADD COLUMN primary_metric TEXT NOT NULL DEFAULT 'big_small'")
         except Exception:
             pass
         try:
@@ -390,6 +390,23 @@ class Database:
         conn.close()
         return self._prepare_draw(row) if row else None
 
+    def get_oldest_pending_issue(self, lottery_type: str = 'pc28') -> Optional[str]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT issue_no
+            FROM predictions
+            WHERE lottery_type = ? AND status = 'pending'
+            ORDER BY CAST(issue_no AS INTEGER) ASC
+            LIMIT 1
+            ''',
+            (lottery_type,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row['issue_no'] if row else None
+
     # ============ Predictions ============
 
     def upsert_prediction(self, payload: dict):
@@ -562,6 +579,7 @@ class Database:
             'settled_predictions': len(settled_rows),
             'pending_predictions': len([row for row in rows if row['status'] == 'pending']),
             'failed_predictions': len([row for row in rows if row['status'] == 'failed']),
+            'expired_predictions': len([row for row in rows if row['status'] == 'expired']),
             'latest_settled_issue': latest_settled['issue_no'] if latest_settled else None,
             'primary_metric': primary_metric,
             'primary_metric_label': self._metric_label(primary_metric),

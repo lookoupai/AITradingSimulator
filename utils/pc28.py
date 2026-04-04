@@ -69,7 +69,7 @@ def normalize_primary_metric(value: Optional[str]) -> str:
     text = str(value or '').strip().lower()
     if text in ALLOWED_PRIMARY_METRICS:
         return text
-    return 'combo'
+    return 'big_small'
 
 
 def parse_pc28_number(value) -> Optional[int]:

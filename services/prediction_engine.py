@@ -33,13 +33,44 @@ class PredictionEngine:
 
     def settle_pending_predictions(self) -> list[dict]:
         with self._lock:
-            self.pc28_service.sync_recent_draws(self.db, limit=config.PC28_SYNC_HISTORY)
+            sync_limit = config.PC28_SYNC_HISTORY
+            oldest_pending_issue = self.db.get_oldest_pending_issue('pc28')
+            if oldest_pending_issue:
+                try:
+                    latest_draw = self.pc28_service.fetch_recent_draws(limit=1)
+                    latest_issue = int(latest_draw[0]['issue_no']) if latest_draw else int(oldest_pending_issue)
+                    oldest_issue = int(oldest_pending_issue)
+                    backlog_window = max(latest_issue - oldest_issue + 5, config.PC28_SYNC_HISTORY)
+                    sync_limit = min(max(backlog_window, config.PC28_SYNC_HISTORY), 2000)
+                except Exception:
+                    sync_limit = config.PC28_SYNC_HISTORY
+
+            synced_draws = self.pc28_service.sync_recent_draws(self.db, limit=sync_limit)
             pending_predictions = self.db.get_pending_predictions('pc28')
             settled = []
+            oldest_synced_issue = None
+            if synced_draws:
+                try:
+                    oldest_synced_issue = int(synced_draws[-1]['issue_no'])
+                except (TypeError, ValueError, KeyError):
+                    oldest_synced_issue = None
 
             for prediction in pending_predictions:
                 draw = self.db.get_draw_by_issue('pc28', prediction['issue_no'])
                 if not draw:
+                    if oldest_synced_issue is not None:
+                        try:
+                            prediction_issue = int(prediction['issue_no'])
+                        except (TypeError, ValueError):
+                            prediction_issue = None
+                        if prediction_issue is not None and prediction_issue < oldest_synced_issue:
+                            expired_payload = {
+                                **prediction,
+                                'status': 'expired',
+                                'error_message': '开奖已超出官方接口可追溯窗口，无法自动补结算',
+                                'settled_at': get_current_utc_time_str()
+                            }
+                            self.db.upsert_prediction(expired_payload)
                     continue
 
                 payload = {

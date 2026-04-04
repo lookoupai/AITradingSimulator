@@ -110,6 +110,7 @@ class PublicPredictorPage {
         const mapping = {
             pending: '待开奖',
             settled: '已结算',
+            expired: '过期未结算',
             failed: '执行失败'
         };
         return mapping[status] || status || '--';
