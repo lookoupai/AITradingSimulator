@@ -148,9 +148,10 @@ class PredictionEngine:
             preview = {}
 
         latest_draw = recent_draws[0] if recent_draws else None
-        next_issue = keno_snapshot.get('next_issue_no')
-        if not next_issue and latest_draw:
-            next_issue = next_issue_no(latest_draw['issue_no'])
+        next_issue = self.pc28_service._resolve_next_issue_no(
+            keno_snapshot.get('next_issue_no'),
+            next_issue_no(latest_draw['issue_no']) if latest_draw else None
+        )
 
         return {
             'latest_draw': latest_draw,
