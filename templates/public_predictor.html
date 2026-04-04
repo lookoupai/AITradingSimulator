@@ -18,7 +18,7 @@
                 <div class="eyebrow">Public Predictor</div>
                 {% if predictor %}
                 <h1>{{ predictor.name }}</h1>
-                <p>公开展示该方案的预测内容、最近记录与统计表现，不展示 API 配置和原始调用数据。</p>
+                <p>公开展示该方案的统计表现与分享内容，不展示 API 配置和原始调用数据。</p>
                 {% else %}
                 <h1>方案未公开</h1>
                 <p>该方案暂未开放预测内容，当前只能在公开榜单查看统计表现。</p>
@@ -45,8 +45,37 @@
         <section class="panel">
             <div class="panel-header">
                 <div>
-                    <h3>最近公开预测</h3>
-                    <p class="panel-subtitle">仅展示用户已主动分享的预测内容。</p>
+                    <h3>玩法统计</h3>
+                    <p class="panel-subtitle">展示号码、大小、单双、组合、双组、杀组的最近 20 期、最近 100 期和历史表现。</p>
+                </div>
+            </div>
+            <div class="stats-detail-grid">
+                <div class="table-wrap">
+                    <table class="data-table compact-table">
+                        <thead>
+                            <tr>
+                                <th>玩法</th>
+                                <th>20期</th>
+                                <th>100期</th>
+                                <th>历史</th>
+                            </tr>
+                        </thead>
+                        <tbody id="publicMetricStatsBody">
+                            <tr><td colspan="4" class="empty-cell">暂无统计数据</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="publicStreakStats" class="streak-grid">
+                    <div class="empty-panel">暂无连中连挂数据</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <h3>最近预测对照</h3>
+                    <p class="panel-subtitle" id="publicPredictionSubtitle">仅展示用户已主动分享的预测内容。</p>
                 </div>
             </div>
             <div class="table-wrap">
@@ -55,10 +84,9 @@
                         <tr>
                             <th>期号</th>
                             <th>状态</th>
-                            <th>号码</th>
-                            <th>大小</th>
-                            <th>单双</th>
-                            <th>组合</th>
+                            <th>预测结果</th>
+                            <th>开奖结果</th>
+                            <th>命中情况</th>
                             <th>置信度</th>
                             <th>说明</th>
                         </tr>
@@ -75,6 +103,7 @@
     {% if predictor %}
     <script>
         window.PUBLIC_PREDICTOR_ID = {{ predictor.id }};
+        window.PUBLIC_PREDICTOR = {{ predictor|tojson }};
     </script>
     <script src="/static/public_predictor.js?v={{ app_version }}"></script>
     {% endif %}

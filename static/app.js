@@ -789,7 +789,7 @@ class PredictionApp {
         document.getElementById('primaryMetric').value = data.primary_metric || 'combo';
         document.getElementById('systemPrompt').value = data.system_prompt || '';
         document.getElementById('predictorEnabled').checked = Boolean(data.enabled);
-        document.getElementById('sharePredictions').checked = Boolean(data.share_predictions);
+        document.getElementById('shareLevel').value = data.share_level || (data.share_predictions ? 'records' : 'stats_only');
         document.getElementById('targetNumber').checked = data.prediction_targets.includes('number');
         document.getElementById('targetBigSmall').checked = data.prediction_targets.includes('big_small');
         document.getElementById('targetOddEven').checked = data.prediction_targets.includes('odd_even');
@@ -822,7 +822,7 @@ class PredictionApp {
         document.getElementById('primaryMetric').value = 'big_small';
         document.getElementById('systemPrompt').value = '';
         document.getElementById('predictorEnabled').checked = true;
-        document.getElementById('sharePredictions').checked = false;
+        document.getElementById('shareLevel').value = 'stats_only';
         document.getElementById('targetNumber').checked = true;
         document.getElementById('targetBigSmall').checked = true;
         document.getElementById('targetOddEven').checked = true;
@@ -916,7 +916,7 @@ class PredictionApp {
             primary_metric: document.getElementById('primaryMetric').value,
             system_prompt: document.getElementById('systemPrompt').value.trim(),
             enabled: document.getElementById('predictorEnabled').checked,
-            share_predictions: document.getElementById('sharePredictions').checked,
+            share_level: document.getElementById('shareLevel').value,
             prediction_targets: predictionTargets
         };
     }

@@ -49,6 +49,7 @@ class Database:
                 api_mode TEXT NOT NULL DEFAULT 'auto',
                 primary_metric TEXT NOT NULL DEFAULT 'big_small',
                 share_predictions INTEGER NOT NULL DEFAULT 0,
+                share_level TEXT NOT NULL DEFAULT 'stats_only',
                 prediction_method TEXT DEFAULT '',
                 system_prompt TEXT DEFAULT '',
                 data_injection_mode TEXT NOT NULL DEFAULT 'summary',
@@ -151,6 +152,21 @@ class Database:
             cursor.execute("ALTER TABLE predictors ADD COLUMN share_predictions INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass
+        try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN share_level TEXT NOT NULL DEFAULT 'stats_only'")
+        except Exception:
+            pass
+
+        cursor.execute(
+            '''
+            UPDATE predictors
+            SET share_level = CASE
+                WHEN share_predictions = 1 AND (share_level IS NULL OR share_level = 'stats_only') THEN 'records'
+                WHEN share_level IS NULL OR share_level = '' THEN 'stats_only'
+                ELSE share_level
+            END
+            '''
+        )
 
         conn.commit()
         conn.close()
@@ -166,7 +182,7 @@ class Database:
         model_name: str,
         api_mode: str,
         primary_metric: str,
-        share_predictions: bool,
+        share_level: str,
         prediction_method: str,
         system_prompt: str,
         data_injection_mode: str,
@@ -181,11 +197,11 @@ class Database:
         cursor.execute(
             '''
             INSERT INTO predictors (
-                user_id, name, lottery_type, api_key, api_url, model_name, api_mode, primary_metric, share_predictions,
+                user_id, name, lottery_type, api_key, api_url, model_name, api_mode, primary_metric, share_predictions, share_level,
                 prediction_method, system_prompt, data_injection_mode,
                 prediction_targets, history_window, temperature, enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 user_id,
@@ -196,7 +212,8 @@ class Database:
                 model_name,
                 api_mode,
                 primary_metric,
-                1 if share_predictions else 0,
+                1 if share_level != 'stats_only' else 0,
+                share_level,
                 prediction_method,
                 system_prompt,
                 data_injection_mode,
@@ -713,6 +730,7 @@ class Database:
         data['enabled'] = bool(data.get('enabled'))
         data['api_mode'] = data.get('api_mode') or 'auto'
         data['primary_metric'] = normalize_primary_metric(data.get('primary_metric'))
+        data['share_level'] = data.get('share_level') or ('records' if data.get('share_predictions') else 'stats_only')
         data['share_predictions'] = bool(data.get('share_predictions'))
         data['data_injection_mode'] = data.get('data_injection_mode') or 'summary'
         if not include_secret:

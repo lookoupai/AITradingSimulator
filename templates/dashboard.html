@@ -366,11 +366,15 @@
                 <input type="checkbox" id="predictorEnabled" checked>
             </label>
 
-            <label class="toggle-row">
-                <span>公开预测内容</span>
-                <input type="checkbox" id="sharePredictions">
+            <label class="form-field">
+                <span>公开内容层级</span>
+                <select id="shareLevel" class="form-input">
+                    <option value="stats_only">只公开统计</option>
+                    <option value="records">公开统计 + 预测记录</option>
+                    <option value="analysis">公开统计 + 预测记录 + 分析说明</option>
+                </select>
+                <small class="field-hint">公开榜单默认只展示统计；这里决定访客进入公开详情页后还能看到多少内容。</small>
             </label>
-            <p class="field-hint">关闭时，公开榜单仍只展示胜率和连中统计；开启后，其他访客才可以查看此方案的公开预测详情页。</p>
 
             <div class="modal-actions">
                 <button class="btn ghost" id="testPredictorBtn">测试模型</button>

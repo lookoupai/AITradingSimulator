@@ -155,7 +155,7 @@ class HomePage {
     renderPublicPredictors(items) {
         const tbody = document.getElementById('publicPredictorBody');
         if (!items.length) {
-            tbody.innerHTML = '<tr><td colspan="9" class="empty-cell">暂无公开方案数据</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">暂无公开方案数据</td></tr>';
             return;
         }
 
@@ -172,7 +172,8 @@ class HomePage {
                 <td>${this.formatRatioRate(item.recent_100)}</td>
                 <td>${item.current_hit_streak || 0}</td>
                 <td>${item.historical_max_hit_streak || 0}</td>
-                <td>${item.share_predictions ? `<a class="btn ghost compact" href="/public/predictors/${item.predictor_id}">查看预测</a>` : '<span class="hint-text">未分享</span>'}</td>
+                <td>${this.escapeHtml(item.share_level_label || '--')}</td>
+                <td><a class="btn ghost compact" href="/public/predictors/${item.predictor_id}">${item.share_level === 'stats_only' ? '查看统计' : '查看方案'}</a></td>
             </tr>
         `).join('');
     }

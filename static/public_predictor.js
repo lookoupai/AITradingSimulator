@@ -21,6 +21,8 @@ class PublicPredictorPage {
 
             this.renderHero(data);
             this.renderStats(data.stats);
+            this.renderMetricStats(data.stats);
+            this.renderStreakStats(data.stats);
             this.renderPredictions(data.recent_predictions || []);
         } catch (error) {
             const hero = document.getElementById('publicPredictorHero');
@@ -36,6 +38,7 @@ class PublicPredictorPage {
         const stats = data.stats || {};
         const primaryMetric = stats.primary_metric_label || predictor.primary_metric_label || '--';
         const currentPrediction = data.current_prediction || data.latest_prediction;
+        const primaryStats = ((stats.metrics || {})[stats.primary_metric || 'big_small']) || {};
 
         hero.innerHTML = `
             <div class="hero-metric">
@@ -43,11 +46,15 @@ class PublicPredictorPage {
                 <strong>${this.escapeHtml(predictor.username || '--')}</strong>
             </div>
             <div class="hero-metric">
-                <span class="mini-label">主玩法</span>
-                <strong>${this.escapeHtml(primaryMetric)}</strong>
+                <span class="mini-label">主玩法 / 公开层级</span>
+                <strong>${this.escapeHtml(primaryMetric)} · ${this.escapeHtml(predictor.share_level_label || '--')}</strong>
             </div>
             <div class="hero-metric">
-                <span class="mini-label">最新分享预测</span>
+                <span class="mini-label">最近100期表现</span>
+                <strong>${this.formatRatioRate(primaryStats.recent_100)}</strong>
+            </div>
+            <div class="hero-metric">
+                <span class="mini-label">最新公开预测</span>
                 <div class="badge-row">
                     <span class="tag">${this.escapeHtml(currentPrediction?.prediction_number !== null && currentPrediction?.prediction_number !== undefined ? String(currentPrediction.prediction_number).padStart(2, '0') : '--')}</span>
                     <span class="tag">${this.escapeHtml(currentPrediction?.prediction_big_small || '--')}</span>
@@ -67,6 +74,10 @@ class PublicPredictorPage {
 
         container.innerHTML = `
             <article class="stat-card">
+                <span class="stat-label">主玩法</span>
+                <strong class="stat-value">${this.escapeHtml(stats.primary_metric_label || '--')}</strong>
+            </article>
+            <article class="stat-card">
                 <span class="stat-label">20期胜率</span>
                 <strong class="stat-value">${this.formatRatioRate(recent20)}</strong>
             </article>
@@ -82,13 +93,82 @@ class PublicPredictorPage {
                 <span class="stat-label">历史最大连中</span>
                 <strong class="stat-value">${streaks.historical_max_hit_streak || 0}</strong>
             </article>
+            <article class="stat-card">
+                <span class="stat-label">已结算期数</span>
+                <strong class="stat-value">${stats.settled_predictions || 0}</strong>
+            </article>
+        `;
+    }
+
+    renderMetricStats(stats) {
+        const tbody = document.getElementById('publicMetricStatsBody');
+        const metricOrder = ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group'];
+        const rows = metricOrder
+            .map((key) => (stats.metrics || {})[key])
+            .filter(Boolean);
+
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">暂无统计数据</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = rows.map((metric) => `
+            <tr>
+                <td>${this.escapeHtml(metric.label || '--')}</td>
+                <td>${this.formatRatioRate(metric.recent_20)}</td>
+                <td>${this.formatRatioRate(metric.recent_100)}</td>
+                <td>${this.formatRatioRate(metric.overall)}</td>
+            </tr>
+        `).join('');
+    }
+
+    renderStreakStats(stats) {
+        const container = document.getElementById('publicStreakStats');
+        const streaks = stats.streaks || {};
+
+        container.innerHTML = `
+            <article class="streak-card">
+                <span class="stat-label">当前连中</span>
+                <strong class="streak-value">${streaks.current_hit_streak || 0}</strong>
+            </article>
+            <article class="streak-card">
+                <span class="stat-label">当前连挂</span>
+                <strong class="streak-value">${streaks.current_miss_streak || 0}</strong>
+            </article>
+            <article class="streak-card">
+                <span class="stat-label">100期最大连中</span>
+                <strong class="streak-value">${streaks.recent_100_max_hit_streak || 0}</strong>
+            </article>
+            <article class="streak-card">
+                <span class="stat-label">100期最大连挂</span>
+                <strong class="streak-value">${streaks.recent_100_max_miss_streak || 0}</strong>
+            </article>
+            <article class="streak-card">
+                <span class="stat-label">历史最大连中</span>
+                <strong class="streak-value">${streaks.historical_max_hit_streak || 0}</strong>
+            </article>
+            <article class="streak-card">
+                <span class="stat-label">历史最大连挂</span>
+                <strong class="streak-value">${streaks.historical_max_miss_streak || 0}</strong>
+            </article>
         `;
     }
 
     renderPredictions(items) {
         const tbody = document.getElementById('publicPredictionBody');
+        const subtitle = document.getElementById('publicPredictionSubtitle');
+        const predictor = window.PUBLIC_PREDICTOR || null;
+
+        if (subtitle) {
+            subtitle.textContent = predictor && predictor.can_view_analysis
+                ? '当前公开层级包含预测记录与分析说明。'
+                : predictor && predictor.can_view_records
+                    ? '当前公开层级包含预测记录，但不包含详细分析说明。'
+                    : '当前公开层级仅展示统计，不公开单期预测内容。';
+        }
+
         if (!items.length) {
-            tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">暂无公开预测记录</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">当前公开层级未开放预测记录</td></tr>';
             return;
         }
 
@@ -96,10 +176,9 @@ class PublicPredictorPage {
             <tr>
                 <td>${this.escapeHtml(item.issue_no || '--')}</td>
                 <td>${this.escapeHtml(this.statusLabel(item.status))}</td>
-                <td>${this.escapeHtml(item.prediction_number !== null && item.prediction_number !== undefined ? String(item.prediction_number).padStart(2, '0') : '--')}</td>
-                <td>${this.escapeHtml(item.prediction_big_small || '--')}</td>
-                <td>${this.escapeHtml(item.prediction_odd_even || '--')}</td>
-                <td>${this.escapeHtml(item.prediction_combo || '--')}</td>
+                <td>${this.renderResultStack(item.prediction_number, item.prediction_big_small, item.prediction_odd_even, item.prediction_combo)}</td>
+                <td>${this.renderResultStack(item.actual_number, item.actual_big_small, item.actual_odd_even, item.actual_combo, item.status)}</td>
+                <td>${this.renderHitSummary(item)}</td>
                 <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
                 <td>${this.escapeHtml(item.reasoning_summary || '无')}</td>
             </tr>
@@ -128,6 +207,59 @@ class PublicPredictorPage {
             return '--';
         }
         return `${stat.hit_count}/${stat.sample_count} (${this.formatPercent(stat.hit_rate)})`;
+    }
+
+    renderResultStack(number, bigSmall, oddEven, combo, status = 'settled') {
+        if ((number === null || number === undefined) && status === 'pending') {
+            return '<span class="hint-text">等待开奖</span>';
+        }
+        if ((number === null || number === undefined) && status === 'expired') {
+            return '<span class="hint-text">超出可追溯窗口</span>';
+        }
+        if (number === null || number === undefined) {
+            return '<span class="hint-text">--</span>';
+        }
+
+        return `
+            <div class="result-stack">
+                <strong>${this.escapeHtml(String(number).padStart(2, '0'))}</strong>
+                <span class="result-meta-text">${this.escapeHtml(bigSmall || '--')} / ${this.escapeHtml(oddEven || '--')} / ${this.escapeHtml(combo || '--')}</span>
+            </div>
+        `;
+    }
+
+    renderHitSummary(item) {
+        if (item.status === 'pending') {
+            return '<span class="hint-text">未结算</span>';
+        }
+        if (item.status === 'expired') {
+            return '<span class="hint-text">未补结算</span>';
+        }
+
+        const hitValues = [
+            { label: '号', value: item.hit_number },
+            { label: '大', value: item.hit_big_small },
+            { label: '单', value: item.hit_odd_even },
+            { label: '组', value: item.hit_combo }
+        ];
+
+        return `
+            <div class="hit-list">
+                ${hitValues.map((hit) => `<span class="hit-pill ${this.hitClass(hit.value)}">${hit.label}${this.hitMark(hit.value)}</span>`).join('')}
+            </div>
+        `;
+    }
+
+    hitClass(value) {
+        if (value === 1) return 'hit';
+        if (value === 0) return 'miss';
+        return 'unknown';
+    }
+
+    hitMark(value) {
+        if (value === 1) return '✓';
+        if (value === 0) return '✗';
+        return '-';
     }
 
     escapeHtml(text) {

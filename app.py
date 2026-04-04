@@ -23,7 +23,7 @@ from utils.auth import (
     set_current_user,
     verify_password
 )
-from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_primary_metric, normalize_target_list
+from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_primary_metric, normalize_share_level, normalize_target_list
 from utils.timezone import get_current_beijing_time_str, utc_to_beijing
 
 
@@ -104,6 +104,7 @@ def prediction_loop():
 
 
 def _serialize_predictor(predictor: dict) -> dict:
+    share_level = predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')
     data = {
         'id': predictor['id'],
         'user_id': predictor['user_id'],
@@ -113,7 +114,8 @@ def _serialize_predictor(predictor: dict) -> dict:
         'model_name': predictor['model_name'],
         'api_mode': predictor.get('api_mode') or 'auto',
         'primary_metric': predictor.get('primary_metric') or 'combo',
-        'share_predictions': bool(predictor.get('share_predictions')),
+        'share_level': share_level,
+        'share_predictions': share_level != 'stats_only',
         'prediction_method': predictor.get('prediction_method') or '',
         'system_prompt': predictor.get('system_prompt') or '',
         'data_injection_mode': predictor.get('data_injection_mode') or 'summary',
@@ -182,6 +184,26 @@ def _serialize_public_prediction(prediction: dict) -> dict:
     return data
 
 
+def _serialize_public_prediction_with_level(prediction: dict, share_level: str) -> dict:
+    data = _serialize_public_prediction(prediction)
+    if not data:
+        return None
+
+    if share_level != 'analysis':
+        data['reasoning_summary'] = ''
+
+    return data
+
+
+def _share_level_label(share_level: str) -> str:
+    mapping = {
+        'stats_only': '只公开统计',
+        'records': '公开统计 + 预测记录',
+        'analysis': '公开统计 + 预测记录 + 分析说明'
+    }
+    return mapping.get(share_level, share_level)
+
+
 def _build_public_predictor_rankings(sort_by: str = 'recent100', metric: str = 'combo', limit: int = 10) -> list[dict]:
     predictors = [item for item in db.get_all_predictors(include_secret=False) if item.get('enabled')]
     ranked_items = []
@@ -201,6 +223,8 @@ def _build_public_predictor_rankings(sort_by: str = 'recent100', metric: str = '
             'predictor_name': predictor['name'],
             'username': user['username'] if user else 'unknown',
             'model_name': predictor['model_name'],
+            'share_level': predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only'),
+            'share_level_label': _share_level_label(predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')),
             'share_predictions': bool(predictor.get('share_predictions')),
             'primary_metric': predictor.get('primary_metric') or 'combo',
             'primary_metric_label': stats.get('primary_metric_label') or '组合',
@@ -247,12 +271,13 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
     predictor = db.get_predictor(predictor_id, include_secret=False)
     if not predictor or not predictor.get('enabled'):
         return None
-    if not predictor.get('share_predictions'):
-        return None
 
     stats = db.get_predictor_stats(predictor_id)
-    predictions = db.get_recent_predictions(predictor_id, limit=20)
-    current_prediction = next((item for item in predictions if item['status'] == 'pending'), None)
+    share_level = predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')
+    can_view_records = share_level in {'records', 'analysis'}
+    can_view_analysis = share_level == 'analysis'
+    predictions = db.get_recent_predictions(predictor_id, limit=20) if can_view_records else []
+    current_prediction = next((item for item in predictions if item['status'] == 'pending'), None) if predictions else None
     latest_prediction = predictions[0] if predictions else None
     user = db.get_user_by_id(predictor['user_id'])
 
@@ -267,12 +292,16 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'prediction_method': predictor.get('prediction_method') or '自定义策略',
             'prediction_targets': predictor.get('prediction_targets') or [],
             'history_window': predictor.get('history_window'),
-            'share_predictions': True
+            'share_level': share_level,
+            'share_level_label': _share_level_label(share_level),
+            'share_predictions': can_view_records,
+            'can_view_records': can_view_records,
+            'can_view_analysis': can_view_analysis
         },
         'stats': stats,
-        'current_prediction': _serialize_public_prediction(current_prediction),
-        'latest_prediction': _serialize_public_prediction(latest_prediction),
-        'recent_predictions': [_serialize_public_prediction(item) for item in predictions]
+        'current_prediction': _serialize_public_prediction_with_level(current_prediction, share_level),
+        'latest_prediction': _serialize_public_prediction_with_level(latest_prediction, share_level),
+        'recent_predictions': [_serialize_public_prediction_with_level(item, share_level) for item in predictions]
     }
 
 
@@ -292,7 +321,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     fallback_model_name = existing_predictor.get('model_name') if existing_predictor else ''
     fallback_api_mode = existing_predictor.get('api_mode') if existing_predictor else 'auto'
     fallback_primary_metric = existing_predictor.get('primary_metric') if existing_predictor else 'big_small'
-    fallback_share_predictions = existing_predictor.get('share_predictions') if existing_predictor else False
+    fallback_share_level = existing_predictor.get('share_level') if existing_predictor else ('records' if (existing_predictor and existing_predictor.get('share_predictions')) else 'stats_only')
     fallback_method = existing_predictor.get('prediction_method') if existing_predictor else ''
     fallback_prompt = existing_predictor.get('system_prompt') if existing_predictor else ''
     fallback_injection_mode = existing_predictor.get('data_injection_mode') if existing_predictor else 'summary'
@@ -303,7 +332,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     model_name = str(data.get('model_name') or fallback_model_name).strip()
     api_mode = normalize_api_mode(data.get('api_mode') or fallback_api_mode)
     primary_metric = normalize_primary_metric(data.get('primary_metric') or fallback_primary_metric)
-    share_predictions = _parse_bool(data.get('share_predictions'), fallback_share_predictions)
+    share_level = normalize_share_level(data.get('share_level') or fallback_share_level)
     prediction_method = str(data.get('prediction_method') or fallback_method).strip()
     system_prompt = str(data.get('system_prompt') or fallback_prompt).strip()
     data_injection_mode = normalize_injection_mode(data.get('data_injection_mode') or fallback_injection_mode)
@@ -353,7 +382,8 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
         'model_name': model_name,
         'api_mode': api_mode,
         'primary_metric': primary_metric,
-        'share_predictions': share_predictions,
+        'share_level': share_level,
+        'share_predictions': share_level != 'stats_only',
         'prediction_method': prediction_method or '自定义策略',
         'system_prompt': system_prompt,
         'data_injection_mode': data_injection_mode,
@@ -727,7 +757,7 @@ def create_predictor():
         model_name=payload['model_name'],
         api_mode=payload['api_mode'],
         primary_metric=payload['primary_metric'],
-        share_predictions=payload['share_predictions'],
+        share_level=payload['share_level'],
         prediction_method=payload['prediction_method'],
         system_prompt=payload['system_prompt'],
         data_injection_mode=payload['data_injection_mode'],
@@ -892,6 +922,7 @@ def update_predictor(predictor_id: int):
         'model_name': payload['model_name'],
         'api_mode': payload['api_mode'],
         'primary_metric': payload['primary_metric'],
+        'share_level': payload['share_level'],
         'share_predictions': payload['share_predictions'],
         'prediction_method': payload['prediction_method'],
         'system_prompt': payload['system_prompt'],
