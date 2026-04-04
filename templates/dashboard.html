@@ -143,6 +143,20 @@
                     </div>
 
                     <div class="tab-panel active" id="predictionsTab">
+                        <div class="panel-actions table-filters">
+                            <select id="predictionStatusFilter" class="home-select">
+                                <option value="all">全部状态</option>
+                                <option value="pending">待开奖</option>
+                                <option value="settled">已结算</option>
+                                <option value="expired">过期未结算</option>
+                                <option value="failed">执行失败</option>
+                            </select>
+                            <select id="predictionOutcomeFilter" class="home-select">
+                                <option value="all">全部结果</option>
+                                <option value="hit">只看有命中</option>
+                                <option value="miss">只看全失手</option>
+                            </select>
+                        </div>
                         <div class="table-wrap">
                             <table class="data-table">
                                 <thead>

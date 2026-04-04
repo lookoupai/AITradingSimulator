@@ -369,7 +369,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
 def _get_predictor_dashboard_data(predictor_id: int) -> dict:
     predictor = db.get_predictor(predictor_id, include_secret=True)
     stats = db.get_predictor_stats(predictor_id)
-    recent_predictions = db.get_recent_predictions(predictor_id, limit=30)
+    recent_predictions = db.get_recent_predictions(predictor_id, limit=100)
     current_prediction = next((item for item in recent_predictions if item['status'] == 'pending'), None)
     latest_prediction = recent_predictions[0] if recent_predictions else None
     draws = db.get_recent_draws('pc28', limit=20)

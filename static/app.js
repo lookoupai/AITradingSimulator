@@ -76,11 +76,14 @@ class PredictionApp {
         this.currentUser = null;
         this.currentPredictorId = null;
         this.currentPredictor = null;
+        this.currentPredictions = [];
         this.overview = null;
         this.chart = null;
         this.refreshTimer = null;
         this.darkMode = localStorage.getItem('pc28Theme') === 'dark';
         this.presetExpanded = false;
+        this.predictionStatusFilter = 'all';
+        this.predictionOutcomeFilter = 'all';
         this.init();
     }
 
@@ -108,6 +111,14 @@ class PredictionApp {
         document.getElementById('editPredictorBtn').addEventListener('click', () => this.openEditModal());
         document.getElementById('togglePredictorBtn').addEventListener('click', () => this.toggleCurrentPredictor());
         document.getElementById('togglePresetListBtn').addEventListener('click', () => this.togglePresetList());
+        document.getElementById('predictionStatusFilter').addEventListener('change', (event) => {
+            this.predictionStatusFilter = event.target.value;
+            this.renderPredictionsTable(this.currentPredictions || []);
+        });
+        document.getElementById('predictionOutcomeFilter').addEventListener('change', (event) => {
+            this.predictionOutcomeFilter = event.target.value;
+            this.renderPredictionsTable(this.currentPredictions || []);
+        });
 
         document.querySelectorAll('.tab-btn').forEach((button) => {
             button.addEventListener('click', (event) => this.switchTab(event.currentTarget.dataset.tab));
@@ -320,13 +331,14 @@ class PredictionApp {
             }
 
             this.currentPredictor = data.predictor;
+            this.currentPredictions = data.recent_predictions || [];
             this.updatePredictorActionState(data.predictor);
             this.renderStats(data.stats);
             this.renderCurrentPrediction(data.current_prediction, data.latest_prediction, data.predictor);
-            this.renderPredictionsTable(data.recent_predictions || []);
+            this.renderPredictionsTable(this.currentPredictions);
             this.renderDrawsTable(data.overview?.recent_draws || data.recent_draws || []);
-            this.renderAILogs(data.recent_predictions || []);
-            this.renderChart(data.recent_predictions || []);
+            this.renderAILogs(this.currentPredictions);
+            this.renderChart(this.currentPredictions);
         } catch (error) {
             console.error('Failed to load predictor dashboard:', error);
         }
@@ -517,12 +529,14 @@ class PredictionApp {
 
     renderPredictionsTable(predictions) {
         const tbody = document.getElementById('predictionsBody');
-        if (!predictions.length) {
-            tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">暂无预测记录</td></tr>';
+        const filteredPredictions = this.filterPredictions(predictions);
+
+        if (!filteredPredictions.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">当前筛选条件下暂无记录</td></tr>';
             return;
         }
 
-        tbody.innerHTML = predictions.map((prediction) => `
+        tbody.innerHTML = filteredPredictions.map((prediction) => `
             <tr>
                 <td>${this.escapeHtml(prediction.issue_no)}</td>
                 <td><span class="status-chip ${prediction.status}">${this.predictionStatusLabel(prediction.status)}</span></td>
@@ -534,6 +548,39 @@ class PredictionApp {
                 <td>${this.escapeHtml(prediction.settled_at || '--')}</td>
             </tr>
         `).join('');
+    }
+
+    filterPredictions(predictions) {
+        return (predictions || []).filter((prediction) => {
+            if (this.predictionStatusFilter !== 'all' && prediction.status !== this.predictionStatusFilter) {
+                return false;
+            }
+
+            if (this.predictionOutcomeFilter === 'all') {
+                return true;
+            }
+
+            const hitValues = [
+                prediction.hit_number,
+                prediction.hit_big_small,
+                prediction.hit_odd_even,
+                prediction.hit_combo
+            ].filter((value) => value !== null && value !== undefined);
+
+            if (!hitValues.length) {
+                return false;
+            }
+
+            if (this.predictionOutcomeFilter === 'hit') {
+                return hitValues.some((value) => value === 1);
+            }
+
+            if (this.predictionOutcomeFilter === 'miss') {
+                return hitValues.every((value) => value === 0);
+            }
+
+            return true;
+        });
     }
 
     renderDrawsTable(draws) {
@@ -654,6 +701,7 @@ class PredictionApp {
     }
 
     renderEmptyPredictorState() {
+        this.currentPredictions = [];
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
         document.getElementById('statsGrid').innerHTML = '';
