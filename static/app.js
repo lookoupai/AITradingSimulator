@@ -172,6 +172,10 @@ class PredictionApp {
 
         this.currentUser = await response.json();
         document.getElementById('userInfo').textContent = `当前用户：${this.currentUser.username}`;
+        const adminEntry = document.getElementById('adminEntryBtn');
+        if (adminEntry) {
+            adminEntry.style.display = this.currentUser.is_admin ? 'inline-flex' : 'none';
+        }
     }
 
     async refresh(forceReloadPredictorList = false) {

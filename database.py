@@ -31,6 +31,7 @@ class Database:
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 email TEXT UNIQUE,
+                is_admin INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             '''
@@ -138,6 +139,10 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status, issue_no)')
 
         try:
+            cursor.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        try:
             cursor.execute("ALTER TABLE predictors ADD COLUMN data_injection_mode TEXT NOT NULL DEFAULT 'summary'")
         except Exception:
             pass
@@ -161,6 +166,29 @@ class Database:
             cursor.execute("ALTER TABLE predictors ADD COLUMN share_level TEXT NOT NULL DEFAULT 'stats_only'")
         except Exception:
             pass
+
+        cursor.execute(
+            '''
+            UPDATE users
+            SET is_admin = 1
+            WHERE id = (
+                SELECT id FROM users
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM users WHERE is_admin = 1
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            UPDATE predictors
+            SET profit_default_metric = primary_metric
+            WHERE profit_default_metric IS NULL OR profit_default_metric = ''
+            '''
+        )
 
         cursor.execute(
             '''
@@ -718,15 +746,15 @@ class Database:
 
     # ============ User Management ============
 
-    def create_user(self, username: str, password_hash: str, email: str = None) -> int:
+    def create_user(self, username: str, password_hash: str, email: str = None, is_admin: bool = False) -> int:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
             '''
-            INSERT INTO users (username, password_hash, email)
-            VALUES (?, ?, ?)
+            INSERT INTO users (username, password_hash, email, is_admin)
+            VALUES (?, ?, ?, ?)
             ''',
-            (username, password_hash, email)
+            (username, password_hash, email, 1 if is_admin else 0)
         )
         user_id = cursor.lastrowid
         conn.commit()
@@ -752,7 +780,158 @@ class Database:
     def get_all_users(self) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT id, username, email, created_at FROM users')
+        cursor.execute('SELECT id, username, email, is_admin, created_at FROM users')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def count_users(self) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) AS total FROM users')
+        row = cursor.fetchone()
+        conn.close()
+        return int(row['total']) if row else 0
+
+    def count_admin_users(self) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) AS total FROM users WHERE is_admin = 1')
+        row = cursor.fetchone()
+        conn.close()
+        return int(row['total']) if row else 0
+
+    def update_user_admin(self, user_id: int, is_admin: bool):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE users
+            SET is_admin = ?
+            WHERE id = ?
+            ''',
+            (1 if is_admin else 0, user_id)
+        )
+        conn.commit()
+        conn.close()
+
+    def get_admin_users_overview(self) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                u.id,
+                u.username,
+                u.email,
+                u.is_admin,
+                u.created_at,
+                COUNT(p.id) AS predictor_count,
+                SUM(CASE WHEN p.enabled = 1 THEN 1 ELSE 0 END) AS enabled_predictor_count,
+                MAX(p.updated_at) AS latest_predictor_update
+            FROM users u
+            LEFT JOIN predictors p ON p.user_id = u.id
+            GROUP BY u.id
+            ORDER BY u.created_at ASC, u.id ASC
+            '''
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_admin_predictors_overview(self) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                p.id,
+                p.user_id,
+                p.name,
+                p.model_name,
+                p.primary_metric,
+                COALESCE(NULLIF(p.profit_default_metric, ''), p.primary_metric) AS profit_default_metric,
+                p.share_level,
+                p.enabled,
+                p.created_at,
+                p.updated_at,
+                u.username,
+                COUNT(pr.id) AS prediction_count,
+                MAX(pr.issue_no) AS latest_issue_no,
+                MAX(pr.updated_at) AS latest_prediction_update,
+                SUM(CASE WHEN pr.status = 'failed' THEN 1 ELSE 0 END) AS failed_prediction_count
+            FROM predictors p
+            JOIN users u ON u.id = p.user_id
+            LEFT JOIN predictions pr ON pr.predictor_id = p.id
+            GROUP BY p.id
+            ORDER BY p.updated_at DESC, p.id DESC
+            '''
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_scheduler_snapshot(self, name: str) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT name, owner_id, heartbeat_at
+            FROM scheduler_state
+            WHERE name = ?
+            LIMIT 1
+            ''',
+            (name,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def get_admin_summary_counts(self) -> dict:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            '''
+            SELECT
+                (SELECT COUNT(*) FROM users) AS total_users,
+                (SELECT COUNT(*) FROM users WHERE is_admin = 1) AS admin_users,
+                (SELECT COUNT(*) FROM predictors) AS total_predictors,
+                (SELECT COUNT(*) FROM predictors WHERE enabled = 1) AS enabled_predictors,
+                (SELECT COUNT(*) FROM predictors WHERE share_level != 'stats_only') AS shared_predictors,
+                (SELECT COUNT(*) FROM predictions) AS total_predictions,
+                (SELECT COUNT(*) FROM predictions WHERE status = 'pending') AS pending_predictions,
+                (SELECT COUNT(*) FROM predictions WHERE status = 'failed') AS failed_predictions,
+                (SELECT COUNT(*) FROM predictions WHERE status = 'settled') AS settled_predictions,
+                (SELECT COUNT(*) FROM lottery_draws WHERE lottery_type = 'pc28') AS total_draws
+            '''
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else {}
+
+    def get_recent_failed_predictions(self, limit: int = 20) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                p.issue_no,
+                p.status,
+                p.error_message,
+                p.updated_at,
+                pr.id AS predictor_id,
+                pr.name AS predictor_name,
+                u.username
+            FROM predictions p
+            JOIN predictors pr ON pr.id = p.predictor_id
+            JOIN users u ON u.id = pr.user_id
+            WHERE p.status = 'failed'
+            ORDER BY p.updated_at DESC
+            LIMIT ?
+            ''',
+            (limit,)
+        )
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]

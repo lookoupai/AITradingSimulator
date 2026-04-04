@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>PC28 后台管理</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v={{ app_version }}">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/pc28.css?v={{ app_version }}">
+</head>
+<body class="pc28-theme">
+    <div class="pc28-shell">
+        <header class="pc28-header">
+            <div>
+                <div class="eyebrow">Admin Console</div>
+                <h1>PC28 后台管理</h1>
+                <p>查看全站用户、预测方案、任务状态与最近异常。</p>
+            </div>
+            <div class="header-actions">
+                <span class="header-user" id="adminUserInfo">加载中...</span>
+                <button class="btn ghost" id="adminThemeToggle" title="切换主题">
+                    <i class="bi bi-moon-stars"></i>
+                </button>
+                <button class="btn ghost" id="adminRefreshBtn">
+                    <i class="bi bi-arrow-clockwise"></i>
+                    刷新
+                </button>
+                <a class="btn ghost" href="/dashboard">
+                    <i class="bi bi-columns-gap"></i>
+                    用户控制台
+                </a>
+                <a class="btn ghost" href="/">
+                    <i class="bi bi-house-door"></i>
+                    主页
+                </a>
+                <button class="btn ghost" id="adminLogoutBtn">
+                    <i class="bi bi-box-arrow-right"></i>
+                    登出
+                </button>
+            </div>
+        </header>
+
+        <main class="pc28-main">
+            <section class="stats-grid" id="adminSummaryGrid"></section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h3>任务状态</h3>
+                        <p class="panel-subtitle">查看自动预测线程、轮询配置与最近心跳。</p>
+                    </div>
+                </div>
+                <div id="adminSchedulerPanel" class="prediction-summary empty-panel">加载中...</div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h3>用户列表</h3>
+                        <p class="panel-subtitle">查看所有用户、管理员状态与关联方案数量。</p>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>用户名</th>
+                                <th>邮箱</th>
+                                <th>角色</th>
+                                <th>方案数</th>
+                                <th>启用方案</th>
+                                <th>最近方案更新时间</th>
+                                <th>注册时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adminUsersBody">
+                            <tr><td colspan="9" class="empty-cell">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h3>方案总览</h3>
+                        <p class="panel-subtitle">查看所有预测方案、主玩法、默认收益玩法与运行状态。</p>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>所属用户</th>
+                                <th>方案</th>
+                                <th>主玩法</th>
+                                <th>默认收益玩法</th>
+                                <th>公开层级</th>
+                                <th>预测数</th>
+                                <th>失败数</th>
+                                <th>最近期号</th>
+                                <th>最近更新时间</th>
+                                <th>状态</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adminPredictorsBody">
+                            <tr><td colspan="12" class="empty-cell">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h3>最近异常</h3>
+                        <p class="panel-subtitle">展示最近失败的预测记录，便于排查模型或接口问题。</p>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>更新时间</th>
+                                <th>用户</th>
+                                <th>方案</th>
+                                <th>期号</th>
+                                <th>状态</th>
+                                <th>错误</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adminFailuresBody">
+                            <tr><td colspan="6" class="empty-cell">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/admin.js?v={{ app_version }}"></script>
+</body>
+</html>

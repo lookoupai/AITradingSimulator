@@ -47,6 +47,20 @@ def login_required(f):
     return decorated_function
 
 
+def admin_required(f):
+    """
+    管理员验证装饰器
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized', 'message': '请先登录'}), 401
+        if not session.get('is_admin'):
+            return jsonify({'error': 'Forbidden', 'message': '需要管理员权限'}), 403
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 def get_current_user_id():
     """
     获取当前登录用户ID
@@ -67,10 +81,25 @@ def set_current_user(user_id: int, username: str):
     """
     session['user_id'] = user_id
     session['username'] = username
+    session['is_admin'] = False
+
+
+def set_current_user_with_role(user_id: int, username: str, is_admin: bool = False):
+    """
+    设置当前登录用户及角色
+    """
+    session['user_id'] = user_id
+    session['username'] = username
+    session['is_admin'] = bool(is_admin)
+
+
+def get_current_user_is_admin() -> bool:
+    """获取当前用户是否管理员"""
+    return bool(session.get('is_admin'))
 
 
 def clear_current_user():
     """清除当前登录用户"""
     session.pop('user_id', None)
     session.pop('username', None)
-
+    session.pop('is_admin', None)

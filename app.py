@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import uuid
+from datetime import datetime
 
 import requests
 from flask import Flask, jsonify, redirect, render_template, request, url_for, has_request_context
@@ -17,11 +18,13 @@ from services.profit_simulator import DEFAULT_ODDS_PROFILE, ODDS_PROFILE_LABELS,
 from services.prediction_engine import PredictionEngine
 from utils.prompt_assistant import analyze_prompt, build_optimizer_prompt
 from utils.auth import (
+    admin_required,
     clear_current_user,
     get_current_user_id,
+    get_current_user_is_admin,
     hash_password,
     login_required,
-    set_current_user,
+    set_current_user_with_role,
     verify_password
 )
 from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_primary_metric, normalize_profit_metric, normalize_share_level, normalize_target_list
@@ -43,6 +46,7 @@ _init_lock = threading.Lock()
 _app_initialized = False
 _scheduler_started = False
 _scheduler_owner_id = f'{os.getpid()}-{uuid.uuid4().hex}'
+AUTO_PREDICTION_SCHEDULER = 'pc28-auto-prediction'
 
 
 @app.context_processor
@@ -80,7 +84,7 @@ def initialize_application():
 
 def prediction_loop():
     print(f'[INFO] PC28 自动预测线程启动，进程={os.getpid()}')
-    scheduler_name = 'pc28-auto-prediction'
+    scheduler_name = AUTO_PREDICTION_SCHEDULER
     stale_after_seconds = max(config.PREDICTION_POLL_INTERVAL * 3, 60)
 
     while config.AUTO_PREDICTION:
@@ -218,6 +222,96 @@ def _serialize_profit_simulation(simulation: dict, include_records: bool = True)
     if not include_records:
         payload['records'] = []
     return payload
+
+
+def _serialize_admin_user(item: dict) -> dict:
+    return {
+        'id': item['id'],
+        'username': item['username'],
+        'email': item.get('email'),
+        'is_admin': bool(item.get('is_admin')),
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'predictor_count': int(item.get('predictor_count') or 0),
+        'enabled_predictor_count': int(item.get('enabled_predictor_count') or 0),
+        'latest_predictor_update': utc_to_beijing(item['latest_predictor_update']) if item.get('latest_predictor_update') else None
+    }
+
+
+def _serialize_admin_predictor(item: dict) -> dict:
+    return {
+        'id': item['id'],
+        'user_id': item['user_id'],
+        'username': item.get('username'),
+        'name': item['name'],
+        'model_name': item.get('model_name'),
+        'primary_metric': item.get('primary_metric'),
+        'primary_metric_label': TARGET_LABELS.get(item.get('primary_metric'), item.get('primary_metric')),
+        'profit_default_metric': item.get('profit_default_metric') or item.get('primary_metric'),
+        'profit_default_metric_label': TARGET_LABELS.get(item.get('profit_default_metric') or item.get('primary_metric'), item.get('profit_default_metric') or item.get('primary_metric')),
+        'share_level': item.get('share_level'),
+        'enabled': bool(item.get('enabled')),
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None,
+        'prediction_count': int(item.get('prediction_count') or 0),
+        'failed_prediction_count': int(item.get('failed_prediction_count') or 0),
+        'latest_issue_no': item.get('latest_issue_no'),
+        'latest_prediction_update': utc_to_beijing(item['latest_prediction_update']) if item.get('latest_prediction_update') else None
+    }
+
+
+def _serialize_admin_failure(item: dict) -> dict:
+    return {
+        'issue_no': item.get('issue_no'),
+        'status': item.get('status'),
+        'error_message': item.get('error_message'),
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None,
+        'predictor_id': item.get('predictor_id'),
+        'predictor_name': item.get('predictor_name'),
+        'username': item.get('username')
+    }
+
+
+def _build_admin_dashboard_data() -> dict:
+    summary = db.get_admin_summary_counts()
+    users = db.get_admin_users_overview()
+    predictors = db.get_admin_predictors_overview()
+    failed_predictions = db.get_recent_failed_predictions(limit=20)
+    scheduler = db.get_scheduler_snapshot(AUTO_PREDICTION_SCHEDULER)
+
+    scheduler_data = {
+        'name': AUTO_PREDICTION_SCHEDULER,
+        'auto_prediction_enabled': config.AUTO_PREDICTION,
+        'poll_interval_seconds': config.PREDICTION_POLL_INTERVAL,
+        'owner_id': scheduler.get('owner_id') if scheduler else None,
+        'heartbeat_at': utc_to_beijing(scheduler['heartbeat_at']) if scheduler and scheduler.get('heartbeat_at') else None,
+        'seconds_since_heartbeat': None
+    }
+
+    if scheduler and scheduler.get('heartbeat_at'):
+        try:
+            heartbeat_at = datetime.strptime(str(scheduler['heartbeat_at']), '%Y-%m-%d %H:%M:%S')
+            scheduler_data['seconds_since_heartbeat'] = max(0, int((datetime.utcnow() - heartbeat_at).total_seconds()))
+        except Exception:
+            scheduler_data['seconds_since_heartbeat'] = None
+
+    return {
+        'summary': {
+            'total_users': int(summary.get('total_users') or 0),
+            'admin_users': int(summary.get('admin_users') or 0),
+            'total_predictors': int(summary.get('total_predictors') or 0),
+            'enabled_predictors': int(summary.get('enabled_predictors') or 0),
+            'shared_predictors': int(summary.get('shared_predictors') or 0),
+            'total_predictions': int(summary.get('total_predictions') or 0),
+            'pending_predictions': int(summary.get('pending_predictions') or 0),
+            'failed_predictions': int(summary.get('failed_predictions') or 0),
+            'settled_predictions': int(summary.get('settled_predictions') or 0),
+            'total_draws': int(summary.get('total_draws') or 0)
+        },
+        'scheduler': scheduler_data,
+        'users': [_serialize_admin_user(item) for item in users],
+        'predictors': [_serialize_admin_predictor(item) for item in predictors],
+        'recent_failures': [_serialize_admin_failure(item) for item in failed_predictions]
+    }
 
 
 def _share_level_label(share_level: str) -> str:
@@ -553,6 +647,20 @@ def dashboard():
     return render_template('dashboard.html')
 
 
+@app.route('/admin')
+def admin_page():
+    user_id = get_current_user_id()
+    if not user_id:
+        return redirect('/login')
+    if not get_current_user_is_admin():
+        user = db.get_user_by_id(user_id)
+        if user and user.get('is_admin'):
+            set_current_user_with_role(user['id'], user['username'], True)
+        else:
+            return redirect('/dashboard')
+    return render_template('admin.html')
+
+
 @app.route('/api/health', methods=['GET'])
 def healthcheck():
     return jsonify({
@@ -580,15 +688,17 @@ def register():
         return jsonify({'error': '用户名已存在'}), 400
 
     password_hash = hash_password(password)
-    user_id = db.create_user(username, password_hash, email)
-    set_current_user(user_id, username)
+    is_admin = db.count_users() == 0
+    user_id = db.create_user(username, password_hash, email, is_admin=is_admin)
+    set_current_user_with_role(user_id, username, is_admin=is_admin)
 
     return jsonify({
         'message': '注册成功',
         'user': {
             'id': user_id,
             'username': username,
-            'email': email
+            'email': email,
+            'is_admin': is_admin
         }
     })
 
@@ -606,13 +716,14 @@ def login():
     if not user or not verify_password(user['password_hash'], password):
         return jsonify({'error': '用户名或密码错误'}), 401
 
-    set_current_user(user['id'], user['username'])
+    set_current_user_with_role(user['id'], user['username'], bool(user.get('is_admin')))
     return jsonify({
         'message': '登录成功',
         'user': {
             'id': user['id'],
             'username': user['username'],
-            'email': user.get('email')
+            'email': user.get('email'),
+            'is_admin': bool(user.get('is_admin'))
         }
     })
 
@@ -679,15 +790,18 @@ def linuxdo_callback():
         linuxdo_username = f'linuxdo_{linuxdo_id}'
         user = db.get_user_by_username(linuxdo_username)
         if not user:
+            is_admin = db.count_users() == 0
             user_id = db.create_user(
                 linuxdo_username,
                 hash_password(f'linuxdo_oauth_{linuxdo_id}'),
-                email
+                email,
+                is_admin=is_admin
             )
         else:
             user_id = user['id']
+            is_admin = bool(user.get('is_admin'))
 
-        set_current_user(user_id, linuxdo_username)
+        set_current_user_with_role(user_id, linuxdo_username, is_admin=is_admin)
         return redirect('/dashboard')
     except requests.RequestException as exc:
         return jsonify({'error': f'OAuth 授权失败: {exc}'}), 500
@@ -706,10 +820,12 @@ def get_current_user():
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
+    set_current_user_with_role(user['id'], user['username'], bool(user.get('is_admin')))
     return jsonify({
         'id': user['id'],
         'username': user['username'],
         'email': user.get('email'),
+        'is_admin': bool(user.get('is_admin')),
         'created_at': utc_to_beijing(user['created_at']) if user.get('created_at') else None
     })
 
@@ -796,6 +912,58 @@ def get_public_predictor_simulation(predictor_id: int):
 
 
 # ============ Predictor APIs ============
+
+
+@app.route('/api/admin/dashboard', methods=['GET'])
+@admin_required
+def get_admin_dashboard():
+    return jsonify(_build_admin_dashboard_data())
+
+
+@app.route('/api/admin/users/<int:user_id>/toggle-admin', methods=['POST'])
+@admin_required
+def toggle_admin_user(user_id: int):
+    current_user_id = get_current_user_id()
+    user = db.get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': '用户不存在'}), 404
+
+    target_is_admin = not bool(user.get('is_admin'))
+    if not target_is_admin and current_user_id == user_id and db.count_admin_users() <= 1:
+        return jsonify({'error': '至少需要保留一个管理员，不能取消自己最后一个管理员身份'}), 400
+
+    db.update_user_admin(user_id, target_is_admin)
+    updated = db.get_user_by_id(user_id)
+    if current_user_id == user_id:
+        set_current_user_with_role(updated['id'], updated['username'], bool(updated.get('is_admin')))
+
+    return jsonify({
+        'message': '管理员身份已更新',
+        'user': {
+            'id': updated['id'],
+            'username': updated['username'],
+            'is_admin': bool(updated.get('is_admin'))
+        }
+    })
+
+
+@app.route('/api/admin/predictors/<int:predictor_id>/toggle-enabled', methods=['POST'])
+@admin_required
+def toggle_admin_predictor_enabled(predictor_id: int):
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    if not predictor:
+        return jsonify({'error': '预测方案不存在'}), 404
+
+    next_enabled = not bool(predictor.get('enabled'))
+    db.update_predictor(predictor_id, {'enabled': next_enabled})
+    updated = db.get_predictor(predictor_id, include_secret=False)
+    return jsonify({
+        'message': '方案状态已更新',
+        'predictor': {
+            'id': updated['id'],
+            'enabled': bool(updated.get('enabled'))
+        }
+    })
 
 
 @app.route('/api/predictors', methods=['GET'])
