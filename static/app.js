@@ -77,6 +77,8 @@ class PredictionApp {
         this.currentPredictorId = null;
         this.currentPredictor = null;
         this.currentPredictions = [];
+        this.currentStats = null;
+        this.selectedStatsMetric = null;
         this.overview = null;
         this.chart = null;
         this.refreshTimer = null;
@@ -111,6 +113,12 @@ class PredictionApp {
         document.getElementById('editPredictorBtn').addEventListener('click', () => this.openEditModal());
         document.getElementById('togglePredictorBtn').addEventListener('click', () => this.toggleCurrentPredictor());
         document.getElementById('togglePresetListBtn').addEventListener('click', () => this.togglePresetList());
+        document.getElementById('statsMetricView').addEventListener('change', (event) => {
+            this.selectedStatsMetric = event.target.value;
+            if (this.currentStats) {
+                this.renderStats(this.currentStats);
+            }
+        });
         document.getElementById('predictionStatusFilter').addEventListener('change', (event) => {
             this.predictionStatusFilter = event.target.value;
             this.renderPredictionsTable(this.currentPredictions || []);
@@ -331,9 +339,12 @@ class PredictionApp {
             }
 
             this.currentPredictor = data.predictor;
+            this.currentStats = data.stats || null;
             this.currentPredictions = data.recent_predictions || [];
+            this.selectedStatsMetric = data.stats?.primary_metric || 'big_small';
+            document.getElementById('statsMetricView').value = this.selectedStatsMetric;
             this.updatePredictorActionState(data.predictor);
-            this.renderStats(data.stats);
+            this.renderStats(this.currentStats);
             this.renderCurrentPrediction(data.current_prediction, data.latest_prediction, data.predictor);
             this.renderPredictionsTable(this.currentPredictions);
             this.renderDrawsTable(data.overview?.recent_draws || data.recent_draws || []);
@@ -346,11 +357,12 @@ class PredictionApp {
 
     renderStats(stats) {
         const container = document.getElementById('statsGrid');
-        const primaryMetricKey = stats.primary_metric || 'combo';
-        const primaryMetric = (stats.metrics || {})[primaryMetricKey] || {};
-        const recent20 = primaryMetric.recent_20 || {};
-        const recent100 = primaryMetric.recent_100 || {};
-        const streaks = stats.streaks || {};
+        const currentMetricKey = this.selectedStatsMetric || stats.primary_metric || 'big_small';
+        const currentMetric = (stats.metrics || {})[currentMetricKey] || {};
+        const recent20 = currentMetric.recent_20 || {};
+        const recent100 = currentMetric.recent_100 || {};
+        const streaks = this.resolveMetricStreaks(stats, currentMetricKey);
+        const metricLabel = currentMetric.label || this.targetLabel(currentMetricKey);
 
         container.innerHTML = `
             <article class="stat-card">
@@ -366,8 +378,8 @@ class PredictionApp {
                 <strong class="stat-value">${stats.expired_predictions || 0}</strong>
             </article>
             <article class="stat-card">
-                <span class="stat-label">主玩法</span>
-                <strong class="stat-value">${this.escapeHtml(stats.primary_metric_label || '--')}</strong>
+                <span class="stat-label">当前查看玩法</span>
+                <strong class="stat-value">${this.escapeHtml(metricLabel || '--')}</strong>
             </article>
             <article class="stat-card">
                 <span class="stat-label">20期胜率</span>
@@ -384,7 +396,7 @@ class PredictionApp {
         `;
 
         this.renderMetricStats(stats.metrics || {});
-        this.renderStreakStats(stats);
+        this.renderStreakStats(stats, currentMetricKey);
     }
 
     renderMetricStats(metrics) {
@@ -409,15 +421,16 @@ class PredictionApp {
         `).join('');
     }
 
-    renderStreakStats(stats) {
+    renderStreakStats(stats, metricKey) {
         const container = document.getElementById('streakStats');
-        const streaks = stats.streaks || {};
-        const primaryLabel = stats.primary_metric_label || '--';
+        const streaks = this.resolveMetricStreaks(stats, metricKey);
+        const metrics = stats.metrics || {};
+        const metricLabel = (metrics[metricKey] || {}).label || this.targetLabel(metricKey);
 
         container.innerHTML = `
             <article class="streak-card">
-                <span class="stat-label">主玩法</span>
-                <strong class="streak-value">${this.escapeHtml(primaryLabel)}</strong>
+                <span class="stat-label">当前查看玩法</span>
+                <strong class="streak-value">${this.escapeHtml(metricLabel)}</strong>
             </article>
             <article class="streak-card">
                 <span class="stat-label">当前连中</span>
@@ -444,6 +457,11 @@ class PredictionApp {
                 <strong class="streak-value">${streaks.historical_max_miss_streak || 0}</strong>
             </article>
         `;
+    }
+
+    resolveMetricStreaks(stats, metricKey) {
+        const metricStreaks = ((stats.metric_streaks || {})[metricKey]) || null;
+        return metricStreaks || stats.streaks || {};
     }
 
     renderCurrentPrediction(currentPrediction, latestPrediction, predictor) {
@@ -701,6 +719,8 @@ class PredictionApp {
     }
 
     renderEmptyPredictorState() {
+        this.currentStats = null;
+        this.selectedStatsMetric = null;
         this.currentPredictions = [];
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';

@@ -563,6 +563,7 @@ class Database:
         }
 
         metrics = {}
+        metric_streaks = {}
         for metric_key in metric_keys:
             metrics[metric_key] = {
                 'label': self._metric_label(metric_key),
@@ -570,9 +571,10 @@ class Database:
                 'recent_100': self._build_metric_stats(windows['recent_100'], metric_key),
                 'overall': self._build_metric_stats(windows['overall'], metric_key)
             }
+            metric_streaks[metric_key] = self._build_streak_stats(settled_rows, metric_key)
 
         primary_metric = normalize_primary_metric(predictor.get('primary_metric'))
-        streaks = self._build_streak_stats(settled_rows, primary_metric)
+        streaks = metric_streaks[primary_metric]
 
         return {
             'total_predictions': len(rows),
@@ -584,6 +586,7 @@ class Database:
             'primary_metric': primary_metric,
             'primary_metric_label': self._metric_label(primary_metric),
             'metrics': metrics,
+            'metric_streaks': metric_streaks,
             'streaks': streaks,
             'number_hit_rate': metrics['number']['overall']['hit_rate'],
             'big_small_hit_rate': metrics['big_small']['overall']['hit_rate'],
