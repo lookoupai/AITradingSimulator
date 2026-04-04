@@ -101,6 +101,9 @@ class PredictionApp {
         document.getElementById('cancelModalBtn').addEventListener('click', () => this.hideModal());
         document.getElementById('savePredictorBtn').addEventListener('click', () => this.submitPredictor());
         document.getElementById('testPredictorBtn').addEventListener('click', () => this.testPredictorConfig());
+        document.getElementById('checkPromptBtn').addEventListener('click', () => this.checkPromptAssistant());
+        document.getElementById('optimizePromptBtn').addEventListener('click', () => this.optimizePromptAssistant());
+        document.getElementById('applyOptimizedPromptBtn').addEventListener('click', () => this.applyOptimizedPrompt());
         document.getElementById('predictNowBtn').addEventListener('click', () => this.predictNow());
         document.getElementById('editPredictorBtn').addEventListener('click', () => this.openEditModal());
         document.getElementById('togglePredictorBtn').addEventListener('click', () => this.toggleCurrentPredictor());
@@ -720,6 +723,7 @@ class PredictionApp {
 
     showModal() {
         this.hideTestResult();
+        this.hidePromptAssistantResult();
         document.getElementById('predictorModal').classList.add('show');
     }
 
@@ -746,6 +750,7 @@ class PredictionApp {
         document.getElementById('targetOddEven').checked = true;
         document.getElementById('targetCombo').checked = true;
         this.hideTestResult();
+        this.hidePromptAssistantResult();
     }
 
     renderPresetCards() {
@@ -894,6 +899,88 @@ class PredictionApp {
             button.disabled = false;
             button.textContent = '测试模型';
         }
+    }
+
+    async checkPromptAssistant() {
+        const predictorId = document.getElementById('predictorId').value;
+        const payload = this.collectFormData();
+        payload.predictor_id = predictorId ? Number(predictorId) : null;
+
+        try {
+            const response = await fetch('/api/predictors/prompt-check', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '提示词检查失败');
+            }
+            this.renderPromptAssistantResult({
+                mode: 'check',
+                ...data
+            });
+        } catch (error) {
+            this.renderPromptAssistantResult({
+                mode: 'check',
+                risk_level: 'high',
+                summary: error.message,
+                issues: []
+            });
+        }
+    }
+
+    async optimizePromptAssistant() {
+        const predictorId = document.getElementById('predictorId').value;
+        const payload = this.collectFormData();
+        payload.predictor_id = predictorId ? Number(predictorId) : null;
+
+        const button = document.getElementById('optimizePromptBtn');
+        button.disabled = true;
+        button.textContent = '优化中...';
+        this.renderPromptAssistantResult({
+            mode: 'optimize',
+            risk_level: 'low',
+            summary: '正在调用 AI 生成优化建议，请稍候...',
+            issues: []
+        });
+
+        try {
+            const response = await fetch('/api/predictors/prompt-optimize', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || 'AI 优化失败');
+            }
+            this.renderPromptAssistantResult({
+                mode: 'optimize',
+                ...data
+            });
+        } catch (error) {
+            this.renderPromptAssistantResult({
+                mode: 'optimize',
+                risk_level: 'high',
+                summary: error.message,
+                issues: []
+            });
+        } finally {
+            button.disabled = false;
+            button.textContent = 'AI 优化';
+        }
+    }
+
+    applyOptimizedPrompt() {
+        const optimizedPrompt = document.getElementById('promptAssistantResult').dataset.optimizedPrompt || '';
+        if (!optimizedPrompt) {
+            alert('当前没有可应用的优化结果');
+            return;
+        }
+        document.getElementById('systemPrompt').value = optimizedPrompt;
     }
 
     async deletePredictor(predictorId) {
@@ -1062,6 +1149,99 @@ class PredictionApp {
         result.textContent = '';
         result.className = 'test-result';
         result.style.display = 'none';
+    }
+
+    renderPromptAssistantResult(data) {
+        const container = document.getElementById('promptAssistantResult');
+        const applyButton = document.getElementById('applyOptimizedPromptBtn');
+        if (!container || !applyButton) {
+            return;
+        }
+
+        const riskLevel = data.risk_level || 'low';
+        const issues = data.issues || [];
+        const why = data.why || [];
+        const optimizedPrompt = data.optimized_prompt || '';
+        const staticAnalysis = data.static_analysis || null;
+        const summary = data.summary || '暂无结果';
+        const recommendedVariables = data.recommended_variables || [];
+        const recommendedSnippets = data.recommended_snippets || [];
+
+        const issueHtml = issues.length
+            ? issues.map((item) => {
+                if (typeof item === 'string') {
+                    return `<li>${this.escapeHtml(item)}</li>`;
+                }
+                const suggestion = item.suggestion ? ` 建议：${item.suggestion}` : '';
+                return `<li><strong>${this.escapeHtml(item.title || item.level || '提示')}</strong>：${this.escapeHtml((item.detail || item) + suggestion)}</li>`;
+            }).join('')
+            : '<li>暂无明显问题</li>';
+
+        const whyHtml = why.length
+            ? `<div class="assistant-block"><span class="mini-label">优化思路</span><ul>${why.map((item) => `<li>${this.escapeHtml(item)}</li>`).join('')}</ul></div>`
+            : '';
+
+        const staticHtml = staticAnalysis
+            ? `<div class="assistant-block"><span class="mini-label">静态检查摘要</span><p>${this.escapeHtml(staticAnalysis.summary || '')}</p></div>`
+            : '';
+
+        const variableHtml = recommendedVariables.length
+            ? `<div class="assistant-block"><span class="mini-label">推荐变量</span><ul>${recommendedVariables.map((item) => `<li><strong>${this.escapeHtml(`{{${item.name}}}`)}</strong>：${this.escapeHtml(item.reason || '')}</li>`).join('')}</ul></div>`
+            : '';
+
+        const snippetHtml = recommendedSnippets.length
+            ? `<div class="assistant-block"><span class="mini-label">建议插入片段</span><pre>${this.escapeHtml(recommendedSnippets.map((item) => item.snippet).join('\n\n'))}</pre></div>`
+            : '';
+
+        const metaBits = [];
+        if (data.api_mode) {
+            metaBits.push(`模式：${data.api_mode}`);
+        }
+        if (data.response_model) {
+            metaBits.push(`模型：${data.response_model}`);
+        }
+        if (data.finish_reason) {
+            metaBits.push(`finish_reason：${data.finish_reason}`);
+        }
+        if (data.latency_ms !== null && data.latency_ms !== undefined) {
+            metaBits.push(`耗时：${data.latency_ms}ms`);
+        }
+
+        container.dataset.optimizedPrompt = optimizedPrompt;
+        container.className = `prompt-assistant-result ${riskLevel}`;
+        container.style.display = 'block';
+        container.innerHTML = `
+            <div class="assistant-block">
+                <span class="mini-label">检查结论</span>
+                <p>${this.escapeHtml(summary)}</p>
+                ${metaBits.length ? `<p class="field-hint">${this.escapeHtml(metaBits.join(' | '))}</p>` : ''}
+            </div>
+            <div class="assistant-block">
+                <span class="mini-label">问题列表</span>
+                <ul>${issueHtml}</ul>
+            </div>
+            ${whyHtml}
+            ${variableHtml}
+            ${snippetHtml}
+            ${optimizedPrompt ? `<div class="assistant-block"><span class="mini-label">优化后提示词</span><pre>${this.escapeHtml(optimizedPrompt)}</pre></div>` : ''}
+            ${staticHtml}
+        `;
+
+        applyButton.style.display = optimizedPrompt ? 'inline-flex' : 'none';
+    }
+
+    hidePromptAssistantResult() {
+        const container = document.getElementById('promptAssistantResult');
+        const applyButton = document.getElementById('applyOptimizedPromptBtn');
+        if (container) {
+            container.innerHTML = '';
+            container.dataset.optimizedPrompt = '';
+            container.className = 'prompt-assistant-result';
+            container.style.display = 'none';
+        }
+        if (applyButton) {
+            applyButton.style.display = 'none';
+        }
     }
 
     targetLabel(target) {

@@ -14,6 +14,7 @@ from ai_trader import AIPredictor
 from database import Database
 from services.pc28_service import PC28Service
 from services.prediction_engine import PredictionEngine
+from utils.prompt_assistant import analyze_prompt, build_optimizer_prompt
 from utils.auth import (
     clear_current_user,
     get_current_user_id,
@@ -405,6 +406,40 @@ def _get_predictor_dashboard_data(predictor_id: int) -> dict:
     }
 
 
+def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | None, dict]:
+    predictor_id = data.get('predictor_id')
+    existing = None
+    if predictor_id:
+        predictor_id = int(predictor_id)
+        if not db.predictor_exists_for_user(predictor_id, user_id):
+            raise PermissionError('无权访问此预测方案')
+        existing = db.get_predictor(predictor_id, include_secret=True)
+
+    fallback_api_url = existing.get('api_url') if existing else ''
+    fallback_model_name = existing.get('model_name') if existing else ''
+    fallback_api_mode = existing.get('api_mode') if existing else 'auto'
+    fallback_primary_metric = existing.get('primary_metric') if existing else 'big_small'
+    fallback_method = existing.get('prediction_method') if existing else ''
+    fallback_prompt = existing.get('system_prompt') if existing else ''
+    fallback_injection_mode = existing.get('data_injection_mode') if existing else 'summary'
+    fallback_targets = existing.get('prediction_targets') if existing else None
+
+    resolved = {
+        'predictor_id': predictor_id,
+        'api_key': str(data.get('api_key') or '').strip() or (existing.get('api_key') if existing else ''),
+        'api_url': str(data.get('api_url') or fallback_api_url).strip(),
+        'model_name': str(data.get('model_name') or fallback_model_name).strip(),
+        'api_mode': normalize_api_mode(data.get('api_mode') or fallback_api_mode),
+        'primary_metric': normalize_primary_metric(data.get('primary_metric') or fallback_primary_metric),
+        'prediction_method': str(data.get('prediction_method') or fallback_method).strip(),
+        'system_prompt': str(data.get('system_prompt') or fallback_prompt).strip(),
+        'data_injection_mode': normalize_injection_mode(data.get('data_injection_mode') or fallback_injection_mode),
+        'prediction_targets': normalize_target_list(data.get('prediction_targets', fallback_targets))
+    }
+
+    return existing, resolved
+
+
 @app.route('/image/<path:filename>')
 def serve_image(filename):
     from flask import send_from_directory
@@ -716,21 +751,15 @@ def create_predictor():
 def test_predictor():
     user_id = get_current_user_id()
     data = request.get_json() or {}
+    try:
+        _, resolved = _resolve_predictor_form_context(user_id, data)
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
 
-    predictor_id = data.get('predictor_id')
-    existing = None
-    if predictor_id:
-        if not db.predictor_exists_for_user(int(predictor_id), user_id):
-            return jsonify({'error': '无权访问此预测方案'}), 403
-        existing = db.get_predictor(int(predictor_id), include_secret=True)
-
-    fallback_api_url = existing.get('api_url') if existing else ''
-    fallback_model_name = existing.get('model_name') if existing else ''
-    fallback_api_mode = existing.get('api_mode') if existing else 'auto'
-    api_key = str(data.get('api_key') or '').strip() or (existing.get('api_key') if existing else '')
-    api_url = str(data.get('api_url') or fallback_api_url).strip()
-    model_name = str(data.get('model_name') or fallback_model_name).strip()
-    api_mode = normalize_api_mode(data.get('api_mode') or fallback_api_mode)
+    api_key = resolved['api_key']
+    api_url = resolved['api_url']
+    model_name = resolved['model_name']
+    api_mode = resolved['api_mode']
 
     if not api_key:
         return jsonify({'error': '请填写 API Key，或在编辑已有方案时使用已保存的 Key'}), 400
@@ -760,6 +789,84 @@ def test_predictor():
         })
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/predictors/prompt-check', methods=['POST'])
+@login_required
+def check_predictor_prompt():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+
+    try:
+        _, resolved = _resolve_predictor_form_context(user_id, data)
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+
+    analysis = analyze_prompt(
+        prompt=resolved['system_prompt'],
+        prediction_targets=resolved['prediction_targets'],
+        data_injection_mode=resolved['data_injection_mode'],
+        primary_metric=resolved['primary_metric']
+    )
+    return jsonify(analysis)
+
+
+@app.route('/api/predictors/prompt-optimize', methods=['POST'])
+@login_required
+def optimize_predictor_prompt():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+
+    try:
+        _, resolved = _resolve_predictor_form_context(user_id, data)
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+
+    if not resolved['api_key']:
+        return jsonify({'error': 'AI 优化需要可用的 API Key，请先填写或使用已有方案配置'}), 400
+    if not resolved['api_url']:
+        return jsonify({'error': 'AI 优化需要 API 地址'}), 400
+    if not resolved['model_name']:
+        return jsonify({'error': 'AI 优化需要模型名称'}), 400
+
+    analysis = analyze_prompt(
+        prompt=resolved['system_prompt'],
+        prediction_targets=resolved['prediction_targets'],
+        data_injection_mode=resolved['data_injection_mode'],
+        primary_metric=resolved['primary_metric']
+    )
+
+    optimizer_prompt = build_optimizer_prompt(
+        current_prompt=resolved['system_prompt'],
+        analysis=analysis,
+        predictor_payload=resolved
+    )
+    optimizer = AIPredictor(
+        api_key=resolved['api_key'],
+        api_url=resolved['api_url'],
+        model_name=resolved['model_name'],
+        api_mode=resolved['api_mode'],
+        temperature=0.2
+    )
+
+    try:
+        result = optimizer.run_prompt_optimization(optimizer_prompt)
+        payload = result['payload']
+        return jsonify({
+            'message': 'AI 优化完成',
+            'api_mode': result['api_mode'],
+            'response_model': result['response_model'],
+            'finish_reason': result['finish_reason'],
+            'latency_ms': result['latency_ms'],
+            'summary': payload.get('summary') or '',
+            'issues': payload.get('issues') or [],
+            'why': payload.get('why') or [],
+            'optimized_prompt': payload.get('optimized_prompt') or '',
+            'raw_response': result['raw_response'][:1200],
+            'static_analysis': analysis
+        })
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'static_analysis': analysis}), 500
 
 
 @app.route('/api/predictors/<int:predictor_id>', methods=['PUT'])

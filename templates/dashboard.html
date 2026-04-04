@@ -290,6 +290,13 @@
                 <small class="field-hint">支持直接写自然语言，也支持填入变量占位符。未写变量时，平台会按你选择的“数据注入模式”自动把数据放进上下文。</small>
             </label>
 
+            <div class="modal-actions left-actions">
+                <button class="btn ghost" id="checkPromptBtn">检查提示词</button>
+                <button class="btn ghost" id="optimizePromptBtn">AI 优化</button>
+                <button class="btn ghost" id="applyOptimizedPromptBtn" style="display: none;">应用优化结果</button>
+            </div>
+            <div id="promptAssistantResult" class="prompt-assistant-result" style="display: none;"></div>
+
             <div class="form-field help-block">
                 <span>变量说明与示例</span>
                 <div class="variable-grid">

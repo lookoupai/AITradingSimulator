@@ -84,6 +84,24 @@ class AIPredictor:
             'response_preview': preview[:200]
         }
 
+    def run_prompt_optimization(self, optimization_prompt: str) -> dict:
+        """调用当前模型生成提示词优化建议"""
+        result = self._call_llm_with_metadata(
+            optimization_prompt,
+            system_prompt='你是 PC28 提示词优化助手。你必须只输出单个 JSON 对象。',
+            max_output_tokens=1800,
+            json_output=True
+        )
+        payload = self._extract_json_object(result['raw_response'])
+        return {
+            'api_mode': result['api_mode'],
+            'response_model': result['response_model'],
+            'finish_reason': result['finish_reason'],
+            'latency_ms': result['latency_ms'],
+            'raw_response': result['raw_response'],
+            'payload': payload
+        }
+
     def _build_prompt(self, context: dict, predictor_config: dict) -> str:
         targets = normalize_target_list(predictor_config.get('prediction_targets'))
         target_labels = [self._target_label(target) for target in targets]
@@ -290,11 +308,15 @@ class AIPredictor:
     def _call_llm(self, prompt: str) -> str:
         return self._call_llm_with_metadata(prompt)['raw_response']
 
-    def _call_llm_with_metadata(self, prompt: str) -> dict:
+    def _call_llm_with_metadata(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_output_tokens: int = 1200,
+        json_output: bool = False
+    ) -> dict:
         last_error: Optional[Exception] = None
-        system_prompt = (
-            "你是 PC28 预测助手。你必须遵守字段契约，只输出单个 JSON 对象。"
-        )
+        system_prompt = system_prompt or "你是 PC28 预测助手。你必须遵守字段契约，只输出单个 JSON 对象。"
         resolved_api_mode = self._resolve_api_mode()
 
         for base_url in self._candidate_base_urls():
@@ -305,17 +327,22 @@ class AIPredictor:
                 )
                 start_time = time.perf_counter()
                 if resolved_api_mode == 'responses':
-                    response = client.responses.create(
-                        model=self.model_name,
-                        instructions=system_prompt,
-                        input=prompt,
-                        temperature=self.temperature,
-                        max_output_tokens=1200,
-                        text={
+                    response_kwargs = {
+                        'model': self.model_name,
+                        'instructions': system_prompt,
+                        'input': prompt,
+                        'temperature': self.temperature,
+                        'max_output_tokens': max_output_tokens
+                    }
+                    if json_output:
+                        response_kwargs['text'] = {
                             'format': {
                                 'type': 'json_object'
                             }
                         }
+
+                    response = client.responses.create(
+                        **response_kwargs
                     )
                     raw_response = self._extract_response_output_text(response)
                     return {
@@ -333,7 +360,7 @@ class AIPredictor:
                         {'role': 'user', 'content': prompt}
                     ],
                     temperature=self.temperature,
-                    max_tokens=1200
+                    max_tokens=max_output_tokens
                 )
                 raw_response = self._extract_message_text(response)
                 choice = response.choices[0] if getattr(response, 'choices', None) else None
@@ -353,6 +380,32 @@ class AIPredictor:
         if isinstance(last_error, APIError):
             raise Exception(f'API 调用失败（模式={resolved_api_mode}）：{last_error}')
         raise Exception(f'LLM 调用失败（模式={resolved_api_mode}）：{last_error}')
+
+    def _extract_json_object(self, raw_response: str) -> dict:
+        text = (raw_response or '').strip()
+        if not text:
+            raise ValueError('AI 返回为空')
+
+        if '<think>' in text and '</think>' in text:
+            text = text.split('</think>')[-1].strip()
+
+        code_block_match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.DOTALL)
+        if code_block_match:
+            text = code_block_match.group(1).strip()
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        raise ValueError(f'无法从模型响应中解析 JSON：{text[:300]}')
 
     def _resolve_api_mode(self) -> str:
         if self.api_mode != 'auto':
