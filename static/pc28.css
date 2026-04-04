@@ -152,6 +152,16 @@ a {
     font-size: 13px;
 }
 
+.home-select {
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel-soft);
+    color: var(--text);
+    font: inherit;
+}
+
 .icon-btn {
     width: 38px;
     height: 38px;

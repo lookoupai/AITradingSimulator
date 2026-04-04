@@ -265,6 +265,19 @@ class Database:
         conn.close()
         return [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
 
+    def get_all_predictors(self, include_secret: bool = False) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM predictors
+            ORDER BY created_at DESC
+            '''
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
+
     def get_enabled_predictors(self, lottery_type: str = 'pc28', include_secret: bool = True) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()

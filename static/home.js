@@ -1,12 +1,38 @@
 class HomePage {
     constructor() {
+        this.publicMetric = 'combo';
+        this.publicSort = 'recent100';
         this.init();
     }
 
     async init() {
         await this.checkLoginStatus();
+        this.initPublicFilters();
         await this.loadOverview();
-        setInterval(() => this.loadOverview(), 15000);
+        await this.loadPublicPredictors();
+        setInterval(() => {
+            this.loadOverview();
+            this.loadPublicPredictors();
+        }, 15000);
+    }
+
+    initPublicFilters() {
+        const metricSelect = document.getElementById('publicMetricSelect');
+        const sortSelect = document.getElementById('publicSortSelect');
+
+        if (metricSelect) {
+            metricSelect.addEventListener('change', (event) => {
+                this.publicMetric = event.target.value;
+                this.loadPublicPredictors();
+            });
+        }
+
+        if (sortSelect) {
+            sortSelect.addEventListener('change', (event) => {
+                this.publicSort = event.target.value;
+                this.loadPublicPredictors();
+            });
+        }
     }
 
     async checkLoginStatus() {
@@ -32,6 +58,16 @@ class HomePage {
             this.renderTags('hotNumberList', overview.today_preview?.hot_numbers || [], '次');
         } catch (error) {
             console.error('Failed to load overview:', error);
+        }
+    }
+
+    async loadPublicPredictors() {
+        try {
+            const response = await fetch(`/api/public/predictors?metric=${encodeURIComponent(this.publicMetric)}&sort_by=${encodeURIComponent(this.publicSort)}&limit=10`);
+            const data = await response.json();
+            this.renderPublicPredictors(data.items || []);
+        } catch (error) {
+            console.error('Failed to load public predictors:', error);
         }
     }
 
@@ -95,6 +131,29 @@ class HomePage {
         `).join('');
     }
 
+    renderPublicPredictors(items) {
+        const tbody = document.getElementById('publicPredictorBody');
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-cell">暂无公开方案数据</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = items.map((item, index) => `
+            <tr>
+                <td>${index + 1}</td>
+                <td>
+                    <strong>${this.escapeHtml(item.predictor_name)}</strong><br>
+                    <span class="hint-text">${this.escapeHtml(item.username)} · ${this.escapeHtml(item.model_name)}</span>
+                </td>
+                <td>${this.escapeHtml(item.metric_label || '--')}</td>
+                <td>${this.formatRatioRate(item.recent_20)}</td>
+                <td>${this.formatRatioRate(item.recent_100)}</td>
+                <td>${item.current_hit_streak || 0}</td>
+                <td>${item.historical_max_hit_streak || 0}</td>
+            </tr>
+        `).join('');
+    }
+
     renderTags(targetId, items, suffix) {
         const container = document.getElementById(targetId);
         if (!items.length) {
@@ -109,6 +168,20 @@ class HomePage {
 
     renderBadge(text) {
         return `<span class="tag">${this.escapeHtml(text)}</span>`;
+    }
+
+    formatPercent(value) {
+        if (value === null || value === undefined || value === '') {
+            return '--';
+        }
+        return `${Number(value).toFixed(2)}%`;
+    }
+
+    formatRatioRate(stat) {
+        if (!stat || !stat.sample_count) {
+            return '--';
+        }
+        return `${stat.hit_count}/${stat.sample_count} (${this.formatPercent(stat.hit_rate)})`;
     }
 
     escapeHtml(text) {

@@ -169,6 +169,66 @@ def _serialize_overview(overview: dict) -> dict:
     }
 
 
+def _build_public_predictor_rankings(sort_by: str = 'recent100', metric: str = 'combo', limit: int = 10) -> list[dict]:
+    predictors = [item for item in db.get_all_predictors(include_secret=False) if item.get('enabled')]
+    ranked_items = []
+
+    for predictor in predictors:
+        stats = db.get_predictor_stats(predictor['id'])
+        metric_stats = (stats.get('metrics') or {}).get(metric) or {}
+        recent20 = metric_stats.get('recent_20') or {}
+        recent100 = metric_stats.get('recent_100') or {}
+        overall = metric_stats.get('overall') or {}
+        settled_rows = [row for row in db.get_recent_predictions(predictor['id'], limit=None) if row['status'] == 'settled']
+        streaks = db._build_streak_stats(settled_rows, metric)
+        user = db.get_user_by_id(predictor['user_id'])
+
+        ranked_items.append({
+            'predictor_id': predictor['id'],
+            'predictor_name': predictor['name'],
+            'username': user['username'] if user else 'unknown',
+            'model_name': predictor['model_name'],
+            'primary_metric': predictor.get('primary_metric') or 'combo',
+            'primary_metric_label': stats.get('primary_metric_label') or '组合',
+            'metric': metric,
+            'metric_label': metric_stats.get('label') or metric,
+            'recent_20': recent20,
+            'recent_100': recent100,
+            'overall': overall,
+            'current_hit_streak': streaks.get('current_hit_streak', 0),
+            'current_miss_streak': streaks.get('current_miss_streak', 0),
+            'recent_100_max_hit_streak': streaks.get('recent_100_max_hit_streak', 0),
+            'recent_100_max_miss_streak': streaks.get('recent_100_max_miss_streak', 0),
+            'historical_max_hit_streak': streaks.get('historical_max_hit_streak', 0),
+            'historical_max_miss_streak': streaks.get('historical_max_miss_streak', 0),
+            'settled_predictions': stats.get('settled_predictions', 0)
+        })
+
+    def _rank_value(item: dict):
+        if sort_by == 'recent20':
+            return (
+                item['recent_20'].get('hit_rate') or -1,
+                item['recent_20'].get('hit_count') or -1
+            )
+        if sort_by == 'current_streak':
+            return (
+                item.get('current_hit_streak', 0),
+                item['recent_20'].get('hit_rate') or -1
+            )
+        if sort_by == 'historical_streak':
+            return (
+                item.get('historical_max_hit_streak', 0),
+                item['overall'].get('hit_rate') or -1
+            )
+        return (
+            item['recent_100'].get('hit_rate') or -1,
+            item['recent_100'].get('hit_count') or -1
+        )
+
+    ranked_items.sort(key=_rank_value, reverse=True)
+    return ranked_items[:limit]
+
+
 def _parse_bool(value, default: bool = True) -> bool:
     if value is None:
         return default
@@ -509,6 +569,20 @@ def get_pc28_overview():
             'generated_at': get_current_beijing_time_str(),
             'warning': f'官方接口不可用，已回退本地缓存：{exc}'
         })
+
+
+@app.route('/api/public/predictors', methods=['GET'])
+def get_public_predictors():
+    sort_by = request.args.get('sort_by', 'recent100')
+    metric = request.args.get('metric', 'combo')
+    limit = request.args.get('limit', 10, type=int)
+    limit = max(1, min(limit, 50))
+
+    return jsonify({
+        'sort_by': sort_by,
+        'metric': metric,
+        'items': _build_public_predictor_rankings(sort_by=sort_by, metric=metric, limit=limit)
+    })
 
 
 # ============ Predictor APIs ============

@@ -97,6 +97,50 @@
             </article>
         </section>
 
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <h3>公开方案榜单</h3>
+                    <p class="panel-subtitle">基于已启用方案的最近 20 期、最近 100 期和连中表现做公开排序。</p>
+                </div>
+                <div class="panel-actions">
+                    <select id="publicMetricSelect" class="home-select">
+                        <option value="combo">组合</option>
+                        <option value="number">号码</option>
+                        <option value="big_small">大小</option>
+                        <option value="odd_even">单双</option>
+                        <option value="double_group">双组</option>
+                        <option value="kill_group">杀组</option>
+                    </select>
+                    <select id="publicSortSelect" class="home-select">
+                        <option value="recent100">按100期胜率</option>
+                        <option value="recent20">按20期胜率</option>
+                        <option value="current_streak">按当前连中</option>
+                        <option value="historical_streak">按历史最大连中</option>
+                    </select>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>排名</th>
+                            <th>方案</th>
+                            <th>玩法</th>
+                            <th>20期</th>
+                            <th>100期</th>
+                            <th>当前连中</th>
+                            <th>历史最大连中</th>
+                        </tr>
+                    </thead>
+                    <tbody id="publicPredictorBody">
+                        <tr><td colspan="7" class="empty-cell">暂无公开方案数据</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <p class="field-hint">榜单当前展示所有已启用方案；后续如果加入“分享开关”，这里可以再切成只展示主动公开的方案。</p>
+        </section>
+
         <section class="insight-grid">
             <article class="panel">
                 <div class="panel-header compact">
