@@ -1,5 +1,40 @@
+const HOME_LOTTERY_CONFIG = {
+    pc28: {
+        label: '加拿大28 / PC28',
+        eyebrow: 'Canada 28 / PC28',
+        description: '为不同朋友配置不同提示词、模型和玩法目标，统一预测下一期加拿大28结果。',
+        drawSubtitle: '最新 20 期官方结果',
+        rankingSubtitle: '基于已启用方案的最近 20 期、最近 100 期和连中表现做公开排序。',
+        rankingHint: '“方案主玩法”来自方案配置；“当前查看玩法”来自你上方筛选器选择的统计口径。只有用户主动开启“公开预测内容”后，访客才能查看该方案的预测详情。',
+        metricOptions: [
+            { value: 'combo', label: '组合投注' },
+            { value: 'number', label: '单点' },
+            { value: 'big_small', label: '大/小' },
+            { value: 'odd_even', label: '单/双' },
+            { value: 'double_group', label: '组合分组统计' },
+            { value: 'kill_group', label: '排除统计' }
+        ],
+        summaryLabels: ['下一期期号', '倒计时', '最新开奖号码', '今日总期数']
+    },
+    jingcai_football: {
+        label: '竞彩足球',
+        eyebrow: 'Jingcai Football',
+        description: '查看竞彩足球当前批次、近期赛事与公开方案表现，首版支持胜平负和让球胜平负预测。',
+        drawSubtitle: '当前批次与近期开奖赛程',
+        rankingSubtitle: '基于已启用竞彩足球方案的近期命中表现做公开排序。',
+        rankingHint: '竞彩足球公开页当前展示命中统计与公开预测记录，不包含收益模拟。',
+        metricOptions: [
+            { value: 'spf', label: '胜平负' },
+            { value: 'rqspf', label: '让球胜平负' }
+        ],
+        summaryLabels: ['当前批次', '待赛场次', '下一场比赛', '已结算场次']
+    }
+};
+
+
 class HomePage {
     constructor() {
+        this.currentLotteryType = 'pc28';
         this.publicMetric = 'combo';
         this.publicSort = 'recent100';
         this.init();
@@ -8,6 +43,7 @@ class HomePage {
     async init() {
         await this.checkLoginStatus();
         this.initPublicFilters();
+        this.syncLotteryUi();
         await this.loadOverview();
         await this.loadPublicPredictors();
         setInterval(() => {
@@ -17,8 +53,19 @@ class HomePage {
     }
 
     initPublicFilters() {
+        const lotterySelect = document.getElementById('homeLotteryTypeSelect');
         const metricSelect = document.getElementById('publicMetricSelect');
         const sortSelect = document.getElementById('publicSortSelect');
+
+        if (lotterySelect) {
+            lotterySelect.addEventListener('change', (event) => {
+                this.currentLotteryType = event.target.value || 'pc28';
+                this.publicMetric = this.getMetricOptions()[0]?.value || 'combo';
+                this.syncLotteryUi();
+                this.loadOverview();
+                this.loadPublicPredictors();
+            });
+        }
 
         if (metricSelect) {
             metricSelect.addEventListener('change', (event) => {
@@ -39,6 +86,36 @@ class HomePage {
         this.renderPublicMetricHint();
     }
 
+    getLotteryConfig() {
+        return HOME_LOTTERY_CONFIG[this.currentLotteryType] || HOME_LOTTERY_CONFIG.pc28;
+    }
+
+    getMetricOptions() {
+        return this.getLotteryConfig().metricOptions || [];
+    }
+
+    syncLotteryUi() {
+        const config = this.getLotteryConfig();
+        document.getElementById('homeEyebrow').textContent = config.eyebrow;
+        document.getElementById('homeHeroDescription').textContent = config.description;
+        document.getElementById('recentDrawsSubtitle').textContent = config.drawSubtitle;
+        document.getElementById('publicRankingSubtitle').textContent = config.rankingSubtitle;
+        document.getElementById('publicRankingHint').textContent = config.rankingHint;
+
+        const metricSelect = document.getElementById('publicMetricSelect');
+        metricSelect.innerHTML = this.getMetricOptions().map((item) => `
+            <option value="${this.escapeHtml(item.value)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        metricSelect.value = this.getMetricOptions().some((item) => item.value === this.publicMetric)
+            ? this.publicMetric
+            : (this.getMetricOptions()[0]?.value || '');
+        this.publicMetric = metricSelect.value;
+
+        const insightGrid = document.getElementById('pc28InsightGrid');
+        insightGrid.style.display = this.currentLotteryType === 'pc28' ? '' : 'none';
+        this.renderPublicMetricHint();
+    }
+
     async checkLoginStatus() {
         try {
             const response = await fetch('/api/auth/me', { credentials: 'include' });
@@ -53,13 +130,15 @@ class HomePage {
 
     async loadOverview() {
         try {
-            const response = await fetch('/api/pc28/overview?limit=20');
+            const response = await fetch(`/api/lotteries/${encodeURIComponent(this.currentLotteryType)}/overview?limit=20`);
             const overview = await response.json();
             this.renderHero(overview);
             this.renderSummary(overview);
-            this.renderDraws(overview.recent_draws || []);
-            this.renderTags('omissionList', overview.omission_preview?.top_numbers || [], '期');
-            this.renderTags('hotNumberList', overview.today_preview?.hot_numbers || [], '次');
+            this.renderDraws(overview.recent_draws || overview.recent_events || []);
+            if (this.currentLotteryType === 'pc28') {
+                this.renderTags('omissionList', overview.omission_preview?.top_numbers || [], '期');
+                this.renderTags('hotNumberList', overview.today_preview?.hot_numbers || [], '次');
+            }
         } catch (error) {
             console.error('Failed to load overview:', error);
         }
@@ -67,7 +146,7 @@ class HomePage {
 
     async loadPublicPredictors() {
         try {
-            const response = await fetch(`/api/public/predictors?metric=${encodeURIComponent(this.publicMetric)}&sort_by=${encodeURIComponent(this.publicSort)}&limit=10`);
+            const response = await fetch(`/api/public/predictors?lottery_type=${encodeURIComponent(this.currentLotteryType)}&metric=${encodeURIComponent(this.publicMetric)}&sort_by=${encodeURIComponent(this.publicSort)}&limit=10`);
             const data = await response.json();
             this.renderPublicPredictors(data.items || []);
         } catch (error) {
@@ -93,6 +172,11 @@ class HomePage {
     }
 
     renderHero(overview) {
+        if ((overview?.lottery_type || 'pc28') === 'jingcai_football') {
+            this.renderFootballHero(overview);
+            return;
+        }
+
         const latestDraw = overview.latest_draw;
         const warning = overview.warning ? `<div class="warning-banner">${this.escapeHtml(overview.warning)}</div>` : '';
 
@@ -118,7 +202,43 @@ class HomePage {
         `;
     }
 
+    renderFootballHero(overview) {
+        const warning = overview.warning ? `<div class="warning-banner">${this.escapeHtml(overview.warning)}</div>` : '';
+        document.getElementById('heroOverview').innerHTML = `
+            ${warning}
+            <div class="hero-metric">
+                <span class="mini-label">当前批次</span>
+                <strong>${this.escapeHtml(overview.batch_key || '--')}</strong>
+            </div>
+            <div class="hero-metric">
+                <span class="mini-label">待赛场次</span>
+                <strong>${this.escapeHtml(String(overview.open_match_count ?? 0))}</strong>
+            </div>
+            <div class="hero-metric">
+                <span class="mini-label">下一场比赛</span>
+                <div class="result-number football-title">${this.escapeHtml(overview.next_match_name || '--')}</div>
+                <div class="result-meta">${this.escapeHtml(overview.next_match_time || '')}</div>
+            </div>
+        `;
+    }
+
     renderSummary(overview) {
+        if ((overview?.lottery_type || 'pc28') === 'jingcai_football') {
+            const values = [
+                overview.batch_key || '--',
+                String(overview.open_match_count ?? '--'),
+                overview.next_match_name || '--',
+                String(overview.settled_match_count ?? '--')
+            ];
+            document.querySelectorAll('#summaryGrid .stat-label').forEach((element, index) => {
+                element.textContent = this.getLotteryConfig().summaryLabels[index];
+            });
+            document.querySelectorAll('#summaryGrid .stat-value').forEach((element, index) => {
+                element.textContent = values[index];
+            });
+            return;
+        }
+
         const latestDraw = overview.latest_draw;
         const totalIssues = overview.today_preview?.summary?.['总期数'] || '--';
         const values = [
@@ -128,6 +248,9 @@ class HomePage {
             totalIssues
         ];
 
+        document.querySelectorAll('#summaryGrid .stat-label').forEach((element, index) => {
+            element.textContent = this.getLotteryConfig().summaryLabels[index];
+        });
         document.querySelectorAll('#summaryGrid .stat-value').forEach((element, index) => {
             element.textContent = values[index];
         });
@@ -135,6 +258,41 @@ class HomePage {
 
     renderDraws(draws) {
         const tbody = document.getElementById('recentDrawsBody');
+        if (this.currentLotteryType === 'jingcai_football') {
+            this.updateFootballDrawHeaders();
+            if (!draws.length) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无赛事数据</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = draws.map((draw) => {
+                const meta = draw.meta_payload || {};
+                const result = draw.result_payload || {};
+                const teams = draw.home_team && draw.away_team
+                    ? `${this.escapeHtml(draw.home_team)} vs ${this.escapeHtml(draw.away_team)}`
+                    : this.escapeHtml(draw.event_name || '--');
+                const spfOdds = meta.spf_odds || {};
+                const rqspf = meta.rqspf || {};
+                const spfText = ['胜', '平', '负'].map((key) => `${key}:${spfOdds[key] ?? '--'}`).join(' / ');
+                const rqText = ['胜', '平', '负'].map((key) => `${key}:${(rqspf.odds || {})[key] ?? '--'}`).join(' / ');
+                const scoreText = result.score1 !== null && result.score1 !== undefined && result.score2 !== null && result.score2 !== undefined
+                    ? `${result.score1}:${result.score2}`
+                    : '--';
+                return `
+                    <tr>
+                        <td>${this.escapeHtml(meta.match_no || draw.event_key || '--')}</td>
+                        <td>${this.escapeHtml(draw.league || '--')}</td>
+                        <td>${teams}</td>
+                        <td>${this.escapeHtml(spfText)}</td>
+                        <td>${this.escapeHtml((rqspf.handicap_text || '--') + ' [' + rqText + ']')}</td>
+                        <td>${this.escapeHtml(draw.event_time || '')}<br><span class="hint-text">${this.escapeHtml(scoreText)}</span></td>
+                    </tr>
+                `;
+            }).join('');
+            return;
+        }
+
+        this.updatePc28DrawHeaders();
         if (!draws.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无开奖数据</td></tr>';
             return;
@@ -152,6 +310,24 @@ class HomePage {
         `).join('');
     }
 
+    updatePc28DrawHeaders() {
+        document.getElementById('homeDrawHead1').textContent = '期号';
+        document.getElementById('homeDrawHead2').textContent = '开奖号码';
+        document.getElementById('homeDrawHead3').textContent = '大/小';
+        document.getElementById('homeDrawHead4').textContent = '单/双';
+        document.getElementById('homeDrawHead5').textContent = '组合结果';
+        document.getElementById('homeDrawHead6').textContent = '开奖时间';
+    }
+
+    updateFootballDrawHeaders() {
+        document.getElementById('homeDrawHead1').textContent = '场次';
+        document.getElementById('homeDrawHead2').textContent = '联赛';
+        document.getElementById('homeDrawHead3').textContent = '对阵';
+        document.getElementById('homeDrawHead4').textContent = '胜平负';
+        document.getElementById('homeDrawHead5').textContent = '让球胜平负';
+        document.getElementById('homeDrawHead6').textContent = '比赛时间 / 比分';
+    }
+
     renderPublicPredictors(items) {
         const tbody = document.getElementById('publicPredictorBody');
         if (!items.length) {
@@ -166,7 +342,7 @@ class HomePage {
                     <strong>${this.escapeHtml(item.predictor_name)}</strong><br>
                     <span class="hint-text">${this.escapeHtml(item.username)} · ${this.escapeHtml(item.model_name)}</span>
                 </td>
-                <td>${this.escapeHtml(item.primary_metric_label || '--')}</td>
+                <td>${this.escapeHtml((item.lottery_label || '--') + ' / ' + (item.primary_metric_label || '--'))}</td>
                 <td>${this.escapeHtml(item.metric_label || '--')}</td>
                 <td>${this.formatRatioRate(item.recent_20)}</td>
                 <td>${this.formatRatioRate(item.recent_100)}</td>
@@ -209,6 +385,20 @@ class HomePage {
     }
 
     metricInfo(metric) {
+        if (this.currentLotteryType === 'jingcai_football') {
+            const footballMapping = {
+                spf: {
+                    label: '胜平负',
+                    description: '按 90 分钟含伤停补时赛果统计主胜、平局、客胜。'
+                },
+                rqspf: {
+                    label: '让球胜平负',
+                    description: '按官方让球数修正主队比分后统计胜平负。'
+                }
+            };
+            return footballMapping[metric] || { label: metric || '--', description: '当前玩法说明暂未定义。' };
+        }
+
         const mapping = {
             number: {
                 label: '单点',

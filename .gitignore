@@ -52,3 +52,5 @@ Thumbs.db
 *.backup
 *_backup.*
 .ace-tool/
+.codex
+.codex_staging/

@@ -104,6 +104,29 @@ class AIPredictor:
             'payload': payload
         }
 
+    def run_json_task(
+        self,
+        prompt: str,
+        system_prompt: str,
+        max_output_tokens: int = 1800
+    ) -> dict:
+        """执行一个通用 JSON 生成任务"""
+        result = self._call_llm_with_metadata(
+            prompt,
+            system_prompt=system_prompt,
+            max_output_tokens=max_output_tokens,
+            json_output=True
+        )
+        payload = self._extract_json_payload(result['raw_response'])
+        return {
+            'api_mode': result['api_mode'],
+            'response_model': result['response_model'],
+            'finish_reason': result['finish_reason'],
+            'latency_ms': result['latency_ms'],
+            'raw_response': result['raw_response'],
+            'payload': payload
+        }
+
     def _build_prompt(self, context: dict, predictor_config: dict) -> str:
         targets = normalize_target_list(predictor_config.get('prediction_targets'))
         target_labels = [self._target_label(target) for target in targets]
@@ -536,7 +559,7 @@ class AIPredictor:
     def _is_official_openai_host(self, host: str) -> bool:
         return host in {'api.openai.com', 'openai.com'} or host.endswith('.openai.com')
 
-    def _extract_json_object(self, raw_response: str) -> dict:
+    def _extract_json_payload(self, raw_response: str):
         text = (raw_response or '').strip()
         if not text:
             raise ValueError('AI 返回为空')
@@ -544,7 +567,7 @@ class AIPredictor:
         if '<think>' in text and '</think>' in text:
             text = text.split('</think>')[-1].strip()
 
-        code_block_match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.DOTALL)
+        code_block_match = re.search(r'```(?:json)?\s*(\{.*\}|\[.*\])\s*```', text, re.DOTALL)
         if code_block_match:
             text = code_block_match.group(1).strip()
 
@@ -553,7 +576,7 @@ class AIPredictor:
         except json.JSONDecodeError:
             pass
 
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        json_match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group(0))
@@ -561,6 +584,12 @@ class AIPredictor:
                 pass
 
         raise ValueError(f'无法从模型响应中解析 JSON：{text[:300]}')
+
+    def _extract_json_object(self, raw_response: str) -> dict:
+        payload = self._extract_json_payload(raw_response)
+        if not isinstance(payload, dict):
+            raise ValueError('AI 返回的 JSON 不是对象')
+        return payload
 
     def _resolve_api_mode(self) -> str:
         if self.api_mode != 'auto':

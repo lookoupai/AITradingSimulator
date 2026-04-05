@@ -75,12 +75,53 @@ const DEFAULT_PROFIT_BET_MODE = 'flat';
 const DEFAULT_PROFIT_BASE_STAKE = 10;
 const DEFAULT_PROFIT_MULTIPLIER = 2;
 const DEFAULT_PROFIT_MAX_STEPS = 6;
+const LOTTERY_UI_CONFIG = {
+    pc28: {
+        label: '加拿大28 / PC28',
+        supportsProfitSimulation: true,
+        supportsPromptAssistant: true,
+        supportsPresets: true,
+        targetOptions: [
+            { key: 'number', label: '单点（固定开启）', fixed: true },
+            { key: 'big_small', label: '大/小' },
+            { key: 'odd_even', label: '单/双' },
+            { key: 'combo', label: '组合投注' }
+        ],
+        primaryMetricOptions: [
+            { key: 'combo', label: '组合投注：适合看组合票面的稳定性' },
+            { key: 'number', label: '单点：只按精确和值判断连中' },
+            { key: 'big_small', label: '大/小：适合保守玩法' },
+            { key: 'odd_even', label: '单/双：适合保守玩法' },
+            { key: 'double_group', label: '组合分组统计：大双/小单 vs 大单/小双' },
+            { key: 'kill_group', label: '排除统计：按预测组合结果的对角组合做排除统计' }
+        ],
+        defaultPrimaryMetric: 'big_small',
+        targetHint: '单点固定开启，号码是主预测结果；大/小、单/双、组合投注围绕号码展开。'
+    },
+    jingcai_football: {
+        label: '竞彩足球',
+        supportsProfitSimulation: false,
+        supportsPromptAssistant: false,
+        supportsPresets: false,
+        targetOptions: [
+            { key: 'spf', label: '胜平负' },
+            { key: 'rqspf', label: '让球胜平负' }
+        ],
+        primaryMetricOptions: [
+            { key: 'spf', label: '胜平负：按常规胜平负玩法统计命中' },
+            { key: 'rqspf', label: '让球胜平负：按让球盘结果统计命中' }
+        ],
+        defaultPrimaryMetric: 'spf',
+        targetHint: '竞彩足球首版只支持胜平负与让球胜平负；默认按二串一思路使用单场预测结果，不做收益模拟。'
+    }
+};
 
 class PredictionApp {
     constructor() {
         this.currentUser = null;
         this.currentPredictorId = null;
         this.currentPredictor = null;
+        this.currentLotteryType = 'pc28';
         this.currentPredictions = [];
         this.currentStats = null;
         this.selectedStatsMetric = null;
@@ -134,6 +175,10 @@ class PredictionApp {
             if (this.currentStats) {
                 this.renderStats(this.currentStats);
             }
+        });
+        document.getElementById('lotteryType').addEventListener('change', (event) => {
+            this.currentLotteryType = event.target.value || 'pc28';
+            this.updateLotteryForm();
         });
         document.getElementById('primaryMetric').addEventListener('change', () => this.syncProfitMetricOptions());
         ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo'].forEach((id) => {
@@ -203,14 +248,106 @@ class PredictionApp {
 
         this.renderPresetCards();
         this.enforceNumberTarget();
+        this.updateLotteryForm();
     }
 
     enforceNumberTarget() {
+        if (this.currentLotteryType !== 'pc28') {
+            return;
+        }
         const targetNumber = document.getElementById('targetNumber');
         if (!targetNumber) {
             return;
         }
         targetNumber.checked = true;
+    }
+
+    getLotteryConfig(lotteryType = this.currentLotteryType) {
+        return LOTTERY_UI_CONFIG[lotteryType] || LOTTERY_UI_CONFIG.pc28;
+    }
+
+    updateLotteryForm(options = {}) {
+        const selectedTargets = options.selectedTargets || null;
+        const selectedPrimaryMetric = options.selectedPrimaryMetric || null;
+        const currentType = document.getElementById('lotteryType')?.value || this.currentLotteryType || 'pc28';
+        this.currentLotteryType = currentType;
+        const config = this.getLotteryConfig(currentType);
+        const targetSlots = [
+            { wrapper: 'targetOptionNumber', input: 'targetNumber', label: 'targetLabelNumber' },
+            { wrapper: 'targetOptionBigSmall', input: 'targetBigSmall', label: 'targetLabelBigSmall' },
+            { wrapper: 'targetOptionOddEven', input: 'targetOddEven', label: 'targetLabelOddEven' },
+            { wrapper: 'targetOptionCombo', input: 'targetCombo', label: 'targetLabelCombo' }
+        ];
+
+        targetSlots.forEach((slot, index) => {
+            const wrapper = document.getElementById(slot.wrapper);
+            const input = document.getElementById(slot.input);
+            const label = document.getElementById(slot.label);
+            const option = config.targetOptions[index];
+            if (!wrapper || !input || !label) {
+                return;
+            }
+
+            if (!option) {
+                wrapper.style.display = 'none';
+                input.checked = false;
+                input.disabled = true;
+                input.dataset.targetKey = '';
+                return;
+            }
+
+            wrapper.style.display = '';
+            input.dataset.targetKey = option.key;
+            label.textContent = option.label;
+            input.disabled = Boolean(option.fixed);
+            input.setAttribute('aria-disabled', option.fixed ? 'true' : 'false');
+
+            if (selectedTargets) {
+                input.checked = selectedTargets.includes(option.key);
+            } else if (option.fixed) {
+                input.checked = true;
+            }
+        });
+
+        document.getElementById('targetHint').textContent = config.targetHint;
+        this.renderPrimaryMetricOptions(currentType, selectedPrimaryMetric);
+
+        const showProfit = config.supportsProfitSimulation;
+        document.getElementById('profitRuleField').style.display = showProfit ? '' : 'none';
+        document.getElementById('profitMetricField').style.display = showProfit ? '' : 'none';
+        document.getElementById('profitPanel').style.display = showProfit ? '' : 'none';
+
+        const showPromptAssistant = config.supportsPromptAssistant;
+        document.getElementById('promptAssistantActions').style.display = showPromptAssistant ? 'flex' : 'none';
+        document.getElementById('promptVariablesBlock').style.display = showPromptAssistant ? '' : 'none';
+        document.getElementById('externalPromptBlock').style.display = showPromptAssistant ? '' : 'none';
+        document.getElementById('presetBlock').style.display = config.supportsPresets ? '' : 'none';
+
+        if (!showPromptAssistant) {
+            this.hidePromptAssistantResult();
+            this.clearExternalPromptTemplate();
+        }
+
+        if (!config.supportsPresets) {
+            document.getElementById('presetCards').innerHTML = '<div class="empty-panel">当前彩种暂未提供内置方案示例</div>';
+            document.getElementById('togglePresetListBtn').style.display = 'none';
+        } else {
+            this.renderPresetCards();
+        }
+
+        this.syncProfitMetricOptions();
+    }
+
+    renderPrimaryMetricOptions(lotteryType, selectedValue = null) {
+        const select = document.getElementById('primaryMetric');
+        const config = this.getLotteryConfig(lotteryType);
+        const previousValue = selectedValue || select.value || config.defaultPrimaryMetric;
+        select.innerHTML = config.primaryMetricOptions.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        select.value = config.primaryMetricOptions.some((item) => item.key === previousValue)
+            ? previousValue
+            : config.defaultPrimaryMetric;
     }
 
     async checkAuth() {
@@ -250,6 +387,10 @@ class PredictionApp {
     }
 
     renderOverview(overview) {
+        if ((overview?.lottery_type || 'pc28') === 'jingcai_football') {
+            this.renderFootballOverview(overview);
+            return;
+        }
         const latestDraw = overview.latest_draw;
         const warning = overview.warning ? `<div class="warning-banner">${this.escapeHtml(overview.warning)}</div>` : '';
         const topOmissions = (overview.omission_preview?.top_numbers || []).slice(0, 4);
@@ -292,6 +433,44 @@ class PredictionApp {
         `;
 
         this.renderDrawsTable(overview.recent_draws || []);
+    }
+
+    renderFootballOverview(overview) {
+        const warning = overview.warning ? `<div class="warning-banner">${this.escapeHtml(overview.warning)}</div>` : '';
+        const recentEvents = overview.recent_events || [];
+        const upcoming = recentEvents.filter((item) => !((item.meta_payload || {}).settled || item.settled)).slice(0, 4);
+
+        document.getElementById('overviewPanel').innerHTML = `
+            ${warning}
+            <div class="overview-primary">
+                <div>
+                    <span class="mini-label">当前批次</span>
+                    <strong>${this.escapeHtml(overview.batch_key || '--')}</strong>
+                </div>
+                <div>
+                    <span class="mini-label">待赛场次</span>
+                    <strong>${this.escapeHtml(String(overview.open_match_count ?? 0))}</strong>
+                </div>
+            </div>
+            <div class="overview-result">
+                <span class="mini-label">下一场比赛</span>
+                <div class="result-number football-title">${this.escapeHtml(overview.next_match_name || '暂无')}</div>
+                <div class="result-meta">${this.escapeHtml(overview.next_match_time || '')}</div>
+            </div>
+            <div class="overview-block">
+                <span class="mini-label">已结算 / 总场次</span>
+                <div class="tag-list compact">
+                    <span class="tag">${this.escapeHtml(String(overview.settled_match_count ?? 0))} / ${this.escapeHtml(String(overview.match_count ?? 0))}</span>
+                </div>
+            </div>
+            <div class="overview-block">
+                <span class="mini-label">近期待赛</span>
+                <div class="tag-list compact">
+                    ${upcoming.length ? upcoming.map((item) => `<span class="tag">${this.escapeHtml(item.match_no || item.event_key || '--')} · ${this.escapeHtml(item.home_team || item.event_name || '--')}</span>`).join('') : '<span class="tag">暂无</span>'}
+                </div>
+            </div>
+        `;
+        this.renderDrawsTable(recentEvents);
     }
 
     async loadPredictors(forceReload = false) {
@@ -342,7 +521,7 @@ class PredictionApp {
                     <span class="status-chip ${predictor.enabled ? 'enabled' : 'disabled'}">${predictor.enabled ? '启用' : '停用'}</span>
                 </div>
                 <div class="predictor-tags">
-                    ${(predictor.prediction_targets || []).map((target) => `<span class="tag">${this.escapeHtml(this.targetLabel(target))}</span>`).join('')}
+                    ${(predictor.prediction_targets || []).map((target) => `<span class="tag">${this.escapeHtml(this.targetLabel(target, predictor.lottery_type || 'pc28'))}</span>`).join('')}
                 </div>
                 <div class="predictor-actions">
                     <button class="icon-btn" data-action="toggle" data-id="${predictor.id}" title="${predictor.enabled ? '暂停方案' : '恢复方案'}">
@@ -416,6 +595,8 @@ class PredictionApp {
             }
 
             this.currentPredictor = data.predictor;
+            this.currentLotteryType = data.predictor?.lottery_type || 'pc28';
+            document.getElementById('profitPanel').style.display = data.predictor?.capabilities?.supports_profit_simulation ? '' : 'none';
             this.currentStats = data.stats || null;
             this.currentPredictions = data.recent_predictions || [];
             const availableMetrics = Object.keys((data.stats && data.stats.metrics) || {});
@@ -428,15 +609,17 @@ class PredictionApp {
             if (shouldResetMetric) {
                 this.selectedStatsMetric = defaultMetric;
             }
+            this.renderStatsMetricOptions(this.currentLotteryType, availableMetrics, this.selectedStatsMetric);
             document.getElementById('statsMetricView').value = this.selectedStatsMetric;
             this.updatePredictorActionState(data.predictor);
+            this.renderOverview(data.overview || this.overview || {});
             this.renderStats(this.currentStats);
             this.renderCurrentPrediction(data.current_prediction, data.latest_prediction, data.predictor);
             this.renderPublicSharePanel(data.predictor);
             this.renderProfitControls(data.predictor, previousPredictorId !== predictorId);
             await this.loadProfitSimulation();
             this.renderPredictionsTable(this.currentPredictions);
-            this.renderDrawsTable(data.overview?.recent_draws || data.recent_draws || []);
+            this.renderDrawsTable(data.overview?.recent_draws || data.overview?.recent_events || data.recent_draws || data.recent_events || []);
             this.renderAILogs(this.currentPredictions);
             this.renderChart(this.currentPredictions);
         } catch (error) {
@@ -444,7 +627,25 @@ class PredictionApp {
         }
     }
 
+    renderStatsMetricOptions(lotteryType, availableMetrics, selectedMetric) {
+        const select = document.getElementById('statsMetricView');
+        const config = this.getLotteryConfig(lotteryType);
+        const options = (config.primaryMetricOptions || []).filter((item) => !availableMetrics.length || availableMetrics.includes(item.key));
+        select.innerHTML = options.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">查看玩法：${this.escapeHtml(this.metricMeta(item.key, lotteryType).label)}</option>
+        `).join('');
+        if (options.length) {
+            const fallback = options[0].key;
+            select.value = options.some((item) => item.key === selectedMetric) ? selectedMetric : fallback;
+            this.selectedStatsMetric = select.value;
+        }
+    }
+
     renderStats(stats) {
+        if (this.currentLotteryType === 'jingcai_football') {
+            this.renderFootballStats(stats);
+            return;
+        }
         const container = document.getElementById('statsGrid');
         const currentMetricKey = this.selectedStatsMetric || stats.primary_metric || 'big_small';
         const currentMetric = (stats.metrics || {})[currentMetricKey] || {};
@@ -489,6 +690,46 @@ class PredictionApp {
         this.renderStreakStats(stats, currentMetricKey);
     }
 
+    renderFootballStats(stats) {
+        const container = document.getElementById('statsGrid');
+        const currentMetricKey = this.selectedStatsMetric || stats.primary_metric || 'spf';
+        const currentMetric = (stats.metrics || {})[currentMetricKey] || {};
+        const recent20 = currentMetric.recent_20 || {};
+        const recent100 = currentMetric.recent_100 || {};
+        const metricLabel = this.targetLabel(currentMetricKey);
+
+        container.innerHTML = `
+            <article class="stat-card">
+                <span class="stat-label">预测批次数</span>
+                <strong class="stat-value">${stats.total_predictions || 0}</strong>
+            </article>
+            <article class="stat-card">
+                <span class="stat-label">已结算批次</span>
+                <strong class="stat-value">${stats.settled_predictions || 0}</strong>
+            </article>
+            <article class="stat-card">
+                <span class="stat-label">待结算批次</span>
+                <strong class="stat-value">${stats.pending_predictions || 0}</strong>
+            </article>
+            <article class="stat-card">
+                <span class="stat-label">当前查看玩法</span>
+                <strong class="stat-value">${this.escapeHtml(metricLabel || '--')}</strong>
+            </article>
+            <article class="stat-card">
+                <span class="stat-label">20 场命中率</span>
+                <strong class="stat-value">${this.formatRatioRate(recent20)}</strong>
+            </article>
+            <article class="stat-card">
+                <span class="stat-label">100 场命中率</span>
+                <strong class="stat-value">${this.formatRatioRate(recent100)}</strong>
+            </article>
+        `;
+
+        this.renderStatsMetricHint(currentMetricKey);
+        this.renderMetricStats(stats.metrics || {});
+        document.getElementById('streakStats').innerHTML = '<div class="empty-panel">竞彩足球首版暂不展示连中连挂</div>';
+    }
+
     renderStatsMetricHint(metricKey) {
         const container = document.getElementById('statsMetricHint');
         if (!container) {
@@ -514,7 +755,9 @@ class PredictionApp {
 
     renderMetricStats(metrics) {
         const tbody = document.getElementById('metricStatsBody');
-        const metricOrder = ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group'];
+        const metricOrder = (this.currentLotteryType || 'pc28') === 'jingcai_football'
+            ? ['spf', 'rqspf']
+            : ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group'];
         const rows = metricOrder
             .map((key) => ({ key, metric: metrics[key] }))
             .filter((item) => item.metric);
@@ -587,6 +830,10 @@ class PredictionApp {
     }
 
     renderCurrentPrediction(currentPrediction, latestPrediction, predictor) {
+        if (this.currentLotteryType === 'jingcai_football') {
+            this.renderFootballCurrentPrediction(currentPrediction, latestPrediction, predictor);
+            return;
+        }
         const container = document.getElementById('currentPrediction');
 
         if (!predictor) {
@@ -596,7 +843,12 @@ class PredictionApp {
             return;
         }
 
-        const targetTags = (predictor.prediction_targets || []).map((item) => this.renderBadge(this.targetLabel(item))).join('');
+        if ((predictor.lottery_type || 'pc28') === 'jingcai_football') {
+            this.renderFootballCurrentPrediction(currentPrediction, latestPrediction, predictor);
+            return;
+        }
+
+        const targetTags = (predictor.prediction_targets || []).map((item) => this.renderBadge(this.targetLabel(item, predictor.lottery_type || 'pc28'))).join('');
         const prediction = currentPrediction || latestPrediction;
 
         if (!prediction) {
@@ -701,6 +953,193 @@ class PredictionApp {
         `;
     }
 
+    renderFootballCurrentPrediction(currentPrediction, latestPrediction, predictor) {
+        const container = document.getElementById('currentPrediction');
+        if (!predictor) {
+            container.className = 'prediction-summary empty-panel';
+            container.textContent = '请选择预测方案';
+            this.updatePredictorActionState(null);
+            return;
+        }
+
+        const targetTags = (predictor.prediction_targets || []).map((item) => this.renderBadge(this.targetLabel(item, predictor.lottery_type || 'pc28'))).join('');
+        const run = currentPrediction || latestPrediction;
+        if (!run) {
+            container.className = 'prediction-summary empty-panel';
+            container.innerHTML = `
+                <div class="summary-head">
+                    <div>
+                        <h4>${this.escapeHtml(predictor.name)}</h4>
+                        <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
+                    </div>
+                    <div class="badge-row">${targetTags}</div>
+                </div>
+                <p>当前尚无竞彩足球预测记录，点击“立即预测”或等待自动轮询。</p>
+            `;
+            return;
+        }
+
+        const statusText = this.predictionStatusLabel(run.status);
+        const items = run.items || [];
+        const previewRows = items.slice(0, 8).map((item) => `
+            <tr>
+                <td>${this.escapeHtml(item.issue_no || '--')}</td>
+                <td>${this.escapeHtml(item.title || '--')}</td>
+                <td>${this.escapeHtml(item.predicted_spf_label || '--')}</td>
+                <td>${this.escapeHtml(item.predicted_rqspf_label || '--')}</td>
+                <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
+            </tr>
+        `).join('');
+
+        container.className = 'prediction-summary';
+        container.innerHTML = `
+            <div class="summary-head">
+                <div>
+                    <h4>${this.escapeHtml(predictor.name)}</h4>
+                    <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
+                </div>
+                <div class="badge-row">
+                    ${targetTags}
+                    <span class="status-chip ${run.status}">${statusText}</span>
+                </div>
+            </div>
+            <div class="prediction-grid prediction-grid-compact">
+                ${this.renderCurrentPredictionCard('预测批次', run.run_key || '--')}
+                ${this.renderCurrentPredictionCard('场次数量', String((run.items || []).length))}
+                ${this.renderCurrentPredictionCard('已结算', String(run.settled_items || 0))}
+                ${this.renderCurrentPredictionCard('平均置信度', this.formatPercent(run.confidence !== null && run.confidence !== undefined ? run.confidence * 100 : null))}
+            </div>
+            <div class="prediction-section">
+                <div class="prediction-section-head">
+                    <div>
+                        <span class="mini-label">本批次前 8 场预测</span>
+                        <p class="section-hint">首版只展示胜平负和让球胜平负，不做串关收益模拟。</p>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table class="data-table compact-table">
+                        <thead>
+                            <tr>
+                                <th>编号</th>
+                                <th>比赛</th>
+                                <th>胜平负</th>
+                                <th>让球胜平负</th>
+                                <th>置信度</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${previewRows || '<tr><td colspan="5" class="empty-cell">暂无预测明细</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="summary-foot">
+                <div>
+                    <span class="mini-label">简要说明</span>
+                    <p>${this.escapeHtml(run.reasoning_summary || '无')}</p>
+                </div>
+                <div>
+                    <span class="mini-label">更新时间</span>
+                    <p>${this.escapeHtml(run.updated_at || run.created_at || '--')}</p>
+                </div>
+            </div>
+        `;
+    }
+
+    renderFootballCurrentPrediction(currentPrediction, latestPrediction, predictor) {
+        const container = document.getElementById('currentPrediction');
+        const prediction = currentPrediction || latestPrediction;
+        const targetTags = (predictor.prediction_targets || []).map((item) => this.renderBadge(this.targetLabel(item, predictor.lottery_type))).join('');
+
+        if (!prediction) {
+            container.className = 'prediction-summary empty-panel';
+            container.innerHTML = `
+                <div class="summary-head">
+                    <div>
+                        <h4>${this.escapeHtml(predictor.name)}</h4>
+                        <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
+                    </div>
+                    <div class="badge-row">${targetTags}</div>
+                </div>
+                <p>当前尚无竞彩足球预测记录，点击“立即预测”后会按当前批次生成多场比赛预测。</p>
+            `;
+            return;
+        }
+
+        const parlay = Array.isArray(prediction.recommended_parlay) ? prediction.recommended_parlay : [];
+        if (parlay.length) {
+            container.className = 'prediction-summary';
+            container.innerHTML = `
+                <div class="summary-head">
+                    <div>
+                        <h4>${this.escapeHtml(predictor.name)}</h4>
+                        <p>${this.escapeHtml(prediction.run_key || prediction.issue_no || '--')} · 默认二串一推荐</p>
+                    </div>
+                    <div class="badge-row">
+                        ${targetTags}
+                        <span class="status-chip ${prediction.status}">${this.predictionStatusLabel(prediction.status)}</span>
+                    </div>
+                </div>
+                ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
+                <div class="prediction-grid prediction-grid-compact">
+                    ${parlay.map((item, index) => this.renderCurrentPredictionCard(
+                        `推荐场次 ${index + 1}`,
+                        `${item.issue_no || '--'} · ${(item.prediction_payload || {}).spf || '--'} / ${(item.prediction_payload || {}).rqspf || '--'}`,
+                        `${item.title || '--'} · 置信度 ${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}`
+                    )).join('')}
+                    ${this.renderCurrentPredictionCard('推荐逻辑', '默认按置信度选两场', '后续可扩展为更完整的二串一策略层')}
+                    ${this.renderCurrentPredictionCard('更新时间', prediction.updated_at || prediction.created_at || '--')}
+                </div>
+                <div class="summary-foot">
+                    <div>
+                        <span class="mini-label">批次说明</span>
+                        <p>${this.escapeHtml(prediction.reasoning_summary || '当前批次已生成竞彩足球预测，可先参考默认二串一推荐。')}</p>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+
+        const predictionPayload = prediction.prediction_payload || {};
+        const actualPayload = prediction.actual_payload || {};
+        const hitItems = this.buildHitItems(prediction);
+        const hitCount = hitItems.filter((item) => item.value === 1).length;
+        const attemptedCount = hitItems.filter((item) => item.value !== null && item.value !== undefined).length;
+
+        container.className = 'prediction-summary';
+        container.innerHTML = `
+            <div class="summary-head">
+                <div>
+                    <h4>${this.escapeHtml(prediction.title || predictor.name || '--')}</h4>
+                    <p>${this.escapeHtml(prediction.issue_no || '--')} · ${this.escapeHtml(prediction.actual_payload?.league || '')}</p>
+                </div>
+                <div class="badge-row">
+                    ${targetTags}
+                    <span class="status-chip ${prediction.status}">${this.predictionStatusLabel(prediction.status)}</span>
+                </div>
+            </div>
+            ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
+            <div class="prediction-grid prediction-grid-compact">
+                ${this.renderCurrentPredictionCard('场次', prediction.issue_no || '--')}
+                ${this.renderCurrentPredictionCard('胜平负', predictionPayload.spf || '--')}
+                ${this.renderCurrentPredictionCard('让球胜平负', predictionPayload.rqspf || '--')}
+                ${this.renderCurrentPredictionCard('置信度', this.formatPercent(prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null))}
+                ${this.renderCurrentPredictionCard('赛果', actualPayload.score_text ? `${actualPayload.score_text} (${actualPayload.spf || '--'})` : '--')}
+                ${this.renderCurrentPredictionCard('命中', attemptedCount ? `${hitCount}/${attemptedCount}` : '--')}
+            </div>
+            <div class="summary-foot">
+                <div>
+                    <span class="mini-label">简要说明</span>
+                    <p>${this.escapeHtml(prediction.reasoning_summary || '无')}</p>
+                </div>
+                <div>
+                    <span class="mini-label">更新时间</span>
+                    <p>${this.escapeHtml(prediction.updated_at || prediction.created_at || '--')}</p>
+                </div>
+            </div>
+        `;
+    }
+
     renderPublicSharePanel(predictor) {
         const container = document.getElementById('publicSharePanel');
         if (!container) {
@@ -710,6 +1149,17 @@ class PredictionApp {
         if (!predictor) {
             container.className = 'prediction-summary empty-panel';
             container.textContent = '请选择预测方案';
+            return;
+        }
+
+        if ((predictor.lottery_type || 'pc28') !== 'pc28') {
+            container.className = 'prediction-summary empty-panel';
+            container.innerHTML = `
+                <div>
+                    <strong>${this.escapeHtml(predictor.name || '--')}</strong>
+                    <p class="field-hint">竞彩足球首版暂不开放公开页与公开榜单，当前仅支持登录后的控制台查看。</p>
+                </div>
+            `;
             return;
         }
 
@@ -732,7 +1182,7 @@ class PredictionApp {
                     <p>${this.escapeHtml(predictor.share_level_label || '--')} · ${this.escapeHtml(availabilityText)}</p>
                 </div>
                 <div class="badge-row">
-                    <span class="tag">${this.escapeHtml(this.targetLabel(predictor.primary_metric || 'combo'))}</span>
+                    <span class="tag">${this.escapeHtml(this.targetLabel(predictor.primary_metric || 'combo', predictor.lottery_type || 'pc28'))}</span>
                     <span class="tag">${this.escapeHtml(predictor.share_level_label || '--')}</span>
                 </div>
             </div>
@@ -1109,8 +1559,64 @@ class PredictionApp {
 
     renderDrawsTable(draws) {
         const tbody = document.getElementById('drawsBody');
+        const headerRow = document.getElementById('drawsHeadRow');
+        if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            headerRow.innerHTML = `
+                <th>场次</th>
+                <th>联赛</th>
+                <th>对阵</th>
+                <th>胜平负</th>
+                <th>让球胜平负</th>
+                <th>比赛时间 / 比分</th>
+            `;
+        } else {
+            headerRow.innerHTML = `
+                <th>期号</th>
+                <th>开奖号码</th>
+                <th>大/小</th>
+                <th>单/双</th>
+                <th>组合结果</th>
+                <th>开奖时间</th>
+            `;
+        }
         if (!draws.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无官方开奖数据</td></tr>';
+            return;
+        }
+
+        if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            tbody.innerHTML = draws.map((draw) => {
+                const meta = draw.meta_payload || {
+                    match_no: draw.match_no,
+                    spf_odds: draw.spf_odds,
+                    rqspf: draw.rqspf,
+                    settled: draw.settled
+                };
+                const result = draw.result_payload || {
+                    score1: draw.score1,
+                    score2: draw.score2
+                };
+                const teams = draw.home_team && draw.away_team
+                    ? `${this.escapeHtml(draw.home_team)} vs ${this.escapeHtml(draw.away_team)}`
+                    : this.escapeHtml(draw.event_name || '--');
+                const spfOdds = meta.spf_odds || {};
+                const rqspf = meta.rqspf || {};
+                const spfText = ['胜', '平', '负'].map((key) => `${key}:${spfOdds[key] ?? '--'}`).join(' / ');
+                const rqText = ['胜', '平', '负'].map((key) => `${key}:${(rqspf.odds || {})[key] ?? '--'}`).join(' / ');
+                const scoreText = result.score1 !== null && result.score1 !== undefined && result.score2 !== null && result.score2 !== undefined
+                    ? `${result.score1}:${result.score2}`
+                    : '--';
+                return `
+                    <tr>
+                        <td>${this.escapeHtml(meta.match_no || draw.event_key || '--')}</td>
+                        <td>${this.escapeHtml(draw.league || '--')}</td>
+                        <td>${teams}</td>
+                        <td>${this.escapeHtml(spfText)}</td>
+                        <td>${this.escapeHtml((rqspf.handicap_text || '--') + ' [' + rqText + ']')}</td>
+                        <td>${this.escapeHtml(draw.event_time || '')}<br><span class="hint-text">${this.escapeHtml(scoreText)}</span></td>
+                    </tr>
+                `;
+            }).join('');
             return;
         }
 
@@ -1130,6 +1636,30 @@ class PredictionApp {
         const container = document.getElementById('aiLogs');
         if (!predictions.length) {
             container.innerHTML = '<div class="empty-panel">暂无 AI 输出记录</div>';
+            return;
+        }
+
+        if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            container.innerHTML = predictions.map((prediction) => `
+                <article class="ai-log-card">
+                    <div class="ai-log-head">
+                        <div>
+                            <strong>${this.escapeHtml(prediction.issue_no || prediction.title || '--')}</strong>
+                            <span class="status-chip ${prediction.status}">${this.predictionStatusLabel(prediction.status)}</span>
+                        </div>
+                        <span>${this.escapeHtml(prediction.created_at || prediction.run_created_at || '--')}</span>
+                    </div>
+                    ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
+                    <div class="ai-log-block">
+                        <span class="mini-label">简要说明</span>
+                        <p>${this.escapeHtml(prediction.reasoning_summary || '无')}</p>
+                    </div>
+                    <details class="ai-log-block">
+                        <summary>查看原始输出</summary>
+                        <pre>${this.escapeHtml(prediction.raw_response || '无')}</pre>
+                    </details>
+                </article>
+            `).join('');
             return;
         }
 
@@ -1175,7 +1705,7 @@ class PredictionApp {
         }
 
         const ordered = [...predictions].slice(0, 20).reverse();
-        const xAxisData = ordered.map((item) => item.issue_no);
+        const xAxisData = ordered.map((item) => item.issue_no || item.event_key || '--');
         const scoreData = ordered.map((item) => item.score_percentage);
         const confidenceData = ordered.map((item) => (
             item.confidence !== null && item.confidence !== undefined ? Number(item.confidence * 100).toFixed(2) : null
@@ -1226,6 +1756,7 @@ class PredictionApp {
 
     renderEmptyPredictorState() {
         this.currentStats = null;
+        this.currentLotteryType = 'pc28';
         this.selectedStatsMetric = null;
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
@@ -1239,6 +1770,7 @@ class PredictionApp {
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
         document.getElementById('publicSharePanel').className = 'prediction-summary empty-panel';
         document.getElementById('publicSharePanel').textContent = '暂无预测方案，请先新建方案';
+        document.getElementById('profitPanel').style.display = '';
         document.getElementById('statsGrid').innerHTML = '';
         document.getElementById('statsMetricHint').className = 'metric-hint empty-panel';
         document.getElementById('statsMetricHint').textContent = '请选择玩法查看统计口径';
@@ -1286,6 +1818,7 @@ class PredictionApp {
     openCreateModal() {
         document.getElementById('modalTitle').textContent = '新建预测方案';
         document.getElementById('predictorId').value = '';
+        document.getElementById('lotteryType').disabled = false;
         this.resetForm();
         this.presetExpanded = false;
         this.renderPresetCards();
@@ -1307,6 +1840,9 @@ class PredictionApp {
 
         document.getElementById('modalTitle').textContent = '编辑预测方案';
         document.getElementById('predictorId').value = data.id;
+        document.getElementById('lotteryType').value = data.lottery_type || 'pc28';
+        document.getElementById('lotteryType').disabled = true;
+        this.currentLotteryType = data.lottery_type || 'pc28';
         document.getElementById('predictorName').value = data.name || '';
         document.getElementById('predictionMethod').value = data.prediction_method || '';
         document.getElementById('apiUrl').value = data.api_url || '';
@@ -1316,18 +1852,15 @@ class PredictionApp {
         document.getElementById('historyWindow').value = data.history_window || 60;
         document.getElementById('temperature').value = data.temperature ?? 0.7;
         document.getElementById('dataInjectionMode').value = data.data_injection_mode || 'summary';
-        document.getElementById('primaryMetric').value = data.primary_metric || 'combo';
         document.getElementById('profitRuleId').value = data.profit_rule_id || 'pc28_netdisk';
         document.getElementById('profitDefaultMetric').value = data.profit_default_metric || data.default_simulation_metric || 'big_small';
         document.getElementById('systemPrompt').value = data.system_prompt || '';
         document.getElementById('predictorEnabled').checked = Boolean(data.enabled);
         document.getElementById('shareLevel').value = data.share_level || (data.share_predictions ? 'records' : 'stats_only');
-        document.getElementById('targetNumber').checked = true;
-        document.getElementById('targetBigSmall').checked = data.prediction_targets.includes('big_small');
-        document.getElementById('targetOddEven').checked = data.prediction_targets.includes('odd_even');
-        document.getElementById('targetCombo').checked = data.prediction_targets.includes('combo');
-        this.enforceNumberTarget();
-        this.syncProfitMetricOptions();
+        this.updateLotteryForm({
+            selectedTargets: data.prediction_targets || [],
+            selectedPrimaryMetric: data.primary_metric || null
+        });
         this.clearExternalPromptTemplate();
         this.presetExpanded = false;
         this.renderPresetCards();
@@ -1345,6 +1878,8 @@ class PredictionApp {
     }
 
     resetForm() {
+        document.getElementById('lotteryType').value = 'pc28';
+        this.currentLotteryType = 'pc28';
         document.getElementById('predictorName').value = '';
         document.getElementById('predictionMethod').value = '';
         document.getElementById('apiUrl').value = '';
@@ -1354,18 +1889,15 @@ class PredictionApp {
         document.getElementById('historyWindow').value = '60';
         document.getElementById('temperature').value = '0.7';
         document.getElementById('dataInjectionMode').value = 'summary';
-        document.getElementById('primaryMetric').value = 'big_small';
         document.getElementById('profitRuleId').value = 'pc28_netdisk';
         document.getElementById('profitDefaultMetric').value = 'big_small';
         document.getElementById('systemPrompt').value = '';
         document.getElementById('predictorEnabled').checked = true;
         document.getElementById('shareLevel').value = 'stats_only';
-        document.getElementById('targetNumber').checked = true;
-        document.getElementById('targetBigSmall').checked = true;
-        document.getElementById('targetOddEven').checked = true;
-        document.getElementById('targetCombo').checked = true;
-        this.enforceNumberTarget();
-        this.syncProfitMetricOptions();
+        this.updateLotteryForm({
+            selectedTargets: ['number', 'big_small', 'odd_even', 'combo'],
+            selectedPrimaryMetric: 'big_small'
+        });
         this.hideTestResult();
         this.hidePromptAssistantResult();
         this.clearExternalPromptTemplate();
@@ -1375,6 +1907,11 @@ class PredictionApp {
         const container = document.getElementById('presetCards');
         const toggleButton = document.getElementById('togglePresetListBtn');
         const visibleCount = 3;
+        if (this.currentLotteryType !== 'pc28') {
+            container.innerHTML = '<div class="empty-panel">当前彩种暂未提供内置方案示例</div>';
+            toggleButton.style.display = 'none';
+            return;
+        }
 
         container.innerHTML = PREDICTOR_PRESETS.map((preset, index) => `
             <article class="preset-card ${index >= visibleCount && !this.presetExpanded ? 'hidden' : ''}" data-preset-id="${preset.id}">
@@ -1415,6 +1952,9 @@ class PredictionApp {
     }
 
     applyPreset(presetId) {
+        if (this.currentLotteryType !== 'pc28') {
+            return;
+        }
         const preset = PREDICTOR_PRESETS.find((item) => item.id === presetId);
         if (!preset) {
             return;
@@ -1428,27 +1968,25 @@ class PredictionApp {
         document.getElementById('historyWindow').value = String(preset.historyWindow);
         document.getElementById('temperature').value = String(preset.temperature);
         document.getElementById('dataInjectionMode').value = preset.injectionMode;
-        document.getElementById('primaryMetric').value = preset.primaryMetric || 'combo';
         document.getElementById('profitRuleId').value = preset.profitRuleId || 'pc28_netdisk';
         document.getElementById('profitDefaultMetric').value = preset.profitDefaultMetric || (['big_small', 'odd_even', 'combo', 'number'].includes(preset.primaryMetric) ? preset.primaryMetric : 'combo');
         document.getElementById('systemPrompt').value = preset.prompt;
-        document.getElementById('targetNumber').checked = true;
-        document.getElementById('targetBigSmall').checked = preset.targets.includes('big_small');
-        document.getElementById('targetOddEven').checked = preset.targets.includes('odd_even');
-        document.getElementById('targetCombo').checked = preset.targets.includes('combo');
-        this.enforceNumberTarget();
-        this.syncProfitMetricOptions();
+        this.updateLotteryForm({
+            selectedTargets: ['number', ...preset.targets.filter((item) => item !== 'number')],
+            selectedPrimaryMetric: preset.primaryMetric || 'combo'
+        });
         this.clearExternalPromptTemplate();
     }
 
     collectFormData() {
         this.enforceNumberTarget();
-        const predictionTargets = ['number'];
-        if (document.getElementById('targetBigSmall').checked) predictionTargets.push('big_small');
-        if (document.getElementById('targetOddEven').checked) predictionTargets.push('odd_even');
-        if (document.getElementById('targetCombo').checked) predictionTargets.push('combo');
+        const predictionTargets = ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo']
+            .map((id) => document.getElementById(id))
+            .filter((input) => input && input.checked && input.dataset.targetKey)
+            .map((input) => input.dataset.targetKey);
 
         return {
+            lottery_type: document.getElementById('lotteryType').value || 'pc28',
             name: document.getElementById('predictorName').value.trim(),
             prediction_method: document.getElementById('predictionMethod').value.trim(),
             api_url: document.getElementById('apiUrl').value.trim(),
@@ -1471,6 +2009,12 @@ class PredictionApp {
     syncProfitMetricOptions() {
         const select = document.getElementById('profitDefaultMetric');
         if (!select) {
+            return;
+        }
+
+        if (this.currentLotteryType !== 'pc28') {
+            select.innerHTML = '<option value="">当前彩种暂不支持收益模拟</option>';
+            select.disabled = true;
             return;
         }
 
@@ -1959,8 +2503,8 @@ class PredictionApp {
         }
     }
 
-    targetLabel(target) {
-        return this.metricMeta(target).label;
+    targetLabel(target, lotteryType = this.currentLotteryType) {
+        return this.metricMeta(target, lotteryType).label;
     }
 
     predictionStatusLabel(status) {
@@ -1974,6 +2518,9 @@ class PredictionApp {
     }
 
     renderPredictionResult(prediction) {
+        if ((prediction.lottery_type || this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            return this.renderFootballPredictionResult(prediction);
+        }
         const snapshot = this.buildPlaySnapshot(
             prediction.prediction_number,
             prediction.prediction_big_small,
@@ -1990,6 +2537,9 @@ class PredictionApp {
     }
 
     renderActualResult(prediction) {
+        if ((prediction.lottery_type || this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            return this.renderFootballActualResult(prediction);
+        }
         if (prediction.status === 'pending') {
             return '<span class="hint-text">等待开奖</span>';
         }
@@ -2016,6 +2566,9 @@ class PredictionApp {
     }
 
     renderHitSummary(prediction, options = {}) {
+        if ((prediction.lottery_type || this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            return this.renderFootballHitSummary(prediction, options);
+        }
         if (prediction.status === 'pending') {
             return '<span class="hint-text">未结算</span>';
         }
@@ -2146,6 +2699,9 @@ class PredictionApp {
     }
 
     buildHitItems(prediction) {
+        if ((prediction.lottery_type || this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            return this.buildFootballHitItems(prediction);
+        }
         const items = [];
 
         if (prediction.hit_number !== null && prediction.hit_number !== undefined) {
@@ -2175,7 +2731,32 @@ class PredictionApp {
         return items;
     }
 
-    metricMeta(metricKey) {
+    metricMeta(metricKey, lotteryType = this.currentLotteryType) {
+        if (lotteryType === 'jingcai_football') {
+            const footballMapping = {
+                spf: {
+                    label: '胜平负',
+                    alias: '常规盘',
+                    shortRule: '三分类',
+                    description: '按 90 分钟含伤停补时赛果统计主胜、平局、客胜。',
+                    formula: '预测胜平负 = 实际胜平负'
+                },
+                rqspf: {
+                    label: '让球胜平负',
+                    alias: '让球盘',
+                    shortRule: '三分类',
+                    description: '按官方让球数修正主队比分后统计胜平负。',
+                    formula: '预测让球胜平负 = 实际让球胜平负'
+                }
+            };
+            return footballMapping[metricKey] || {
+                label: metricKey || '--',
+                alias: null,
+                shortRule: '未定义',
+                description: '当前玩法说明暂未定义。',
+                formula: '--'
+            };
+        }
         const mapping = {
             number: {
                 label: '单点',
@@ -2228,6 +2809,61 @@ class PredictionApp {
             description: '当前玩法说明暂未定义。',
             formula: '--'
         };
+    }
+
+    renderFootballPredictionResult(prediction) {
+        const payload = prediction.prediction_payload || {};
+        return `
+            <div class="result-stack">
+                <strong>${this.escapeHtml(prediction.title || prediction.issue_no || '--')}</strong>
+                <span class="result-meta-text">胜平负：${this.escapeHtml(payload.spf || '--')} · 让球胜平负：${this.escapeHtml(payload.rqspf || '--')}</span>
+            </div>
+        `;
+    }
+
+    renderFootballActualResult(prediction) {
+        if (prediction.status === 'pending') {
+            return '<span class="hint-text">等待赛果</span>';
+        }
+        const payload = prediction.actual_payload || {};
+        return `
+            <div class="result-stack">
+                <strong>${this.escapeHtml(payload.score_text || '--')}</strong>
+                <span class="result-meta-text">胜平负：${this.escapeHtml(payload.spf || '--')} · 让球胜平负：${this.escapeHtml(payload.rqspf || '--')}</span>
+            </div>
+        `;
+    }
+
+    renderFootballHitSummary(prediction, options = {}) {
+        if (prediction.status === 'pending') {
+            return '<span class="hint-text">未结算</span>';
+        }
+        const items = this.buildFootballHitItems(prediction);
+        if (!items.length) {
+            return '<span class="hint-text">无可统计结果</span>';
+        }
+        const hitCount = items.filter((item) => item.value === 1).length;
+        const summaryText = `本场纳入统计 ${items.length} 项，命中 ${hitCount} 项`;
+        return `
+            <div class="hit-summary-block">
+                <div class="hit-list ${options.detailed ? 'detailed' : ''}">
+                    ${items.map((item) => `<span class="hit-pill ${this.hitClass(item.value)}">${this.escapeHtml(item.label)} ${this.hitMark(item.value)}</span>`).join('')}
+                </div>
+                ${options.detailed ? `<span class="result-meta-text">${this.escapeHtml(summaryText)}</span>` : ''}
+            </div>
+        `;
+    }
+
+    buildFootballHitItems(prediction) {
+        const hitPayload = prediction.hit_payload || {};
+        const items = [];
+        if (hitPayload.spf !== null && hitPayload.spf !== undefined) {
+            items.push({ label: '胜平负', value: hitPayload.spf });
+        }
+        if (hitPayload.rqspf !== null && hitPayload.rqspf !== undefined) {
+            items.push({ label: '让球胜平负', value: hitPayload.rqspf });
+        }
+        return items;
     }
 
     buildPlaySnapshot(number, bigSmall, oddEven, combo) {

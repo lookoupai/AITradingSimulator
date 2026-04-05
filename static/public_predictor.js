@@ -2,6 +2,7 @@ class PublicPredictorPage {
     constructor() {
         this.predictorId = window.PUBLIC_PREDICTOR_ID;
         this.currentPredictor = window.PUBLIC_PREDICTOR || null;
+        this.currentLotteryType = this.currentPredictor?.lottery_type || 'pc28';
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
         this.selectedProfitBetMode = 'flat';
@@ -104,6 +105,8 @@ class PublicPredictorPage {
             }
 
             this.currentPredictor = data.predictor || {};
+            this.currentLotteryType = this.currentPredictor.lottery_type || 'pc28';
+            document.getElementById('publicProfitPanel').style.display = this.currentPredictor.capabilities?.supports_profit_simulation ? '' : 'none';
             this.renderHero(data);
             this.renderStats(data.stats);
             this.renderMetricStats(data.stats);
@@ -120,6 +123,10 @@ class PublicPredictorPage {
     }
 
     renderHero(data) {
+        if ((data.predictor?.lottery_type || 'pc28') === 'jingcai_football') {
+            this.renderFootballHero(data);
+            return;
+        }
         const hero = document.getElementById('publicPredictorHero');
         const predictor = data.predictor || {};
         const stats = data.stats || {};
@@ -153,6 +160,40 @@ class PublicPredictorPage {
                     <span class="tag">${this.escapeHtml(currentSnapshot.bigSmall || '--')}</span>
                     <span class="tag">${this.escapeHtml(currentSnapshot.oddEven || '--')}</span>
                     <span class="tag">${this.escapeHtml(currentSnapshot.combo || '--')}</span>
+                </div>
+            </div>
+        `;
+    }
+
+    renderFootballHero(data) {
+        const hero = document.getElementById('publicPredictorHero');
+        const predictor = data.predictor || {};
+        const stats = data.stats || {};
+        const latestPrediction = data.latest_prediction || data.current_prediction || {};
+        const actualPayload = latestPrediction.actual_payload || {};
+
+        document.getElementById('publicHeroDescription').textContent = '公开展示该竞彩足球方案的统计表现与分享内容，不展示 API 配置和原始调用数据。';
+        document.getElementById('publicStatsSubtitle').textContent = '展示竞彩足球胜平负与让球胜平负的公开统计表现。';
+
+        hero.innerHTML = `
+            <div class="hero-metric">
+                <span class="mini-label">发布者</span>
+                <strong>${this.escapeHtml(predictor.username || '--')}</strong>
+            </div>
+            <div class="hero-metric">
+                <span class="mini-label">彩种 / 主玩法</span>
+                <strong>${this.escapeHtml((predictor.lottery_label || '竞彩足球') + ' · ' + (predictor.primary_metric_label || '--'))}</strong>
+            </div>
+            <div class="hero-metric">
+                <span class="mini-label">最近100场表现</span>
+                <strong>${this.formatRatioRate(((stats.metrics || {})[stats.primary_metric || 'spf'] || {}).recent_100)}</strong>
+            </div>
+            <div class="hero-metric">
+                <span class="mini-label">最新公开预测</span>
+                <div class="badge-row">
+                    <span class="tag">胜平负 ${this.escapeHtml((latestPrediction.prediction_payload || {}).spf || '--')}</span>
+                    <span class="tag">让球 ${this.escapeHtml((latestPrediction.prediction_payload || {}).rqspf || '--')}</span>
+                    <span class="tag">${this.escapeHtml(actualPayload.score_text || '--')}</span>
                 </div>
             </div>
         `;
@@ -221,7 +262,9 @@ class PublicPredictorPage {
 
     renderMetricStats(stats) {
         const tbody = document.getElementById('publicMetricStatsBody');
-        const metricOrder = ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group'];
+        const metricOrder = (this.currentLotteryType || 'pc28') === 'jingcai_football'
+            ? ['spf', 'rqspf']
+            : ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group'];
         const rows = metricOrder
             .map((key) => ({ key, metric: (stats.metrics || {})[key] }))
             .filter((item) => item.metric);
@@ -301,6 +344,21 @@ class PublicPredictorPage {
             return;
         }
 
+        if ((predictor?.lottery_type || 'pc28') === 'jingcai_football') {
+            tbody.innerHTML = items.map((item) => `
+                <tr>
+                    <td>${this.escapeHtml(item.issue_no || '--')}</td>
+                    <td>${this.escapeHtml(this.statusLabel(item.status))}</td>
+                    <td>${this.renderFootballResultStack(item.prediction_payload || {}, item.title || '--')}</td>
+                    <td>${this.renderFootballActualStack(item.actual_payload || {}, item.status)}</td>
+                    <td>${this.renderHitSummary(item)}</td>
+                    <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
+                    <td>${this.escapeHtml(item.reasoning_summary || '无')}</td>
+                </tr>
+            `).join('');
+            return;
+        }
+
         tbody.innerHTML = items.map((item) => `
             <tr>
                 <td>${this.escapeHtml(item.issue_no || '--')}</td>
@@ -315,6 +373,10 @@ class PublicPredictorPage {
     }
 
     renderProfitControls(predictor, resetMetric = false) {
+        if ((predictor?.lottery_type || 'pc28') !== 'pc28') {
+            this.renderProfitSimulationEmpty('当前彩种暂不支持收益模拟');
+            return;
+        }
         const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
         const betModeSelect = document.getElementById('publicProfitBetModeView');
@@ -401,6 +463,11 @@ class PublicPredictorPage {
     async loadProfitSimulation() {
         if (!this.predictorId || !this.currentPredictor) {
             this.renderProfitSimulationEmpty('暂无公开收益模拟数据');
+            return;
+        }
+
+        if ((this.currentPredictor.lottery_type || 'pc28') !== 'pc28') {
+            this.renderProfitSimulationEmpty('当前彩种暂不支持收益模拟');
             return;
         }
 
@@ -666,6 +733,9 @@ class PublicPredictorPage {
     }
 
     renderHitSummary(item) {
+        if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            return this.renderFootballHitSummary(item);
+        }
         if (item.status === 'pending') {
             return '<span class="hint-text">未结算</span>';
         }
@@ -695,6 +765,33 @@ class PublicPredictorPage {
     }
 
     metricMeta(metricKey) {
+        if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            const footballMapping = {
+                spf: {
+                    label: '胜平负',
+                    alias: '常规盘',
+                    shortRule: '三分类',
+                    description: '按 90 分钟含伤停补时赛果统计主胜、平局、客胜。',
+                    formula: '预测胜平负 = 实际胜平负'
+                },
+                rqspf: {
+                    label: '让球胜平负',
+                    alias: '让球盘',
+                    shortRule: '三分类',
+                    description: '按官方让球数修正主队比分后统计胜平负。',
+                    formula: '预测让球胜平负 = 实际让球胜平负'
+                }
+            };
+
+            return footballMapping[metricKey] || {
+                label: metricKey || '--',
+                alias: null,
+                shortRule: '未定义',
+                description: '当前玩法说明暂未定义。',
+                formula: '--'
+            };
+        }
+
         const mapping = {
             number: {
                 label: '单点',
@@ -811,6 +908,17 @@ class PublicPredictorPage {
     }
 
     buildHitItems(item) {
+        if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            const hitPayload = item.hit_payload || {};
+            const hitValues = [];
+            if (hitPayload.spf !== null && hitPayload.spf !== undefined) {
+                hitValues.push({ label: '胜平负', value: hitPayload.spf });
+            }
+            if (hitPayload.rqspf !== null && hitPayload.rqspf !== undefined) {
+                hitValues.push({ label: '让球胜平负', value: hitPayload.rqspf });
+            }
+            return hitValues;
+        }
         const hitValues = [];
 
         if (item.hit_number !== null && item.hit_number !== undefined) {
@@ -900,6 +1008,45 @@ class PublicPredictorPage {
             '\'': '&#039;'
         };
         return value.replace(/[&<>"']/g, (char) => map[char]);
+    }
+
+    renderFootballResultStack(payload, title) {
+        return `
+            <div class="result-stack">
+                <strong>${this.escapeHtml(title || '--')}</strong>
+                <span class="result-meta-text">胜平负：${this.escapeHtml(payload.spf || '--')} · 让球胜平负：${this.escapeHtml(payload.rqspf || '--')}</span>
+            </div>
+        `;
+    }
+
+    renderFootballActualStack(payload, status = 'settled') {
+        if (status === 'pending') {
+            return '<span class="hint-text">等待赛果</span>';
+        }
+
+        return `
+            <div class="result-stack">
+                <strong>${this.escapeHtml(payload.score_text || '--')}</strong>
+                <span class="result-meta-text">胜平负：${this.escapeHtml(payload.spf || '--')} · 让球胜平负：${this.escapeHtml(payload.rqspf || '--')}</span>
+            </div>
+        `;
+    }
+
+    renderFootballHitSummary(item) {
+        if (item.status === 'pending') {
+            return '<span class="hint-text">未结算</span>';
+        }
+        const hitValues = this.buildHitItems(item);
+        if (!hitValues.length) {
+            return '<span class="hint-text">无可统计结果</span>';
+        }
+        return `
+            <div class="hit-summary-block">
+                <div class="hit-list">
+                    ${hitValues.map((hit) => `<span class="hit-pill ${this.hitClass(hit.value)}">${this.escapeHtml(hit.label)} ${this.hitMark(hit.value)}</span>`).join('')}
+                </div>
+            </div>
+        `;
     }
 }
 

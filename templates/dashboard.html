@@ -6,7 +6,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>PC28 预测控制台</title>
+    <title>彩票预测控制台</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v={{ app_version }}">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <link rel="stylesheet" href="/static/pc28.css?v={{ app_version }}">
@@ -17,8 +17,8 @@
         <header class="pc28-header">
             <div>
                 <div class="eyebrow">AI Lottery Predictor</div>
-                <h1>PC28 预测控制台</h1>
-                <p>支持多方案、多提示词、多模型独立预测下一期加拿大28结果</p>
+                <h1>彩票预测控制台</h1>
+                <p>支持多彩种、多方案、多提示词、多模型独立预测</p>
             </div>
             <div class="header-actions">
                 <span class="header-user" id="userInfo">加载中...</span>
@@ -52,7 +52,7 @@
             <aside class="pc28-sidebar sticky">
                 <section class="panel sidebar-overview-panel">
                     <div class="panel-header compact">
-                        <h3>PC28 实时状态</h3>
+                        <h3>实时状态</h3>
                         <span class="status-badge">自动轮询中</span>
                     </div>
                     <div id="overviewPanel" class="overview-panel">
@@ -73,7 +73,7 @@
             <main class="pc28-main">
                 <section class="stats-grid" id="statsGrid"></section>
 
-                <section class="panel">
+                <section class="panel" id="profitPanel">
                     <div class="panel-header">
                         <div>
                             <h3>方案统计</h3>
@@ -97,7 +97,7 @@
                         <div class="table-wrap">
                             <table class="data-table compact-table">
                                 <thead>
-                                    <tr>
+                                    <tr id="drawsHeadRow">
                                         <th>玩法</th>
                                         <th>20期</th>
                                         <th>100期</th>
@@ -265,13 +265,13 @@
                         <div class="table-wrap">
                             <table class="data-table">
                                 <thead>
-                                    <tr>
-                                        <th>期号</th>
-                                        <th>开奖号码</th>
-                                        <th>大/小</th>
-                                        <th>单/双</th>
-                                        <th>组合结果</th>
-                                        <th>开奖时间</th>
+                                    <tr id="drawsHeadRow">
+                                        <th id="drawCol1">期号</th>
+                                        <th id="drawCol2">开奖号码</th>
+                                        <th id="drawCol3">大/小</th>
+                                        <th id="drawCol4">单/双</th>
+                                        <th id="drawCol5">组合结果</th>
+                                        <th id="drawCol6">开奖时间</th>
                                     </tr>
                                 </thead>
                                 <tbody id="drawsBody">
@@ -305,6 +305,13 @@
             <input type="hidden" id="predictorId">
 
             <div class="form-grid">
+                <label class="form-field">
+                    <span>彩种</span>
+                    <select id="lotteryType" class="form-input">
+                        <option value="pc28">加拿大28 / PC28</option>
+                        <option value="jingcai_football">竞彩足球</option>
+                    </select>
+                </label>
                 <label class="form-field">
                     <span>方案名称</span>
                     <input type="text" id="predictorName" placeholder="例如：Gemini 数学概率">
@@ -362,7 +369,7 @@
                     </select>
                     <small class="field-hint">当前连中、最大连中和后续公开页默认排序会优先使用这里选择的主玩法。</small>
                 </label>
-                <label class="form-field span-2">
+                <label class="form-field span-2" id="profitRuleField">
                     <span>默认收益规则</span>
                     <select id="profitRuleId" class="form-input">
                         <option value="pc28_netdisk">加拿大28网盘：默认规则更直，13/14 正常赔付</option>
@@ -370,7 +377,7 @@
                     </select>
                     <small class="field-hint">这个字段决定收益模拟使用哪套赔率和中奖规则，不影响预测主流程。</small>
                 </label>
-                <label class="form-field span-2">
+                <label class="form-field span-2" id="profitMetricField">
                     <span>默认收益玩法</span>
                     <select id="profitDefaultMetric" class="form-input">
                         <option value="big_small">大/小：默认按大小单双盘看当盘日盈亏</option>
@@ -385,15 +392,15 @@
             <div class="form-field">
                 <span>预测目标</span>
                 <div class="checkbox-grid">
-                    <label><input type="checkbox" id="targetNumber" checked disabled aria-disabled="true"> 单点（固定开启）</label>
-                    <label><input type="checkbox" id="targetBigSmall" checked> 大/小</label>
-                    <label><input type="checkbox" id="targetOddEven" checked> 单/双</label>
-                    <label><input type="checkbox" id="targetCombo" checked> 组合投注</label>
+                    <label id="targetOptionNumber"><input type="checkbox" id="targetNumber" checked disabled aria-disabled="true"> <span id="targetLabelNumber">单点（固定开启）</span></label>
+                    <label id="targetOptionBigSmall"><input type="checkbox" id="targetBigSmall" checked> <span id="targetLabelBigSmall">大/小</span></label>
+                    <label id="targetOptionOddEven"><input type="checkbox" id="targetOddEven" checked> <span id="targetLabelOddEven">单/双</span></label>
+                    <label id="targetOptionCombo"><input type="checkbox" id="targetCombo" checked> <span id="targetLabelCombo">组合投注</span></label>
                 </div>
-                <small class="field-hint">单点固定开启，号码是主预测结果；大/小、单/双、组合投注围绕号码展开。</small>
+                <small class="field-hint" id="targetHint">单点固定开启，号码是主预测结果；大/小、单/双、组合投注围绕号码展开。</small>
             </div>
 
-            <div class="form-field help-block">
+            <div class="form-field help-block" id="presetBlock">
                 <span>方案示例</span>
                 <small class="field-hint">一键填充策略相关字段，帮助新手快速开始；不会清空你已填的 API Key。</small>
                 <div id="presetCards" class="preset-grid"></div>
@@ -406,14 +413,14 @@
                 <small class="field-hint">支持直接写自然语言，也支持填入变量占位符。未写变量时，平台会按你选择的“数据注入模式”自动把数据放进上下文。</small>
             </label>
 
-            <div class="modal-actions left-actions">
+            <div class="modal-actions left-actions" id="promptAssistantActions">
                 <button class="btn ghost" id="checkPromptBtn">检查提示词</button>
                 <button class="btn ghost" id="optimizePromptBtn">AI 优化</button>
                 <button class="btn ghost" id="applyOptimizedPromptBtn" style="display: none;">应用优化结果</button>
             </div>
             <div id="promptAssistantResult" class="prompt-assistant-result" style="display: none;"></div>
 
-            <div class="form-field help-block">
+            <div class="form-field help-block" id="promptVariablesBlock">
                 <span>变量说明与示例</span>
                 <small class="field-hint">如果你想去 ChatGPT、Claude、Gemini 等网页让它们帮你写提示词，可以先生成下方“网页 AI 帮写模板”，其中会自动带上这些变量说明和当前方案配置。</small>
                 <div class="variable-grid">
@@ -439,7 +446,7 @@
                 </div>
             </div>
 
-            <div class="form-field help-block">
+            <div class="form-field help-block" id="externalPromptBlock">
                 <span>网页 AI 帮写模板</span>
                 <small class="field-hint">点击生成后，会把当前方案配置、可用变量、编写约束整理成一段说明。你可以直接复制给外部 AI，也可以只补一句大白话需求，例如“偏保守一点”“重点看单双”“理由短一点”。修改了方案配置后，记得重新生成。</small>
                 <div class="modal-actions left-actions">

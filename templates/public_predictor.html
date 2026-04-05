@@ -6,7 +6,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>公开方案预测详情</title>
+    <title>公开方案详情</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v={{ app_version }}">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <link rel="stylesheet" href="/static/pc28.css?v={{ app_version }}">
@@ -19,7 +19,7 @@
                 <div class="eyebrow">Public Predictor</div>
                 {% if predictor %}
                 <h1>{{ predictor.name }}</h1>
-                <p>公开展示该方案的统计表现与分享内容，不展示 API 配置和原始调用数据。</p>
+                <p id="publicHeroDescription">公开展示该方案的统计表现与分享内容，不展示 API 配置和原始调用数据。</p>
                 {% else %}
                 <h1>方案未公开</h1>
                 <p>该方案暂未开放预测内容，当前只能在公开榜单查看统计表现。</p>
@@ -47,7 +47,7 @@
             <div class="panel-header">
                 <div>
                     <h3>玩法统计</h3>
-                    <p class="panel-subtitle">展示单点、大/小、单/双、组合投注、组合分组统计、排除统计的最近 20 期、最近 100 期和历史表现。</p>
+                    <p class="panel-subtitle" id="publicStatsSubtitle">展示当前彩种公开统计表现。</p>
                 </div>
             </div>
             <div id="publicMetricHint" class="metric-hint empty-panel">
@@ -102,7 +102,7 @@
             </div>
         </section>
 
-        <section class="panel">
+        <section class="panel" id="publicProfitPanel">
             <div class="panel-header">
                 <div>
                     <h3>收益模拟</h3>
