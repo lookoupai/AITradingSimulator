@@ -414,25 +414,11 @@
 
             <div class="form-field help-block">
                 <span>变量说明与示例</span>
+                <small class="field-hint">如果你想去 ChatGPT、Claude、Gemini 等网页让它们帮你写提示词，可以先生成下方“网页 AI 帮写模板”，其中会自动带上这些变量说明和当前方案配置。</small>
                 <div class="variable-grid">
-                    {% raw %}
-                    <span class="tag code-tag">{{recent_draws_summary}}</span>
-                    <span class="tag code-tag">{{recent_draws_csv}}</span>
-                    <span class="tag code-tag">{{recent_draws_json}}</span>
-                    <span class="tag code-tag">{{omission_summary}}</span>
-                    <span class="tag code-tag">{{today_summary}}</span>
-                    <span class="tag code-tag">{{preview_summary}}</span>
-                    <span class="tag code-tag">{{current_time_beijing}}</span>
-                    <span class="tag code-tag">{{current_year}}</span>
-                    <span class="tag code-tag">{{current_month}}</span>
-                    <span class="tag code-tag">{{current_day}}</span>
-                    <span class="tag code-tag">{{current_hour}}</span>
-                    <span class="tag code-tag">{{current_minute}}</span>
-                    <span class="tag code-tag">{{next_issue_no}}</span>
-                    <span class="tag code-tag">{{countdown}}</span>
-                    <span class="tag code-tag">{{prediction_targets}}</span>
-                    <span class="tag code-tag">{{history_window}}</span>
-                    {% endraw %}
+                    {% for item in prompt_placeholders %}
+                    <span class="tag code-tag" title="{{ item.description }}">{{ '{{' }}{{ item.name }}{{ '}}' }}</span>
+                    {% endfor %}
                 </div>
                 <div class="help-panel">
                     <p class="panel-subtitle">常用写法</p>
@@ -450,6 +436,16 @@
 
 请结合统计模型 + 小六壬输出下一期的和值、大小单双、风险和策略，只输出 JSON。{% endraw %}</pre>
                 </div>
+            </div>
+
+            <div class="form-field help-block">
+                <span>网页 AI 帮写模板</span>
+                <small class="field-hint">点击生成后，会把当前方案配置、可用变量、编写约束整理成一段说明。你可以先在下方修改，再复制到外部 AI 网页让它帮你写“自定义提示词”。修改了方案配置后，记得重新生成。</small>
+                <div class="modal-actions left-actions">
+                    <button class="btn ghost" id="buildExternalPromptBtn">生成模板</button>
+                    <button class="btn ghost" id="copyExternalPromptBtn">复制模板</button>
+                </div>
+                <textarea id="externalPromptTemplate" class="code-textarea" rows="16" placeholder="点击“生成模板”后，这里会出现可直接发给外部 AI 的说明模板。"></textarea>
             </div>
 
             <label class="toggle-row">

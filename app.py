@@ -16,7 +16,7 @@ from database import Database
 from services.pc28_service import PC28Service
 from services.profit_simulator import DEFAULT_ODDS_PROFILE, ProfitSimulator
 from services.prediction_engine import PredictionEngine
-from utils.prompt_assistant import analyze_prompt, build_optimizer_prompt
+from utils.prompt_assistant import analyze_prompt, build_external_prompt_template, build_optimizer_prompt, get_prompt_placeholder_catalog
 from utils.auth import (
     admin_required,
     clear_current_user,
@@ -597,6 +597,7 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
             raise PermissionError('无权访问此预测方案')
         existing = db.get_predictor(predictor_id, include_secret=True)
 
+    fallback_name = existing.get('name') if existing else ''
     fallback_api_url = existing.get('api_url') if existing else ''
     fallback_model_name = existing.get('model_name') if existing else ''
     fallback_api_mode = existing.get('api_mode') if existing else 'auto'
@@ -607,9 +608,18 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
     fallback_prompt = existing.get('system_prompt') if existing else ''
     fallback_injection_mode = existing.get('data_injection_mode') if existing else 'summary'
     fallback_targets = existing.get('prediction_targets') if existing else None
+    fallback_history_window = existing.get('history_window') if existing else config.DEFAULT_HISTORY_WINDOW
+
+    history_window = data.get('history_window', fallback_history_window)
+    try:
+        history_window = int(history_window)
+    except (TypeError, ValueError):
+        history_window = config.DEFAULT_HISTORY_WINDOW
+    history_window = max(10, min(history_window, 200))
 
     resolved = {
         'predictor_id': predictor_id,
+        'name': str(data.get('name') or fallback_name).strip(),
         'api_key': str(data.get('api_key') or '').strip() or (existing.get('api_key') if existing else ''),
         'api_url': str(data.get('api_url') or fallback_api_url).strip(),
         'model_name': str(data.get('model_name') or fallback_model_name).strip(),
@@ -620,7 +630,8 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
         'prediction_method': str(data.get('prediction_method') or fallback_method).strip(),
         'system_prompt': str(data.get('system_prompt') or fallback_prompt).strip(),
         'data_injection_mode': normalize_injection_mode(data.get('data_injection_mode') or fallback_injection_mode),
-        'prediction_targets': normalize_target_list(data.get('prediction_targets', fallback_targets))
+        'prediction_targets': normalize_target_list(data.get('prediction_targets', fallback_targets)),
+        'history_window': history_window
     }
 
     return existing, resolved
@@ -654,7 +665,7 @@ def public_predictor_page(predictor_id: int):
 def dashboard():
     if not get_current_user_id():
         return redirect('/login')
-    return render_template('dashboard.html')
+    return render_template('dashboard.html', prompt_placeholders=get_prompt_placeholder_catalog())
 
 
 @app.route('/admin')
@@ -1167,6 +1178,22 @@ def optimize_predictor_prompt():
         })
     except Exception as exc:
         return jsonify({'error': str(exc), 'static_analysis': analysis}), 500
+
+
+@app.route('/api/predictors/prompt-template', methods=['POST'])
+@login_required
+def build_predictor_prompt_template():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+
+    try:
+        _, resolved = _resolve_predictor_form_context(user_id, data)
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+
+    return jsonify({
+        'prompt_template': build_external_prompt_template(resolved)
+    })
 
 
 @app.route('/api/predictors/<int:predictor_id>', methods=['PUT'])

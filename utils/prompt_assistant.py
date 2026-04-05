@@ -9,24 +9,89 @@ from utils.pc28 import TARGET_LABELS, normalize_injection_mode, normalize_primar
 
 PLACEHOLDER_PATTERN = re.compile(r'\{\{\s*([a-zA-Z0-9_]+)\s*\}\}')
 
-KNOWN_PLACEHOLDERS = {
-    'recent_draws_summary',
-    'recent_draws_csv',
-    'recent_draws_json',
-    'omission_summary',
-    'today_summary',
-    'preview_summary',
-    'current_time_beijing',
-    'current_year',
-    'current_month',
-    'current_day',
-    'current_hour',
-    'current_minute',
-    'next_issue_no',
-    'countdown',
-    'prediction_targets',
-    'history_window'
-}
+PLACEHOLDER_DEFINITIONS = [
+    {
+        'name': 'recent_draws_summary',
+        'description': '最近若干期的自然语言开奖摘要，适合摘要模式。'
+    },
+    {
+        'name': 'recent_draws_csv',
+        'description': '最近若干期的 CSV 结构化开奖数据，适合原始模式。'
+    },
+    {
+        'name': 'recent_draws_json',
+        'description': '最近若干期的 JSON 数组数据，适合需要结构化输入的提示词。'
+    },
+    {
+        'name': 'omission_summary',
+        'description': '当前遗漏、冷号、热号的摘要。'
+    },
+    {
+        'name': 'today_summary',
+        'description': '今日统计摘要。'
+    },
+    {
+        'name': 'preview_summary',
+        'description': '聚合走势与趋势预览摘要。'
+    },
+    {
+        'name': 'latest_draw_summary',
+        'description': '最近一期开奖的单条摘要。'
+    },
+    {
+        'name': 'current_time_beijing',
+        'description': '当前北京时间完整字符串。'
+    },
+    {
+        'name': 'current_year',
+        'description': '当前北京时间的年份。'
+    },
+    {
+        'name': 'current_month',
+        'description': '当前北京时间的月份。'
+    },
+    {
+        'name': 'current_day',
+        'description': '当前北京时间的日期。'
+    },
+    {
+        'name': 'current_hour',
+        'description': '当前北京时间的小时。'
+    },
+    {
+        'name': 'current_minute',
+        'description': '当前北京时间的分钟。'
+    },
+    {
+        'name': 'next_issue_no',
+        'description': '下一期期号。'
+    },
+    {
+        'name': 'countdown',
+        'description': '下一期开奖倒计时。'
+    },
+    {
+        'name': 'prediction_targets',
+        'description': '当前方案勾选的预测目标文本。'
+    },
+    {
+        'name': 'history_window',
+        'description': '当前方案使用的历史窗口期数。'
+    }
+]
+
+KNOWN_PLACEHOLDERS = {item['name'] for item in PLACEHOLDER_DEFINITIONS}
+
+
+def get_prompt_placeholder_catalog() -> list[dict]:
+    return [
+        {
+            'name': item['name'],
+            'token': _placeholder_token(item['name']),
+            'description': item['description']
+        }
+        for item in PLACEHOLDER_DEFINITIONS
+    ]
 
 
 def analyze_prompt(
@@ -105,7 +170,7 @@ def build_optimizer_prompt(
         for item in analysis.get('issues', [])
     ) or '- 暂未发现明显问题'
 
-    placeholders_text = ', '.join(f'{{{{{item}}}}}' for item in sorted(KNOWN_PLACEHOLDERS))
+    placeholders_text = ', '.join(item['token'] for item in get_prompt_placeholder_catalog())
     targets_text = ', '.join(TARGET_LABELS.get(item, item) for item in analysis.get('prediction_targets', []))
 
     return f"""你是 PC28 提示词优化助手。你的任务是帮助新手把提示词改得更稳定、更容易命中目标玩法。
@@ -139,6 +204,86 @@ def build_optimizer_prompt(
 3. 尽量保留原有方法论风格，例如统计、小六壬、回归等。
 4. 如果适合，主动使用变量占位符。
 5. 只输出 JSON。"""
+
+
+def build_external_prompt_template(predictor_payload: dict) -> str:
+    targets = normalize_target_list(predictor_payload.get('prediction_targets'))
+    target_labels = ', '.join(TARGET_LABELS.get(item, item) for item in targets) or '未设置'
+    injection_mode = normalize_injection_mode(predictor_payload.get('data_injection_mode'))
+    metric = normalize_primary_metric(predictor_payload.get('primary_metric'))
+    prediction_method = predictor_payload.get('prediction_method') or '自定义策略'
+    current_prompt = (predictor_payload.get('system_prompt') or '').strip()
+    placeholders_text = '\n'.join(
+        f"- {item['token']}：{item['description']}"
+        for item in get_prompt_placeholder_catalog()
+    )
+
+    recommendation_lines = [
+        f"- 当前数据注入模式是“{'原始模式' if injection_mode == 'raw' else '摘要模式'}”，优先考虑使用 "
+        f"{_placeholder_token('recent_draws_csv') if injection_mode == 'raw' else _placeholder_token('recent_draws_summary')}。"
+    ]
+
+    if any(keyword in prediction_method for keyword in ['小六壬', '起课', '时间', '奇门', '梅花']):
+        recommendation_lines.append(
+            f"- 当前方法偏时间起课，建议补充 {_placeholder_token('current_time_beijing')} 或年月日时分拆变量。"
+        )
+
+    if 'combo' in targets:
+        recommendation_lines.append('- 当前方案包含组合预测，可以要求模型分析大单/大双/小单/小双。')
+
+    if 'number' not in targets:
+        recommendation_lines.append('- 当前方案未勾选单点，不要要求模型强制输出精确和值或主号。')
+
+    if 'number' in targets:
+        recommendation_lines.append('- 当前方案包含单点，可要求模型输出和值方向或主预测号码，但不要写死示例答案。')
+
+    recommendation_lines.append(
+        f"- 如果你不想手写变量，平台也会按“{'原始模式' if injection_mode == 'raw' else '摘要模式'}”自动注入数据；"
+        '但如果你想固定输入格式，请显式写变量占位符。'
+    )
+
+    recommendations_text = '\n'.join(recommendation_lines)
+
+    return f"""你是一个资深提示词工程师。请帮我为“AITradingSimulator”的 PC28 预测项目编写一版可直接使用的“自定义提示词”。
+
+重要背景：
+- 你写出的内容不是完整系统提示词，而是项目里“自定义提示词”输入框的内容。
+- 平台外层已经会补充固定规则、方案信息，并要求模型最终输出 JSON。
+- 你的任务重点是：帮我写好分析方法、变量使用方式、推理步骤、风险控制和输出约束细节。
+
+当前方案配置：
+- 方案名称：{predictor_payload.get('name') or '未命名方案'}
+- 预测方法：{prediction_method}
+- 预测目标：{target_labels}
+- 主玩法：{TARGET_LABELS.get(metric, metric)}
+- 数据注入模式：{'原始模式' if injection_mode == 'raw' else '摘要模式'}
+- 历史窗口：最近 {predictor_payload.get('history_window') or '未设置'} 期
+
+这个项目允许在提示词中使用以下变量，占位格式必须原样保留，只能使用这些变量，不要发明新变量：
+{placeholders_text}
+
+结合当前配置，优先注意：
+{recommendations_text}
+
+编写要求：
+1. 最终提示词必须服务于加拿大28（PC28）下一期预测，不要写成通用聊天助手。
+2. 必须兼容当前预测目标；不要要求输出未勾选的玩法。
+3. 只允许使用上面列出的变量名；不需要时可以不用，但不要自造变量。
+4. 不要写死具体和值、号码、大小单双、组合、概率、置信度或开奖结果示例。
+5. 提示词尽量简洁、稳定、可执行，避免空泛套话和重复要求。
+6. 如果适合，明确告诉模型先看什么、再看什么、如何权衡冲突信号。
+7. 如果我补充的方法偏统计、小六壬、回归、遗漏回补、趋势判断等，请保留该风格，但仍要保持基本风控。
+8. 输出内容请使用中文简体。
+
+请按下面格式回复：
+第一部分：可直接粘贴到项目里的最终提示词正文，不要加代码块，不要加前后解释
+第二部分：简短说明你用了哪些变量、为什么这样安排
+
+我当前已有提示词（如有价值可继承其风格；如果质量差可以直接重写）：
+{current_prompt or '（暂无）'}
+
+我接下来会在下面补充自己的个性化需求，请基于项目规则和这些需求生成最终提示词：
+【在这里补充你的需求，例如：偏重小六壬、只关心大小单双、不要激进建议、强调遗漏回补、输出理由更短等】"""
 
 
 def _extract_placeholders(prompt: str) -> list[str]:
@@ -245,3 +390,7 @@ def _build_variable_recommendations(prompt: str, placeholders: list[str], inject
         'variables': recommendations,
         'snippets': snippets
     }
+
+
+def _placeholder_token(name: str) -> str:
+    return f'{{{{{name}}}}}'

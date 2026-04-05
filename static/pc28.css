@@ -977,6 +977,11 @@ a {
     color: var(--text);
 }
 
+.code-textarea {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    line-height: 1.7;
+}
+
 .span-2 {
     grid-column: span 2;
 }

@@ -123,6 +123,8 @@ class PredictionApp {
         document.getElementById('checkPromptBtn').addEventListener('click', () => this.checkPromptAssistant());
         document.getElementById('optimizePromptBtn').addEventListener('click', () => this.optimizePromptAssistant());
         document.getElementById('applyOptimizedPromptBtn').addEventListener('click', () => this.applyOptimizedPrompt());
+        document.getElementById('buildExternalPromptBtn').addEventListener('click', () => this.buildExternalPromptTemplate());
+        document.getElementById('copyExternalPromptBtn').addEventListener('click', () => this.copyExternalPromptTemplate());
         document.getElementById('predictNowBtn').addEventListener('click', () => this.predictNow());
         document.getElementById('editPredictorBtn').addEventListener('click', () => this.openEditModal());
         document.getElementById('togglePredictorBtn').addEventListener('click', () => this.toggleCurrentPredictor());
@@ -1316,6 +1318,7 @@ class PredictionApp {
         document.getElementById('targetOddEven').checked = data.prediction_targets.includes('odd_even');
         document.getElementById('targetCombo').checked = data.prediction_targets.includes('combo');
         this.syncProfitMetricOptions();
+        this.clearExternalPromptTemplate();
         this.presetExpanded = false;
         this.renderPresetCards();
         this.showModal();
@@ -1354,6 +1357,7 @@ class PredictionApp {
         this.syncProfitMetricOptions();
         this.hideTestResult();
         this.hidePromptAssistantResult();
+        this.clearExternalPromptTemplate();
     }
 
     renderPresetCards() {
@@ -1422,6 +1426,7 @@ class PredictionApp {
         document.getElementById('targetOddEven').checked = preset.targets.includes('odd_even');
         document.getElementById('targetCombo').checked = preset.targets.includes('combo');
         this.syncProfitMetricOptions();
+        this.clearExternalPromptTemplate();
     }
 
     collectFormData() {
@@ -1623,6 +1628,62 @@ class PredictionApp {
             return;
         }
         document.getElementById('systemPrompt').value = optimizedPrompt;
+    }
+
+    async buildExternalPromptTemplate() {
+        const predictorId = document.getElementById('predictorId').value;
+        const payload = this.collectFormData();
+        payload.predictor_id = predictorId ? Number(predictorId) : null;
+
+        const button = document.getElementById('buildExternalPromptBtn');
+        const textarea = document.getElementById('externalPromptTemplate');
+        if (!button || !textarea) {
+            return;
+        }
+
+        button.disabled = true;
+        button.textContent = '生成中...';
+
+        try {
+            const response = await fetch('/api/predictors/prompt-template', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '生成模板失败');
+            }
+
+            textarea.value = data.prompt_template || '';
+            textarea.focus();
+        } catch (error) {
+            alert(error.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = '生成模板';
+        }
+    }
+
+    async copyExternalPromptTemplate() {
+        const button = document.getElementById('copyExternalPromptBtn');
+        const textarea = document.getElementById('externalPromptTemplate');
+        const promptTemplate = textarea?.value?.trim();
+        if (!promptTemplate) {
+            alert('请先生成网页 AI 帮写模板');
+            return;
+        }
+
+        await this.copyTextWithFeedback(button, promptTemplate);
+    }
+
+    clearExternalPromptTemplate() {
+        const textarea = document.getElementById('externalPromptTemplate');
+        if (!textarea) {
+            return;
+        }
+        textarea.value = '';
     }
 
     async deletePredictor(predictorId) {
@@ -2233,29 +2294,38 @@ class PredictionApp {
         if (!url || button.disabled) {
             return;
         }
+        await this.copyTextWithFeedback(button, url);
+    }
+
+    async copyTextWithFeedback(button, text) {
+        if (!button || !text || button.disabled) {
+            return false;
+        }
 
         const originalText = button.textContent;
 
         try {
             if (navigator.clipboard && navigator.clipboard.writeText) {
-                await navigator.clipboard.writeText(url);
+                await navigator.clipboard.writeText(text);
             } else {
                 const input = document.createElement('input');
-                input.value = url;
+                input.value = text;
                 document.body.appendChild(input);
                 input.select();
                 document.execCommand('copy');
                 input.remove();
             }
             button.textContent = '已复制';
+            return true;
         } catch (error) {
-            console.error('Failed to copy public url:', error);
+            console.error('Failed to copy text:', error);
             button.textContent = '复制失败';
+            return false;
+        } finally {
+            window.setTimeout(() => {
+                button.textContent = originalText;
+            }, 1500);
         }
-
-        window.setTimeout(() => {
-            button.textContent = originalText;
-        }, 1500);
     }
 
     hitClass(value) {
