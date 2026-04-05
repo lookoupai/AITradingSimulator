@@ -4,6 +4,7 @@ class PublicPredictorPage {
         this.currentPredictor = window.PUBLIC_PREDICTOR || null;
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
+        this.selectedProfitOrder = 'desc';
         this.selectedProfitOddsProfile = 'regular';
         this.profitChart = null;
         this.refreshTimer = null;
@@ -22,6 +23,7 @@ class PublicPredictorPage {
     initEventListeners() {
         const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
+        const orderSelect = document.getElementById('publicProfitOrderView');
         const oddsSelect = document.getElementById('publicProfitOddsProfileView');
 
         if (ruleSelect) {
@@ -34,6 +36,13 @@ class PublicPredictorPage {
         if (metricSelect) {
             metricSelect.addEventListener('change', (event) => {
                 this.selectedProfitMetric = event.target.value;
+                this.loadProfitSimulation();
+            });
+        }
+
+        if (orderSelect) {
+            orderSelect.addEventListener('change', (event) => {
+                this.selectedProfitOrder = event.target.value;
                 this.loadProfitSimulation();
             });
         }
@@ -268,6 +277,7 @@ class PublicPredictorPage {
     renderProfitControls(predictor, resetMetric = false) {
         const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
+        const orderSelect = document.getElementById('publicProfitOrderView');
         const oddsSelect = document.getElementById('publicProfitOddsProfileView');
         const rules = predictor?.profit_rule_options || [];
         const metrics = predictor?.simulation_metrics || [];
@@ -278,6 +288,7 @@ class PublicPredictorPage {
             ruleSelect.disabled = true;
             metricSelect.innerHTML = '<option value="">暂无玩法</option>';
             metricSelect.disabled = true;
+            orderSelect.disabled = true;
             oddsSelect.disabled = true;
             return;
         }
@@ -316,6 +327,8 @@ class PublicPredictorPage {
         `).join('');
         metricSelect.value = this.selectedProfitMetric;
         metricSelect.disabled = false;
+        orderSelect.value = this.selectedProfitOrder;
+        orderSelect.disabled = false;
         oddsSelect.innerHTML = oddsProfiles.map((item) => `
             <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
         `).join('');
@@ -363,10 +376,11 @@ class PublicPredictorPage {
     }
 
     renderProfitSimulation(simulation, canViewRecords) {
+        const orderedRecords = this.orderProfitRecords(canViewRecords ? (simulation.records || []) : []);
         this.renderProfitSimulationHint(simulation, canViewRecords);
         this.renderProfitSummary(simulation);
-        this.renderProfitChart(canViewRecords ? (simulation.records || []) : []);
-        this.renderProfitTable(canViewRecords ? (simulation.records || []) : [], canViewRecords);
+        this.renderProfitChart(orderedRecords);
+        this.renderProfitTable(orderedRecords, canViewRecords);
     }
 
     renderProfitSimulationHint(simulation, canViewRecords) {
@@ -505,6 +519,14 @@ class PublicPredictorPage {
         document.getElementById('publicProfitSummaryGrid').innerHTML = '';
         document.getElementById('publicProfitSimulationBody').innerHTML = '<tr><td colspan="9" class="empty-cell">暂无收益模拟数据</td></tr>';
         this.renderProfitChart([]);
+    }
+
+    orderProfitRecords(records) {
+        const normalized = [...(records || [])];
+        if (this.selectedProfitOrder === 'asc') {
+            return normalized;
+        }
+        return normalized.reverse();
     }
 
     statusLabel(status) {

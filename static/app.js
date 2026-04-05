@@ -81,6 +81,7 @@ class PredictionApp {
         this.selectedStatsMetric = null;
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
+        this.selectedProfitOrder = 'desc';
         this.selectedProfitOddsProfile = 'regular';
         this.overview = null;
         this.chart = null;
@@ -141,6 +142,10 @@ class PredictionApp {
         });
         document.getElementById('profitMetricView').addEventListener('change', (event) => {
             this.selectedProfitMetric = event.target.value;
+            this.loadProfitSimulation();
+        });
+        document.getElementById('profitOrderView').addEventListener('change', (event) => {
+            this.selectedProfitOrder = event.target.value;
             this.loadProfitSimulation();
         });
         document.getElementById('profitOddsProfileView').addEventListener('change', (event) => {
@@ -706,6 +711,7 @@ class PredictionApp {
     renderProfitControls(predictor, resetMetric = false) {
         const ruleSelect = document.getElementById('profitRuleView');
         const metricSelect = document.getElementById('profitMetricView');
+        const orderSelect = document.getElementById('profitOrderView');
         const oddsSelect = document.getElementById('profitOddsProfileView');
         const rules = predictor?.profit_rule_options || [];
         const metrics = predictor?.simulation_metrics || [];
@@ -716,6 +722,7 @@ class PredictionApp {
             ruleSelect.disabled = true;
             metricSelect.innerHTML = '<option value="">暂无玩法</option>';
             metricSelect.disabled = true;
+            orderSelect.disabled = true;
             oddsSelect.disabled = true;
             return;
         }
@@ -754,6 +761,8 @@ class PredictionApp {
         `).join('');
         metricSelect.value = this.selectedProfitMetric;
         metricSelect.disabled = false;
+        orderSelect.value = this.selectedProfitOrder;
+        orderSelect.disabled = false;
         oddsSelect.innerHTML = oddsProfiles.map((item) => `
             <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
         `).join('');
@@ -808,10 +817,11 @@ class PredictionApp {
     }
 
     renderProfitSimulation(simulation, predictor) {
+        const orderedRecords = this.orderProfitRecords(simulation.records || []);
         this.renderProfitSimulationHint(simulation, predictor);
         this.renderProfitSummary(simulation);
-        this.renderProfitChart(simulation.records || []);
-        this.renderProfitTable(simulation.records || []);
+        this.renderProfitChart(orderedRecords);
+        this.renderProfitTable(orderedRecords);
     }
 
     renderProfitSimulationHint(simulation, predictor) {
@@ -947,6 +957,14 @@ class PredictionApp {
         document.getElementById('profitSummaryGrid').innerHTML = '';
         document.getElementById('profitSimulationBody').innerHTML = '<tr><td colspan="9" class="empty-cell">暂无收益模拟数据</td></tr>';
         this.renderProfitChart([]);
+    }
+
+    orderProfitRecords(records) {
+        const normalized = [...(records || [])];
+        if (this.selectedProfitOrder === 'asc') {
+            return normalized;
+        }
+        return normalized.reverse();
     }
 
     renderPredictionsTable(predictions) {
@@ -1122,6 +1140,7 @@ class PredictionApp {
         this.selectedStatsMetric = null;
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
+        this.selectedProfitOrder = 'desc';
         this.currentPredictions = [];
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
@@ -1136,6 +1155,8 @@ class PredictionApp {
         document.getElementById('profitRuleView').disabled = true;
         document.getElementById('profitMetricView').innerHTML = '<option value="">暂无玩法</option>';
         document.getElementById('profitMetricView').disabled = true;
+        document.getElementById('profitOrderView').value = this.selectedProfitOrder;
+        document.getElementById('profitOrderView').disabled = true;
         document.getElementById('profitOddsProfileView').value = this.selectedProfitOddsProfile;
         document.getElementById('profitOddsProfileView').disabled = true;
         document.getElementById('profitSimulationHint').className = 'metric-hint empty-panel';
