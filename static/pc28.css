@@ -696,6 +696,20 @@ a {
     overflow-x: auto;
 }
 
+.scroll-table-wrap {
+    overflow: auto;
+    border-radius: 18px;
+    background: var(--panel);
+}
+
+.predictions-table-wrap {
+    max-height: 440px;
+}
+
+.simulation-table-wrap {
+    max-height: 520px;
+}
+
 .data-table {
     width: 100%;
     border-collapse: collapse;
@@ -710,6 +724,13 @@ a {
     border-bottom: 1px solid var(--border);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+}
+
+.scroll-table-wrap .data-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--panel);
 }
 
 .data-table tbody td {
@@ -1473,5 +1494,13 @@ a {
     .login-card {
         padding: 22px;
         border-radius: 22px;
+    }
+
+    .predictions-table-wrap {
+        max-height: 360px;
+    }
+
+    .simulation-table-wrap {
+        max-height: 420px;
     }
 }
