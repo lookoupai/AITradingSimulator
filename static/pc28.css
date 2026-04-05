@@ -235,6 +235,11 @@ a {
     gap: 20px;
 }
 
+.pc28-sidebar.sticky {
+    align-self: start;
+    max-height: calc(100vh - 20px);
+}
+
 .sticky {
     position: sticky;
     top: 20px;
@@ -251,6 +256,31 @@ a {
 
 .panel {
     padding: 20px;
+}
+
+.sidebar-predictors-panel {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.sidebar-overview-panel {
+    padding: 16px;
+}
+
+.sidebar-overview-panel .panel-header.compact {
+    margin-bottom: 10px;
+}
+
+.sidebar-overview-panel .panel-header h3 {
+    margin-bottom: 0;
+    font-size: 18px;
+}
+
+.sidebar-overview-panel .status-badge {
+    padding: 4px 8px;
+    font-size: 11px;
 }
 
 .hero-card {
@@ -319,6 +349,10 @@ a {
     gap: 16px;
 }
 
+.sidebar-overview-panel .overview-panel {
+    gap: 12px;
+}
+
 .overview-primary,
 .summary-head,
 .summary-foot {
@@ -328,6 +362,14 @@ a {
     align-items: flex-start;
 }
 
+.sidebar-overview-panel .overview-primary {
+    gap: 12px;
+}
+
+.sidebar-overview-panel .overview-primary strong {
+    font-size: 15px;
+}
+
 .overview-result,
 .hero-metric,
 .prediction-card {
@@ -335,6 +377,11 @@ a {
     border-radius: 18px;
     background: var(--panel-soft);
     border: 1px solid color-mix(in srgb, var(--border) 85%, transparent 15%);
+}
+
+.sidebar-overview-panel .overview-result {
+    padding: 12px 14px;
+    border-radius: 16px;
 }
 
 .mini-label,
@@ -348,10 +395,19 @@ a {
     margin-bottom: 8px;
 }
 
+.sidebar-overview-panel .mini-label {
+    margin-bottom: 6px;
+    font-size: 11px;
+}
+
 .result-number {
     font-size: 40px;
     font-weight: 800;
     letter-spacing: 0.08em;
+}
+
+.sidebar-overview-panel .result-number {
+    font-size: 32px;
 }
 
 .result-meta {
@@ -360,12 +416,22 @@ a {
     font-size: 13px;
 }
 
+.sidebar-overview-panel .result-meta {
+    margin-top: 8px;
+    font-size: 12px;
+}
+
 .badge-row,
 .tag-list,
 .predictor-tags {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+}
+
+.sidebar-overview-panel .badge-row,
+.sidebar-overview-panel .tag-list {
+    gap: 6px;
 }
 
 .tag {
@@ -381,8 +447,19 @@ a {
     font-weight: 600;
 }
 
+.sidebar-overview-panel .tag {
+    padding: 4px 8px;
+    font-size: 11px;
+}
+
 .tag-list.compact .tag {
     font-size: 11px;
+}
+
+.sidebar-overview-panel .warning-banner {
+    padding: 10px 12px;
+    border-radius: 12px;
+    font-size: 12px;
 }
 
 .warning-banner {
@@ -399,6 +476,9 @@ a {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
 }
 
 .predictor-item {
@@ -1308,6 +1388,20 @@ a {
 
     .sticky {
         position: static;
+    }
+
+    .pc28-sidebar.sticky {
+        max-height: none;
+    }
+
+    .sidebar-predictors-panel,
+    .predictor-list {
+        min-height: auto;
+    }
+
+    .predictor-list {
+        overflow-y: visible;
+        padding-right: 0;
     }
 
     .stats-grid,

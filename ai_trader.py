@@ -9,7 +9,9 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
+import requests
 from openai import APIConnectionError, APIError, OpenAI
+from requests import RequestException
 
 from utils.pc28 import (
     build_combo,
@@ -322,65 +324,217 @@ class AIPredictor:
 
         for base_url in self._candidate_base_urls():
             try:
-                client = OpenAI(
-                    api_key=self.api_key,
-                    base_url=base_url
-                )
-                start_time = time.perf_counter()
-                if resolved_api_mode == 'responses':
-                    response_kwargs = {
-                        'model': self.model_name,
-                        'instructions': system_prompt,
-                        'input': prompt,
-                        'temperature': self.temperature,
-                        'max_output_tokens': max_output_tokens
-                    }
-                    if json_output:
-                        response_kwargs['text'] = {
-                            'format': {
-                                'type': 'json_object'
-                            }
-                        }
-
-                    response = client.responses.create(
-                        **response_kwargs
+                if self._should_use_compatible_http_transport(base_url):
+                    return self._call_llm_via_compatible_http(
+                        base_url=base_url,
+                        resolved_api_mode=resolved_api_mode,
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        max_output_tokens=max_output_tokens,
+                        json_output=json_output
                     )
-                    raw_response = self._extract_response_output_text(response)
-                    return {
-                        'raw_response': raw_response,
-                        'api_mode': resolved_api_mode,
-                        'response_model': getattr(response, 'model', self.model_name),
-                        'finish_reason': self._extract_responses_finish_reason(response),
-                        'latency_ms': int((time.perf_counter() - start_time) * 1000)
-                    }
-
-                response = client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {'role': 'system', 'content': system_prompt},
-                        {'role': 'user', 'content': prompt}
-                    ],
-                    temperature=self.temperature,
-                    max_tokens=max_output_tokens
+                return self._call_llm_via_openai_sdk(
+                    base_url=base_url,
+                    resolved_api_mode=resolved_api_mode,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    max_output_tokens=max_output_tokens,
+                    json_output=json_output
                 )
-                raw_response = self._extract_message_text(response)
-                choice = response.choices[0] if getattr(response, 'choices', None) else None
-                return {
-                    'raw_response': raw_response,
-                    'api_mode': resolved_api_mode,
-                    'response_model': getattr(response, 'model', self.model_name),
-                    'finish_reason': getattr(choice, 'finish_reason', None) or 'unknown',
-                    'latency_ms': int((time.perf_counter() - start_time) * 1000)
-                }
-            except (APIConnectionError, APIError, Exception) as exc:
+            except (APIConnectionError, APIError, RequestException, Exception) as exc:
                 last_error = exc
                 continue
 
-        if isinstance(last_error, APIConnectionError):
+        if isinstance(last_error, (APIConnectionError, RequestException)):
             raise Exception(f'API 连接失败：{last_error}')
         if isinstance(last_error, APIError):
             raise Exception(f'API 调用失败（模式={resolved_api_mode}）：{last_error}')
         raise Exception(f'LLM 调用失败（模式={resolved_api_mode}）：{last_error}')
+
+    def _call_llm_via_openai_sdk(
+        self,
+        base_url: str,
+        resolved_api_mode: str,
+        prompt: str,
+        system_prompt: str,
+        max_output_tokens: int,
+        json_output: bool
+    ) -> dict:
+        client = OpenAI(
+            api_key=self.api_key,
+            base_url=base_url
+        )
+        start_time = time.perf_counter()
+        if resolved_api_mode == 'responses':
+            response_kwargs = {
+                'model': self.model_name,
+                'instructions': system_prompt,
+                'input': prompt,
+                'temperature': self.temperature,
+                'max_output_tokens': max_output_tokens
+            }
+            if json_output:
+                response_kwargs['text'] = {
+                    'format': {
+                        'type': 'json_object'
+                    }
+                }
+
+            response = client.responses.create(
+                **response_kwargs
+            )
+            raw_response = self._extract_response_output_text(response)
+            return {
+                'raw_response': raw_response,
+                'api_mode': resolved_api_mode,
+                'response_model': getattr(response, 'model', self.model_name),
+                'finish_reason': self._extract_responses_finish_reason(response),
+                'latency_ms': int((time.perf_counter() - start_time) * 1000)
+            }
+
+        response = client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': prompt}
+            ],
+            temperature=self.temperature,
+            max_tokens=max_output_tokens
+        )
+        raw_response = self._extract_message_text(response)
+        return {
+            'raw_response': raw_response,
+            'api_mode': resolved_api_mode,
+            'response_model': getattr(response, 'model', self.model_name),
+            'finish_reason': self._extract_chat_finish_reason(response),
+            'latency_ms': int((time.perf_counter() - start_time) * 1000)
+        }
+
+    def _call_llm_via_compatible_http(
+        self,
+        base_url: str,
+        resolved_api_mode: str,
+        prompt: str,
+        system_prompt: str,
+        max_output_tokens: int,
+        json_output: bool
+    ) -> dict:
+        endpoint = self._build_compatible_endpoint(base_url, resolved_api_mode)
+        payload = self._build_compatible_payload(
+            resolved_api_mode=resolved_api_mode,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            max_output_tokens=max_output_tokens,
+            json_output=json_output
+        )
+        start_time = time.perf_counter()
+        response = requests.post(
+            endpoint,
+            headers=self._build_compatible_headers(),
+            json=payload,
+            timeout=60
+        )
+        latency_ms = int((time.perf_counter() - start_time) * 1000)
+        if response.status_code >= 400:
+            raise Exception(
+                f'HTTP {response.status_code}：{self._extract_http_error_message(response)}'
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ValueError(f'API 返回了非 JSON 内容：{response.text[:500]}') from exc
+
+        if resolved_api_mode == 'responses':
+            raw_response = self._extract_response_output_text(payload)
+            finish_reason = self._extract_responses_finish_reason(payload)
+        else:
+            raw_response = self._extract_message_text(payload)
+            finish_reason = self._extract_chat_finish_reason(payload)
+
+        return {
+            'raw_response': raw_response,
+            'api_mode': resolved_api_mode,
+            'response_model': payload.get('model', self.model_name),
+            'finish_reason': finish_reason,
+            'latency_ms': latency_ms
+        }
+
+    def _build_compatible_endpoint(self, base_url: str, resolved_api_mode: str) -> str:
+        suffix = 'responses' if resolved_api_mode == 'responses' else 'chat/completions'
+        return f"{base_url.rstrip('/')}/{suffix}"
+
+    def _build_compatible_payload(
+        self,
+        resolved_api_mode: str,
+        prompt: str,
+        system_prompt: str,
+        max_output_tokens: int,
+        json_output: bool
+    ) -> dict:
+        if resolved_api_mode == 'responses':
+            payload = {
+                'model': self.model_name,
+                'instructions': system_prompt,
+                'input': prompt,
+                'temperature': self.temperature,
+                'max_output_tokens': max_output_tokens
+            }
+            if json_output:
+                payload['text'] = {
+                    'format': {
+                        'type': 'json_object'
+                    }
+                }
+            return payload
+
+        return {
+            'model': self.model_name,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': prompt}
+            ],
+            'temperature': self.temperature,
+            'max_tokens': max_output_tokens
+        }
+
+    def _build_compatible_headers(self) -> dict:
+        return {
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'AITradingSimulator/1.0'
+        }
+
+    def _extract_http_error_message(self, response: requests.Response) -> str:
+        body = (response.text or '').strip()
+        if not body:
+            return response.reason or '未知错误'
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return body[:500]
+
+        if isinstance(payload, dict):
+            error_payload = payload.get('error')
+            if isinstance(error_payload, dict):
+                message = error_payload.get('message') or error_payload.get('code')
+                if message:
+                    return str(message)
+            if error_payload:
+                return str(error_payload)
+            message = payload.get('message')
+            if message:
+                return str(message)
+        return body[:500]
+
+    def _should_use_compatible_http_transport(self, base_url: str) -> bool:
+        host = (urlparse(base_url).hostname or '').lower()
+        return not self._is_official_openai_host(host)
+
+    def _is_official_openai_host(self, host: str) -> bool:
+        return host in {'api.openai.com', 'openai.com'} or host.endswith('.openai.com')
 
     def _extract_json_object(self, raw_response: str) -> dict:
         text = (raw_response or '').strip()
@@ -414,25 +568,33 @@ class AIPredictor:
 
         host = urlparse(self.api_url).hostname or ''
         host = host.lower()
-        if host in {'api.openai.com', 'openai.com'} or host.endswith('.openai.com'):
+        if self._is_official_openai_host(host):
             return 'responses'
         return 'chat_completions'
 
     def _extract_response_output_text(self, response) -> str:
-        output_text = getattr(response, 'output_text', None)
+        output_text = response.get('output_text') if isinstance(response, dict) else getattr(response, 'output_text', None)
         text = self._collect_text_fragments(output_text)
         if text:
             return text
 
-        output_items = getattr(response, 'output', None) or []
+        output_items = response.get('output') if isinstance(response, dict) else getattr(response, 'output', None)
+        output_items = output_items or []
         parts = []
         for item in output_items:
-            content_items = getattr(item, 'content', None) or []
+            content_items = item.get('content') if isinstance(item, dict) else getattr(item, 'content', None)
+            content_items = content_items or []
             for content_item in content_items:
+                if isinstance(content_item, dict):
+                    content_value = content_item.get('text') or content_item.get('content') or content_item
+                else:
+                    content_value = (
+                        getattr(content_item, 'text', None)
+                        or getattr(content_item, 'content', None)
+                        or content_item
+                    )
                 candidate_text = self._collect_text_fragments(
-                    getattr(content_item, 'text', None)
-                    or getattr(content_item, 'content', None)
-                    or content_item
+                    content_value
                 )
                 if candidate_text:
                     parts.append(candidate_text)
@@ -445,10 +607,10 @@ class AIPredictor:
         raise ValueError(f'Responses API 返回为空，原始响应片段：{response_dump[:500]}')
 
     def _extract_responses_finish_reason(self, response) -> str:
-        status = getattr(response, 'status', None)
-        incomplete_details = getattr(response, 'incomplete_details', None)
+        status = response.get('status') if isinstance(response, dict) else getattr(response, 'status', None)
+        incomplete_details = response.get('incomplete_details') if isinstance(response, dict) else getattr(response, 'incomplete_details', None)
         if incomplete_details is not None:
-            reason = getattr(incomplete_details, 'reason', None)
+            reason = incomplete_details.get('reason') if isinstance(incomplete_details, dict) else getattr(incomplete_details, 'reason', None)
             if reason:
                 return str(reason)
         if status:
@@ -456,16 +618,18 @@ class AIPredictor:
         return 'unknown'
 
     def _extract_message_text(self, response) -> str:
-        choices = getattr(response, 'choices', None) or []
+        choices = response.get('choices') if isinstance(response, dict) else getattr(response, 'choices', None)
+        choices = choices or []
         if not choices:
             raise ValueError('AI 返回中没有 choices')
 
         choice = choices[0]
-        message = getattr(choice, 'message', None)
+        message = choice.get('message') if isinstance(choice, dict) else getattr(choice, 'message', None)
         if message is None:
             raise ValueError('AI 返回中没有 message')
 
-        text = self._collect_text_fragments(getattr(message, 'content', None))
+        content = message.get('content') if isinstance(message, dict) else getattr(message, 'content', None)
+        text = self._collect_text_fragments(content)
         if text:
             return text
 
@@ -476,26 +640,28 @@ class AIPredictor:
             'text'
         ]
         for field_name in fallback_fields:
-            text = self._collect_text_fragments(getattr(message, field_name, None))
+            value = message.get(field_name) if isinstance(message, dict) else getattr(message, field_name, None)
+            text = self._collect_text_fragments(value)
             if text:
                 return text
 
-        tool_calls = getattr(message, 'tool_calls', None) or []
+        tool_calls = message.get('tool_calls') if isinstance(message, dict) else getattr(message, 'tool_calls', None)
+        tool_calls = tool_calls or []
         if tool_calls:
             tool_text_parts = []
             for tool_call in tool_calls:
-                function_payload = getattr(tool_call, 'function', None)
+                function_payload = tool_call.get('function') if isinstance(tool_call, dict) else getattr(tool_call, 'function', None)
                 if function_payload is None:
                     continue
-                arguments = getattr(function_payload, 'arguments', None)
+                arguments = function_payload.get('arguments') if isinstance(function_payload, dict) else getattr(function_payload, 'arguments', None)
                 if arguments:
                     tool_text_parts.append(str(arguments).strip())
             tool_text = '\n'.join(part for part in tool_text_parts if part)
             if tool_text:
                 return tool_text
 
-        finish_reason = getattr(choice, 'finish_reason', 'unknown')
-        usage = getattr(response, 'usage', None)
+        finish_reason = choice.get('finish_reason', 'unknown') if isinstance(choice, dict) else getattr(choice, 'finish_reason', 'unknown')
+        usage = response.get('usage') if isinstance(response, dict) else getattr(response, 'usage', None)
         reasoning_tokens = self._extract_reasoning_tokens(usage)
         response_dump = self._safe_model_dump(response)
 
@@ -510,6 +676,17 @@ class AIPredictor:
             f'AI 返回空 content，finish_reason={finish_reason}，'
             f'可用原始响应片段：{response_dump[:500]}'
         )
+
+    def _extract_chat_finish_reason(self, response) -> str:
+        choices = response.get('choices') if isinstance(response, dict) else getattr(response, 'choices', None)
+        choices = choices or []
+        if not choices:
+            return 'unknown'
+
+        choice = choices[0]
+        if isinstance(choice, dict):
+            return str(choice.get('finish_reason') or 'unknown')
+        return getattr(choice, 'finish_reason', None) or 'unknown'
 
     def _collect_text_fragments(self, value) -> str:
         if value is None:
@@ -567,11 +744,11 @@ class AIPredictor:
         if usage is None:
             return 0
 
-        completion_details = getattr(usage, 'completion_tokens_details', None)
+        completion_details = usage.get('completion_tokens_details') if isinstance(usage, dict) else getattr(usage, 'completion_tokens_details', None)
         if completion_details is None:
             return 0
 
-        reasoning_tokens = getattr(completion_details, 'reasoning_tokens', 0)
+        reasoning_tokens = completion_details.get('reasoning_tokens', 0) if isinstance(completion_details, dict) else getattr(completion_details, 'reasoning_tokens', 0)
         try:
             return int(reasoning_tokens or 0)
         except (TypeError, ValueError):
