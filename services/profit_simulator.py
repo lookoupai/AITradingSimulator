@@ -12,6 +12,7 @@ from utils.pc28 import (
     is_pc28_baozi,
     is_pc28_pair,
     is_pc28_straight,
+    normalize_target_list,
     normalize_profit_rule,
     parse_pc28_triplet
 )
@@ -187,7 +188,7 @@ class ProfitSimulator:
         self.db = db
 
     def get_available_metrics(self, predictor: dict) -> list[str]:
-        targets = predictor.get('prediction_targets') or []
+        targets = normalize_target_list(predictor.get('prediction_targets'))
         metrics = [metric for metric in targets if metric in SUPPORTED_SIMULATION_METRICS]
         profit_default_metric = predictor.get('profit_default_metric')
         primary_metric = predictor.get('primary_metric')

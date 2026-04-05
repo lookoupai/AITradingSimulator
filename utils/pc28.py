@@ -43,13 +43,13 @@ def normalize_target_list(targets: Optional[Iterable[str]]) -> list[str]:
     if not targets:
         return list(ALLOWED_TARGETS)
 
-    normalized: list[str] = []
+    normalized: list[str] = ['number']
     for target in targets:
         value = str(target or '').strip().lower()
         if value in ALLOWED_TARGETS and value not in normalized:
             normalized.append(value)
 
-    return normalized or list(ALLOWED_TARGETS)
+    return normalized
 
 
 def normalize_injection_mode(value: Optional[str]) -> str:

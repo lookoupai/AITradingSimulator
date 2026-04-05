@@ -44,16 +44,16 @@ const PREDICTOR_PRESETS = [
     {
         id: 'conservative',
         title: '保守大小单双型',
-        description: '不强追精确和值，只重点判断大小单双与风险，适合风险控制型玩法。',
+        description: '号码保持保守输出，重点判断大小单双与风险，适合风险控制型玩法。',
         method: '保守统计',
         injectionMode: 'summary',
         historyWindow: 60,
         temperature: 0.3,
         apiMode: 'auto',
         primaryMetric: 'big_small',
-        targets: ['big_small', 'odd_even', 'combo'],
-        tags: ['保守', '摘要模式', '不追和值'],
-        prompt: `角色：\n你是 PC28 保守预测助手。\n\n输入：\n{{recent_draws_summary}}\n\n遗漏统计：\n{{omission_summary}}\n\n要求：\n1. 不强行预测精确和值。\n2. 重点输出大小、单双、组合和风险。\n3. 如果信号不明确，降低 confidence。\n4. 只输出 JSON。`
+        targets: ['number', 'big_small', 'odd_even', 'combo'],
+        tags: ['保守', '摘要模式', '号码保守'],
+        prompt: `角色：\n你是 PC28 保守预测助手。\n\n输入：\n{{recent_draws_summary}}\n\n遗漏统计：\n{{omission_summary}}\n\n要求：\n1. 必须给出一个保守的下一期和值预测，不追极端号。\n2. 重点输出大小、单双、组合和风险。\n3. 如果信号不明确，降低 confidence。\n4. 只输出 JSON。`
     },
     {
         id: 'extreme',
@@ -202,6 +202,15 @@ class PredictionApp {
         });
 
         this.renderPresetCards();
+        this.enforceNumberTarget();
+    }
+
+    enforceNumberTarget() {
+        const targetNumber = document.getElementById('targetNumber');
+        if (!targetNumber) {
+            return;
+        }
+        targetNumber.checked = true;
     }
 
     async checkAuth() {
@@ -1313,10 +1322,11 @@ class PredictionApp {
         document.getElementById('systemPrompt').value = data.system_prompt || '';
         document.getElementById('predictorEnabled').checked = Boolean(data.enabled);
         document.getElementById('shareLevel').value = data.share_level || (data.share_predictions ? 'records' : 'stats_only');
-        document.getElementById('targetNumber').checked = data.prediction_targets.includes('number');
+        document.getElementById('targetNumber').checked = true;
         document.getElementById('targetBigSmall').checked = data.prediction_targets.includes('big_small');
         document.getElementById('targetOddEven').checked = data.prediction_targets.includes('odd_even');
         document.getElementById('targetCombo').checked = data.prediction_targets.includes('combo');
+        this.enforceNumberTarget();
         this.syncProfitMetricOptions();
         this.clearExternalPromptTemplate();
         this.presetExpanded = false;
@@ -1354,6 +1364,7 @@ class PredictionApp {
         document.getElementById('targetBigSmall').checked = true;
         document.getElementById('targetOddEven').checked = true;
         document.getElementById('targetCombo').checked = true;
+        this.enforceNumberTarget();
         this.syncProfitMetricOptions();
         this.hideTestResult();
         this.hidePromptAssistantResult();
@@ -1421,17 +1432,18 @@ class PredictionApp {
         document.getElementById('profitRuleId').value = preset.profitRuleId || 'pc28_netdisk';
         document.getElementById('profitDefaultMetric').value = preset.profitDefaultMetric || (['big_small', 'odd_even', 'combo', 'number'].includes(preset.primaryMetric) ? preset.primaryMetric : 'combo');
         document.getElementById('systemPrompt').value = preset.prompt;
-        document.getElementById('targetNumber').checked = preset.targets.includes('number');
+        document.getElementById('targetNumber').checked = true;
         document.getElementById('targetBigSmall').checked = preset.targets.includes('big_small');
         document.getElementById('targetOddEven').checked = preset.targets.includes('odd_even');
         document.getElementById('targetCombo').checked = preset.targets.includes('combo');
+        this.enforceNumberTarget();
         this.syncProfitMetricOptions();
         this.clearExternalPromptTemplate();
     }
 
     collectFormData() {
-        const predictionTargets = [];
-        if (document.getElementById('targetNumber').checked) predictionTargets.push('number');
+        this.enforceNumberTarget();
+        const predictionTargets = ['number'];
         if (document.getElementById('targetBigSmall').checked) predictionTargets.push('big_small');
         if (document.getElementById('targetOddEven').checked) predictionTargets.push('odd_even');
         if (document.getElementById('targetCombo').checked) predictionTargets.push('combo');

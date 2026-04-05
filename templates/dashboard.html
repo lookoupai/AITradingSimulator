@@ -385,11 +385,12 @@
             <div class="form-field">
                 <span>预测目标</span>
                 <div class="checkbox-grid">
-                    <label><input type="checkbox" id="targetNumber" checked> 单点</label>
+                    <label><input type="checkbox" id="targetNumber" checked disabled aria-disabled="true"> 单点（固定开启）</label>
                     <label><input type="checkbox" id="targetBigSmall" checked> 大/小</label>
                     <label><input type="checkbox" id="targetOddEven" checked> 单/双</label>
                     <label><input type="checkbox" id="targetCombo" checked> 组合投注</label>
                 </div>
+                <small class="field-hint">单点固定开启，号码是主预测结果；大/小、单/双、组合投注围绕号码展开。</small>
             </div>
 
             <div class="form-field help-block">

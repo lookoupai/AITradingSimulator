@@ -122,6 +122,7 @@ class AIPredictor:
 4. 你必须输出严格 JSON，不要输出 Markdown，不要输出解释性前缀。
 5. 如果不确定某个字段，请输出 null，不要编造。
 6. confidence 取值 0-1。
+7. 你必须输出 predicted_number，且为 0-27 的有效和值；其余玩法可围绕该号码推导。
 
 方案信息：
 - 方案名称：{predictor_config.get('name', '')}
@@ -727,6 +728,9 @@ class AIPredictor:
             'odd_even': 'prediction_odd_even',
             'combo': 'prediction_combo'
         }
+
+        if 'number' in targets and prediction.get('prediction_number') is None:
+            return False
 
         return any(prediction.get(field_mapping[target]) is not None for target in targets)
 

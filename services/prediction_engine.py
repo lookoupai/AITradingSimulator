@@ -8,7 +8,7 @@ from typing import Optional
 
 import config
 from ai_trader import AIPredictor
-from utils.pc28 import next_issue_no
+from utils.pc28 import next_issue_no, normalize_target_list
 from utils.timezone import get_current_utc_time_str
 
 
@@ -182,13 +182,14 @@ class PredictionEngine:
 
         prompt_snapshot = ''
         raw_response = ''
+        normalized_targets = normalize_target_list(predictor.get('prediction_targets'))
         try:
             prediction, raw_response, prompt_snapshot = predictor_client.predict_next_issue(context, predictor)
             payload = {
                 'predictor_id': predictor['id'],
                 'lottery_type': predictor.get('lottery_type', 'pc28'),
                 'issue_no': issue_no,
-                'requested_targets': predictor['prediction_targets'],
+                'requested_targets': normalized_targets,
                 'prediction_number': prediction.get('prediction_number'),
                 'prediction_big_small': prediction.get('prediction_big_small'),
                 'prediction_odd_even': prediction.get('prediction_odd_even'),
@@ -214,7 +215,7 @@ class PredictionEngine:
                 'predictor_id': predictor['id'],
                 'lottery_type': predictor.get('lottery_type', 'pc28'),
                 'issue_no': issue_no,
-                'requested_targets': predictor['prediction_targets'],
+                'requested_targets': normalized_targets,
                 'prediction_number': None,
                 'prediction_big_small': None,
                 'prediction_odd_even': None,

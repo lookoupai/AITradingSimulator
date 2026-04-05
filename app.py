@@ -133,7 +133,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'prediction_method': predictor.get('prediction_method') or '',
         'system_prompt': predictor.get('system_prompt') or '',
         'data_injection_mode': predictor.get('data_injection_mode') or 'summary',
-        'prediction_targets': predictor.get('prediction_targets') or [],
+        'prediction_targets': normalize_target_list(predictor.get('prediction_targets')),
         'simulation_metrics': simulation_metrics,
         'default_simulation_metric': default_simulation_metric,
         'profit_rule_options': profit_simulator.get_rule_options(),

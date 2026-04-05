@@ -133,6 +133,9 @@ def analyze_prompt(
     if 'number' not in targets and _mentions_number_prediction(prompt_text):
         issues.append(_issue('warning', '提示词与目标玩法不一致', '当前没有勾选“号码”，但提示词里要求主号、和值或精确数字预测。', '如果你只看大小单双，请删掉精确和值要求；否则勾选“号码”。'))
 
+    if 'number' in targets and any(keyword in prompt_text for keyword in ['不强行预测精确和值', '不预测号码', '不追和值', '不追精确和值']):
+        issues.append(_issue('warning', '提示词弱化了号码输出', '当前方案要求包含号码预测，但提示词里存在弱化或回避和值/号码输出的表达。', '建议改成“号码必须输出，但尽量保守，不追极端号”。'))
+
     if 'combo' not in targets and _mentions_combo_prediction(prompt_text):
         issues.append(_issue('warning', '提示词与目标玩法不一致', '当前没有勾选“组合”，但提示词里要求输出大单/大双/小单/小双。', '如果确实要看组合，请勾选“组合”目标。'))
 
@@ -265,7 +268,7 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
         recommendation_lines.append('- 当前方案未勾选单点，不要要求模型强制输出精确和值或主号。')
 
     if 'number' in targets:
-        recommendation_lines.append('- 当前方案包含单点，可要求模型输出和值方向或主预测号码，但不要写死示例答案。')
+        recommendation_lines.append('- 当前方案包含单点，最终提示词应默认输出 0-27 的有效和值 predicted_number；号码是主结果，其它玩法围绕号码交叉验证，但不要写死示例答案。')
 
     recommendation_lines.append(
         f"- 如果你不想手写变量，平台也会按“{'原始模式' if injection_mode == 'raw' else '摘要模式'}”自动注入数据；"
