@@ -4,6 +4,10 @@ class PublicPredictorPage {
         this.currentPredictor = window.PUBLIC_PREDICTOR || null;
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
+        this.selectedProfitBetMode = 'flat';
+        this.selectedProfitBaseStake = 10;
+        this.selectedProfitMultiplier = 2;
+        this.selectedProfitMaxSteps = 6;
         this.selectedProfitOrder = 'desc';
         this.selectedProfitOddsProfile = 'regular';
         this.profitChart = null;
@@ -23,6 +27,10 @@ class PublicPredictorPage {
     initEventListeners() {
         const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
+        const betModeSelect = document.getElementById('publicProfitBetModeView');
+        const baseStakeInput = document.getElementById('publicProfitBaseStakeView');
+        const multiplierInput = document.getElementById('publicProfitMultiplierView');
+        const maxStepsInput = document.getElementById('publicProfitMaxStepsView');
         const orderSelect = document.getElementById('publicProfitOrderView');
         const oddsSelect = document.getElementById('publicProfitOddsProfileView');
 
@@ -36,6 +44,38 @@ class PublicPredictorPage {
         if (metricSelect) {
             metricSelect.addEventListener('change', (event) => {
                 this.selectedProfitMetric = event.target.value;
+                this.loadProfitSimulation();
+            });
+        }
+
+        if (betModeSelect) {
+            betModeSelect.addEventListener('change', (event) => {
+                this.selectedProfitBetMode = event.target.value;
+                this.syncProfitBetControlState();
+                this.loadProfitSimulation();
+            });
+        }
+
+        if (baseStakeInput) {
+            baseStakeInput.addEventListener('change', (event) => {
+                this.selectedProfitBaseStake = this.normalizePositiveNumber(event.target.value, 10, 0.01);
+                event.target.value = String(this.selectedProfitBaseStake);
+                this.loadProfitSimulation();
+            });
+        }
+
+        if (multiplierInput) {
+            multiplierInput.addEventListener('change', (event) => {
+                this.selectedProfitMultiplier = this.normalizePositiveNumber(event.target.value, 2, 1.01);
+                event.target.value = String(this.selectedProfitMultiplier);
+                this.loadProfitSimulation();
+            });
+        }
+
+        if (maxStepsInput) {
+            maxStepsInput.addEventListener('change', (event) => {
+                this.selectedProfitMaxSteps = this.normalizePositiveInt(event.target.value, 6, 1, 12);
+                event.target.value = String(this.selectedProfitMaxSteps);
                 this.loadProfitSimulation();
             });
         }
@@ -277,6 +317,10 @@ class PublicPredictorPage {
     renderProfitControls(predictor, resetMetric = false) {
         const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
+        const betModeSelect = document.getElementById('publicProfitBetModeView');
+        const baseStakeInput = document.getElementById('publicProfitBaseStakeView');
+        const multiplierInput = document.getElementById('publicProfitMultiplierView');
+        const maxStepsInput = document.getElementById('publicProfitMaxStepsView');
         const orderSelect = document.getElementById('publicProfitOrderView');
         const oddsSelect = document.getElementById('publicProfitOddsProfileView');
         const rules = predictor?.profit_rule_options || [];
@@ -288,6 +332,10 @@ class PublicPredictorPage {
             ruleSelect.disabled = true;
             metricSelect.innerHTML = '<option value="">暂无玩法</option>';
             metricSelect.disabled = true;
+            betModeSelect.disabled = true;
+            baseStakeInput.disabled = true;
+            multiplierInput.disabled = true;
+            maxStepsInput.disabled = true;
             orderSelect.disabled = true;
             oddsSelect.disabled = true;
             return;
@@ -316,6 +364,13 @@ class PublicPredictorPage {
             this.selectedProfitOddsProfile = oddsProfiles[0]?.key || 'regular';
         }
 
+        if (!['flat', 'martingale'].includes(this.selectedProfitBetMode)) {
+            this.selectedProfitBetMode = 'flat';
+        }
+        this.selectedProfitBaseStake = this.normalizePositiveNumber(this.selectedProfitBaseStake, 10, 0.01);
+        this.selectedProfitMultiplier = this.normalizePositiveNumber(this.selectedProfitMultiplier, 2, 1.01);
+        this.selectedProfitMaxSteps = this.normalizePositiveInt(this.selectedProfitMaxSteps, 6, 1, 12);
+
         ruleSelect.innerHTML = rules.map((item) => `
             <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
         `).join('');
@@ -327,6 +382,12 @@ class PublicPredictorPage {
         `).join('');
         metricSelect.value = this.selectedProfitMetric;
         metricSelect.disabled = false;
+        betModeSelect.value = this.selectedProfitBetMode;
+        betModeSelect.disabled = false;
+        baseStakeInput.value = String(this.selectedProfitBaseStake);
+        baseStakeInput.disabled = false;
+        multiplierInput.value = String(this.selectedProfitMultiplier);
+        maxStepsInput.value = String(this.selectedProfitMaxSteps);
         orderSelect.value = this.selectedProfitOrder;
         orderSelect.disabled = false;
         oddsSelect.innerHTML = oddsProfiles.map((item) => `
@@ -334,6 +395,7 @@ class PublicPredictorPage {
         `).join('');
         oddsSelect.disabled = false;
         oddsSelect.value = this.selectedProfitOddsProfile;
+        this.syncProfitBetControlState();
     }
 
     async loadProfitSimulation() {
@@ -361,7 +423,7 @@ class PublicPredictorPage {
 
         try {
             const response = await fetch(
-                `/api/public/predictors/${this.predictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}`
+                `/api/public/predictors/${this.predictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`
             );
             const data = await response.json();
             if (!response.ok) {
@@ -398,10 +460,10 @@ class PublicPredictorPage {
                     <strong>${this.escapeHtml(simulation.profit_rule_label || '--')} · ${this.escapeHtml(simulation.metric_label || '--')} · ${this.escapeHtml(simulation.odds_profile_label || '--')}</strong>
                     <span class="metric-hint-alias">盘日区间：${this.escapeHtml(period.start_time || '--')} 至 ${this.escapeHtml(period.end_time || '--')} 前</span>
                 </div>
-                <span class="tag">每期固定下注 ${this.formatUsd(simulation.stake_amount || 0)}</span>
+                <span class="tag">${this.escapeHtml(simulation.bet_strategy_label || '--')}</span>
             </div>
             <p>${recordText}</p>
-            <p class="metric-hint-foot">今日共计下注 ${summary.bet_count || 0} 期，命中 ${summary.hit_count || 0} 期，回本 ${summary.refund_count || 0} 期，未中 ${summary.miss_count || 0} 期。</p>
+            <p class="metric-hint-foot">基础注 ${this.formatUsd(simulation.bet_config?.base_stake || 0)} · ${this.escapeHtml(simulation.bet_config?.refund_action_label || '--')} · ${this.escapeHtml(simulation.bet_config?.cap_action_label || '--')} · 今日共计下注 ${summary.bet_count || 0} 期。</p>
         `;
     }
 
@@ -411,6 +473,7 @@ class PublicPredictorPage {
         const cards = [
             ['收益规则', simulation.profit_rule_label || '--'],
             ['当前玩法', simulation.metric_label || '--'],
+            ['下注策略', simulation.bet_strategy_label || '--'],
             ['赔率盘', simulation.odds_profile_label || '--'],
             ['总下注', this.formatUsd(summary.total_stake || 0)],
             ['净收益', this.formatSignedUsd(summary.net_profit || 0)],
@@ -452,6 +515,7 @@ class PublicPredictorPage {
             grid: { top: 36, left: 36, right: 24, bottom: 36, containLabel: true },
             xAxis: {
                 type: 'category',
+                inverse: this.selectedProfitOrder === 'desc',
                 data: records.map((item) => item.issue_no),
                 axisLabel: { color: '#64748b' },
                 axisLine: { lineStyle: { color: '#cbd5e1' } }
@@ -480,11 +544,11 @@ class PublicPredictorPage {
     renderProfitTable(records, canViewRecords) {
         const tbody = document.getElementById('publicProfitSimulationBody');
         if (!canViewRecords) {
-            tbody.innerHTML = '<tr><td colspan="9" class="empty-cell">当前公开层级仅展示收益汇总，不公开单期收益明细</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前公开层级仅展示收益汇总，不公开单期收益明细</td></tr>';
             return;
         }
         if (!records.length) {
-            tbody.innerHTML = '<tr><td colspan="9" class="empty-cell">当前盘日暂无收益模拟记录</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前盘日暂无收益模拟记录</td></tr>';
             return;
         }
 
@@ -493,6 +557,7 @@ class PublicPredictorPage {
                 <td>${this.escapeHtml(item.issue_no || '--')}</td>
                 <td>${this.escapeHtml(item.open_time || '--')}</td>
                 <td>${this.escapeHtml(item.ticket_label || '--')}</td>
+                <td>${this.escapeHtml(this.formatUsd(item.stake_amount || 0))}<br><span class="hint-text">${this.escapeHtml(item.bet_step_label || '--')}</span></td>
                 <td>${this.escapeHtml(item.predicted_value || '--')}</td>
                 <td>${this.escapeHtml(item.actual_value || '--')}</td>
                 <td>${this.formatOdds(item.odds)}</td>
@@ -517,7 +582,7 @@ class PublicPredictorPage {
         document.getElementById('publicProfitSimulationHint').className = 'metric-hint empty-panel';
         document.getElementById('publicProfitSimulationHint').textContent = message || '暂无收益模拟数据';
         document.getElementById('publicProfitSummaryGrid').innerHTML = '';
-        document.getElementById('publicProfitSimulationBody').innerHTML = '<tr><td colspan="9" class="empty-cell">暂无收益模拟数据</td></tr>';
+        document.getElementById('publicProfitSimulationBody').innerHTML = '<tr><td colspan="10" class="empty-cell">暂无收益模拟数据</td></tr>';
         this.renderProfitChart([]);
     }
 
@@ -527,6 +592,30 @@ class PublicPredictorPage {
             return normalized;
         }
         return normalized.reverse();
+    }
+
+    syncProfitBetControlState() {
+        const multiplierInput = document.getElementById('publicProfitMultiplierView');
+        const maxStepsInput = document.getElementById('publicProfitMaxStepsView');
+        const isFlatMode = this.selectedProfitBetMode === 'flat';
+        multiplierInput.disabled = isFlatMode;
+        maxStepsInput.disabled = isFlatMode;
+    }
+
+    normalizePositiveNumber(value, fallback, min = 0.01, max = 1000000) {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return fallback;
+        }
+        return Math.min(max, Math.max(min, Number(parsed.toFixed(2))));
+    }
+
+    normalizePositiveInt(value, fallback, min = 1, max = 12) {
+        const parsed = Number.parseInt(value, 10);
+        if (!Number.isInteger(parsed)) {
+            return fallback;
+        }
+        return Math.min(max, Math.max(min, parsed));
     }
 
     statusLabel(status) {

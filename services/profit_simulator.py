@@ -25,7 +25,16 @@ from utils.timezone import (
 
 SUPPORTED_SIMULATION_METRICS = ('big_small', 'odd_even', 'combo', 'number')
 DEFAULT_ODDS_PROFILE = 'regular'
-STAKE_AMOUNT = 10.0
+DEFAULT_BASE_STAKE = 10.0
+DEFAULT_BET_MODE = 'flat'
+DEFAULT_BET_MULTIPLIER = 2.0
+DEFAULT_BET_MAX_STEPS = 6
+MAX_BET_STEPS = 12
+
+BET_MODE_LABELS = {
+    'flat': '均注',
+    'martingale': '倍投'
+}
 
 ODDS_PROFILE_LABELS = {
     'regular': '常规盘',
@@ -232,12 +241,25 @@ class ProfitSimulator:
             for key, label in ODDS_PROFILE_LABELS.items()
         ]
 
+    def get_bet_mode_options(self) -> list[dict]:
+        return [
+            {
+                'key': key,
+                'label': label
+            }
+            for key, label in BET_MODE_LABELS.items()
+        ]
+
     def build_today_simulation(
         self,
         predictor_id: int,
         requested_metric: Optional[str] = None,
         profit_rule_id: Optional[str] = None,
         odds_profile: str = DEFAULT_ODDS_PROFILE,
+        bet_mode: Optional[str] = None,
+        base_stake: Optional[float] = None,
+        multiplier: Optional[float] = None,
+        max_steps: Optional[int] = None,
         include_records: bool = True
     ) -> dict:
         predictor = self.db.get_predictor(predictor_id, include_secret=False)
@@ -251,6 +273,12 @@ class ProfitSimulator:
         effective_metric = self._resolve_metric(predictor, requested_metric, available_metrics)
         effective_rule_id = self._resolve_rule_id(predictor, profit_rule_id)
         normalized_odds_profile = self._resolve_odds_profile(odds_profile)
+        bet_strategy = self._build_bet_strategy(
+            bet_mode=bet_mode,
+            base_stake=base_stake,
+            multiplier=multiplier,
+            max_steps=max_steps
+        )
         period = get_pc28_day_window(get_current_beijing_time())
 
         predictions = self.db.get_recent_predictions(predictor_id, limit=None)
@@ -263,6 +291,9 @@ class ProfitSimulator:
         refund_count = 0
         miss_count = 0
         skipped_count = 0
+        total_stake = 0.0
+        total_payout = 0.0
+        current_bet_step = 1
 
         for prediction in sorted(settled_predictions, key=lambda item: int(item['issue_no'])):
             draw = draws_by_issue.get(prediction['issue_no'])
@@ -283,14 +314,23 @@ class ProfitSimulator:
                 draw,
                 effective_metric,
                 effective_rule_id,
-                normalized_odds_profile
+                normalized_odds_profile,
+                bet_strategy,
+                current_bet_step
             )
             if not record:
                 skipped_count += 1
                 continue
 
+            total_stake += record['stake_amount']
+            total_payout += record['payout_amount']
             cumulative_profit += record['net_profit']
             record['cumulative_profit'] = round(cumulative_profit, 2)
+            current_bet_step = self._resolve_next_bet_step(
+                bet_strategy,
+                current_bet_step,
+                record['result_type']
+            )
 
             if record['result_type'] == 'hit':
                 hit_count += 1
@@ -303,18 +343,8 @@ class ProfitSimulator:
                 records.append(record)
 
         bet_count = hit_count + refund_count + miss_count
-        total_stake = round(bet_count * STAKE_AMOUNT, 2)
-        total_payout = round(sum(item['payout_amount'] for item in records), 2) if include_records else round(
-            self._recalculate_total_payout(
-                settled_predictions,
-                draws_by_issue,
-                period,
-                effective_metric,
-                effective_rule_id,
-                normalized_odds_profile
-            ),
-            2
-        )
+        total_stake = round(total_stake, 2)
+        total_payout = round(total_payout, 2)
 
         net_profit = round(total_payout - total_stake, 2)
         roi_percentage = round(net_profit / total_stake * 100, 2) if total_stake else 0.0
@@ -329,7 +359,20 @@ class ProfitSimulator:
             'odds_profile_label': ODDS_PROFILE_LABELS[normalized_odds_profile],
             'profit_rules': self.get_rule_options(),
             'odds_profiles': self.get_odds_profile_options(),
-            'stake_amount': STAKE_AMOUNT,
+            'bet_modes': self.get_bet_mode_options(),
+            'bet_mode': bet_strategy['mode'],
+            'bet_mode_label': bet_strategy['mode_label'],
+            'bet_strategy_label': self._bet_strategy_label(bet_strategy),
+            'bet_config': {
+                'base_stake': bet_strategy['base_stake'],
+                'multiplier': bet_strategy['multiplier'],
+                'max_steps': bet_strategy['max_steps'],
+                'refund_action': bet_strategy['refund_action'],
+                'refund_action_label': bet_strategy['refund_action_label'],
+                'cap_action': bet_strategy['cap_action'],
+                'cap_action_label': bet_strategy['cap_action_label']
+            },
+            'stake_amount': bet_strategy['base_stake'],
             'available_metrics': self.get_metric_options(predictor),
             'default_metric': self.get_default_metric(predictor),
             'default_profit_rule_id': self.get_default_rule_id(predictor),
@@ -374,13 +417,89 @@ class ProfitSimulator:
             return text
         return DEFAULT_ODDS_PROFILE
 
+    def _build_bet_strategy(
+        self,
+        bet_mode: Optional[str],
+        base_stake: Optional[float],
+        multiplier: Optional[float],
+        max_steps: Optional[int]
+    ) -> dict:
+        normalized_mode = str(bet_mode or '').strip().lower()
+        if normalized_mode not in BET_MODE_LABELS:
+            normalized_mode = DEFAULT_BET_MODE
+
+        try:
+            resolved_base_stake = float(base_stake)
+        except (TypeError, ValueError):
+            resolved_base_stake = DEFAULT_BASE_STAKE
+        if resolved_base_stake <= 0:
+            resolved_base_stake = DEFAULT_BASE_STAKE
+        resolved_base_stake = round(min(resolved_base_stake, 1_000_000.0), 2)
+
+        try:
+            resolved_multiplier = float(multiplier)
+        except (TypeError, ValueError):
+            resolved_multiplier = DEFAULT_BET_MULTIPLIER
+        if resolved_multiplier <= 1:
+            resolved_multiplier = DEFAULT_BET_MULTIPLIER
+        resolved_multiplier = round(min(resolved_multiplier, 20.0), 2)
+
+        try:
+            resolved_max_steps = int(max_steps)
+        except (TypeError, ValueError):
+            resolved_max_steps = DEFAULT_BET_MAX_STEPS
+        resolved_max_steps = max(1, min(resolved_max_steps, MAX_BET_STEPS))
+
+        return {
+            'mode': normalized_mode,
+            'mode_label': BET_MODE_LABELS[normalized_mode],
+            'base_stake': resolved_base_stake,
+            'multiplier': resolved_multiplier,
+            'max_steps': resolved_max_steps,
+            'refund_action': 'hold',
+            'refund_action_label': '退本金保持当前手',
+            'cap_action': 'reset',
+            'cap_action_label': '封顶后未中回到基础注'
+        }
+
+    def _bet_strategy_label(self, bet_strategy: dict) -> str:
+        if bet_strategy['mode'] == 'flat':
+            return f"均注 {bet_strategy['base_stake']:.2f}U"
+        return (
+            f"倍投 {bet_strategy['base_stake']:.2f}U × {bet_strategy['multiplier']:.2f}"
+            f" · {bet_strategy['max_steps']} 手封顶"
+        )
+
+    def _bet_step_label(self, bet_strategy: dict, bet_step: int) -> str:
+        if bet_strategy['mode'] == 'flat':
+            return '均注'
+        return f'第 {bet_step} 手'
+
+    def _resolve_stake_amount(self, bet_strategy: dict, bet_step: int) -> float:
+        if bet_strategy['mode'] == 'flat':
+            return round(bet_strategy['base_stake'], 2)
+        return round(bet_strategy['base_stake'] * (bet_strategy['multiplier'] ** (bet_step - 1)), 2)
+
+    def _resolve_next_bet_step(self, bet_strategy: dict, current_bet_step: int, result_type: str) -> int:
+        if bet_strategy['mode'] == 'flat':
+            return 1
+        if result_type == 'hit':
+            return 1
+        if result_type == 'refund':
+            return current_bet_step
+        if current_bet_step >= bet_strategy['max_steps']:
+            return 1
+        return current_bet_step + 1
+
     def _build_record(
         self,
         prediction: dict,
         draw: dict,
         metric: str,
         profit_rule_id: str,
-        odds_profile: str
+        odds_profile: str,
+        bet_strategy: dict,
+        bet_step: int
     ) -> Optional[dict]:
         profile = self._get_metric_profile(profit_rule_id, metric, odds_profile)
         if not profile:
@@ -397,6 +516,7 @@ class ProfitSimulator:
         result_type = 'miss'
         refund_reason = None
         odds = 0.0
+        stake_amount = self._resolve_stake_amount(bet_strategy, bet_step)
 
         if metric == 'big_small':
             predicted_value = prediction.get('prediction_big_small')
@@ -449,8 +569,8 @@ class ProfitSimulator:
         else:
             return None
 
-        payout_amount = self._resolve_payout_amount(result_type, odds)
-        net_profit = round(payout_amount - STAKE_AMOUNT, 2)
+        payout_amount = self._resolve_payout_amount(result_type, odds, stake_amount)
+        net_profit = round(payout_amount - stake_amount, 2)
 
         return {
             'issue_no': prediction['issue_no'],
@@ -466,33 +586,13 @@ class ProfitSimulator:
             'result_type': result_type,
             'result_label': self._result_label(result_type),
             'refund_reason': refund_reason,
+            'bet_step': bet_step,
+            'bet_step_label': self._bet_step_label(bet_strategy, bet_step),
             'odds': odds,
-            'stake_amount': STAKE_AMOUNT,
+            'stake_amount': round(stake_amount, 2),
             'payout_amount': round(payout_amount, 2),
             'net_profit': net_profit
         }
-
-    def _recalculate_total_payout(
-        self,
-        predictions: list[dict],
-        draws_by_issue: dict[str, dict],
-        period: dict,
-        metric: str,
-        profit_rule_id: str,
-        odds_profile: str
-    ) -> float:
-        total_payout = 0.0
-        for prediction in predictions:
-            draw = draws_by_issue.get(prediction['issue_no'])
-            if not draw:
-                continue
-            open_time = parse_beijing_time(draw.get('open_time'))
-            if not open_time or not (period['start'] <= open_time < period['end_exclusive']):
-                continue
-            record = self._build_record(prediction, draw, metric, profit_rule_id, odds_profile)
-            if record:
-                total_payout += record['payout_amount']
-        return total_payout
 
     def _get_metric_profile(self, profit_rule_id: str, metric: str, odds_profile: str) -> Optional[dict]:
         rule = PROFIT_RULES.get(profit_rule_id)
@@ -550,11 +650,11 @@ class ProfitSimulator:
             return float((profile.get('odds_map') or {}).get(predicted_number, 0.0))
         return float(profile.get('odds') or 0.0)
 
-    def _resolve_payout_amount(self, result_type: str, odds: float) -> float:
+    def _resolve_payout_amount(self, result_type: str, odds: float, stake_amount: float) -> float:
         if result_type == 'hit':
-            return STAKE_AMOUNT * odds
+            return stake_amount * odds
         if result_type == 'refund':
-            return STAKE_AMOUNT
+            return stake_amount
         return 0.0
 
     def _display_value(self, metric: str, value) -> str:

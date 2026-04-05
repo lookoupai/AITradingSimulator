@@ -903,6 +903,10 @@ def get_public_predictor_simulation(predictor_id: int):
     requested_metric = request.args.get('metric') or predictor.get('default_simulation_metric')
     profit_rule_id = request.args.get('profit_rule_id') or predictor.get('profit_rule_id')
     odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
+    bet_mode = request.args.get('bet_mode')
+    base_stake = request.args.get('base_stake', type=float)
+    multiplier = request.args.get('multiplier', type=float)
+    max_steps = request.args.get('max_steps', type=int)
     include_records = predictor.get('can_view_records', False)
 
     try:
@@ -911,6 +915,10 @@ def get_public_predictor_simulation(predictor_id: int):
             requested_metric=requested_metric,
             profit_rule_id=profit_rule_id,
             odds_profile=odds_profile,
+            bet_mode=bet_mode,
+            base_stake=base_stake,
+            multiplier=multiplier,
+            max_steps=max_steps,
             include_records=include_records
         )
         return jsonify({
@@ -1247,6 +1255,10 @@ def get_predictor_simulation(predictor_id: int):
     requested_metric = request.args.get('metric') or (profit_simulator.get_default_metric(predictor) if predictor else None)
     profit_rule_id = request.args.get('profit_rule_id') or (predictor.get('profit_rule_id') if predictor else DEFAULT_PROFIT_RULE_ID)
     odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
+    bet_mode = request.args.get('bet_mode')
+    base_stake = request.args.get('base_stake', type=float)
+    multiplier = request.args.get('multiplier', type=float)
+    max_steps = request.args.get('max_steps', type=int)
 
     try:
         simulation = profit_simulator.build_today_simulation(
@@ -1254,6 +1266,10 @@ def get_predictor_simulation(predictor_id: int):
             requested_metric=requested_metric,
             profit_rule_id=profit_rule_id,
             odds_profile=odds_profile,
+            bet_mode=bet_mode,
+            base_stake=base_stake,
+            multiplier=multiplier,
+            max_steps=max_steps,
             include_records=True
         )
         return jsonify({

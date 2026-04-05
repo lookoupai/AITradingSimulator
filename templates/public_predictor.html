@@ -111,6 +111,13 @@
                 <div class="panel-actions">
                     <select id="publicProfitRuleView" class="home-select"></select>
                     <select id="publicProfitMetricView" class="home-select"></select>
+                    <select id="publicProfitBetModeView" class="home-select">
+                        <option value="flat">均注</option>
+                        <option value="martingale">倍投</option>
+                    </select>
+                    <input type="number" id="publicProfitBaseStakeView" class="home-select" min="0.01" step="0.01" value="10" placeholder="基础注" title="基础注">
+                    <input type="number" id="publicProfitMultiplierView" class="home-select" min="1.01" step="0.01" value="2" placeholder="倍数" title="倍投倍数">
+                    <input type="number" id="publicProfitMaxStepsView" class="home-select" min="1" step="1" value="6" placeholder="追手" title="最高追手">
                     <select id="publicProfitOrderView" class="home-select">
                         <option value="desc">倒序：最新在上/右</option>
                         <option value="asc">正序：最早在上/左</option>
@@ -133,6 +140,7 @@
                             <th>期号</th>
                             <th>开奖时间</th>
                             <th>下注内容</th>
+                            <th>下注额 / 手数</th>
                             <th>预测值</th>
                             <th>实际值</th>
                             <th>赔率</th>
@@ -142,7 +150,7 @@
                         </tr>
                     </thead>
                     <tbody id="publicProfitSimulationBody">
-                        <tr><td colspan="9" class="empty-cell">暂无收益模拟数据</td></tr>
+                        <tr><td colspan="10" class="empty-cell">暂无收益模拟数据</td></tr>
                     </tbody>
                 </table>
             </div>
