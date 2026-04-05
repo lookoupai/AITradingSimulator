@@ -211,8 +211,10 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
     target_labels = ', '.join(TARGET_LABELS.get(item, item) for item in targets) or '未设置'
     injection_mode = normalize_injection_mode(predictor_payload.get('data_injection_mode'))
     metric = normalize_primary_metric(predictor_payload.get('primary_metric'))
+    metric_label = TARGET_LABELS.get(metric, metric)
     prediction_method = predictor_payload.get('prediction_method') or '自定义策略'
     current_prompt = (predictor_payload.get('system_prompt') or '').strip()
+    history_window = predictor_payload.get('history_window') or '未设置'
     placeholders_text = '\n'.join(
         f"- {item['token']}：{item['description']}"
         for item in get_prompt_placeholder_catalog()
@@ -223,9 +225,28 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
         f"{_placeholder_token('recent_draws_csv') if injection_mode == 'raw' else _placeholder_token('recent_draws_summary')}。"
     ]
 
+    recommendation_lines.append(
+        f"- 当前主玩法是“{metric_label}”，最终提示词应优先服务 {_primary_metric_focus(metric)}，其他玩法做交叉验证，不要喧宾夺主。"
+    )
+    recommendation_lines.append(
+        f"- 涉及历史窗口时，优先写成“最近 {_placeholder_token('history_window')} 期”，不要把 {history_window} 这类数字写死在最终提示词里。"
+    )
+
+    if injection_mode == 'summary':
+        recommendation_lines.append(
+            f"- 当前是摘要模式，建议优先围绕 {_placeholder_token('recent_draws_summary')}、"
+            f"{_placeholder_token('omission_summary')}、{_placeholder_token('today_summary')}、"
+            f"{_placeholder_token('preview_summary')} 组织分析。"
+        )
+
     if any(keyword in prediction_method for keyword in ['小六壬', '起课', '时间', '奇门', '梅花']):
         recommendation_lines.append(
             f"- 当前方法偏时间起课，建议补充 {_placeholder_token('current_time_beijing')} 或年月日时分拆变量。"
+        )
+
+    if _is_statistical_method(prediction_method):
+        recommendation_lines.append(
+            '- 当前方法带有统计/算法属性，请把它写成分析框架和权重组织方式，不要伪造训练过程、样本量、参数、公式或实验结论。'
         )
 
     if 'combo' in targets:
@@ -255,9 +276,9 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
 - 方案名称：{predictor_payload.get('name') or '未命名方案'}
 - 预测方法：{prediction_method}
 - 预测目标：{target_labels}
-- 主玩法：{TARGET_LABELS.get(metric, metric)}
+- 主玩法：{metric_label}
 - 数据注入模式：{'原始模式' if injection_mode == 'raw' else '摘要模式'}
-- 历史窗口：最近 {predictor_payload.get('history_window') or '未设置'} 期
+- 历史窗口：当前配置为最近 {history_window} 期；如果你在最终提示词里引用历史窗口，请优先使用 {_placeholder_token('history_window')}
 
 这个项目允许在提示词中使用以下变量，占位格式必须原样保留，只能使用这些变量，不要发明新变量：
 {placeholders_text}
@@ -274,10 +295,14 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
 6. 如果适合，明确告诉模型先看什么、再看什么、如何权衡冲突信号。
 7. 如果我补充的方法偏统计、小六壬、回归、遗漏回补、趋势判断等，请保留该风格，但仍要保持基本风控。
 8. 输出内容请使用中文简体。
+9. 涉及历史窗口时，优先使用 {_placeholder_token('history_window')}，不要写死 60/80/100 这类数字。
+10. 如果使用贝叶斯、回归、概率统计等方法，请把它写成可执行的分析框架，不要伪造训练过程、参数、公式、样本量或实验结果。
+11. 如果我补充的个性化需求很短，请主动补全成完整、可执行的提示词，不要只是机械复述我的原话。
+12. 最终提示词正文里不要包含变量释义、项目背景、回复格式说明或“第一部分/第二部分”字样。
 
-请按下面格式回复：
-第一部分：可直接粘贴到项目里的最终提示词正文，不要加代码块，不要加前后解释
-第二部分：简短说明你用了哪些变量、为什么这样安排
+请按以下方式回复：
+- 第一段：仅输出可直接粘贴到项目里的最终提示词正文；不要标题、不要编号、不要代码块、不要“第一部分/第二部分”等标签，也不要额外开场。
+- 空一行后，第二段：用 2-4 句简短说明你用了哪些变量、为什么这样安排。
 
 我当前已有提示词（如有价值可继承其风格；如果质量差可以直接重写）：
 {current_prompt or '（暂无）'}
@@ -394,3 +419,20 @@ def _build_variable_recommendations(prompt: str, placeholders: list[str], inject
 
 def _placeholder_token(name: str) -> str:
     return f'{{{{{name}}}}}'
+
+
+def _primary_metric_focus(metric: str) -> str:
+    mapping = {
+        'number': '`predicted_number` 的稳定判断',
+        'big_small': '`predicted_big_small` 的稳定判断',
+        'odd_even': '`predicted_odd_even` 的稳定判断',
+        'combo': '`predicted_combo` 的稳定判断',
+        'double_group': '`predicted_combo` 的稳定判断（再派生单双组）',
+        'kill_group': '`predicted_combo` 的稳定判断（再派生排除组合）'
+    }
+    return mapping.get(metric, '当前主玩法对应字段的稳定判断')
+
+
+def _is_statistical_method(prediction_method: str) -> bool:
+    keywords = ['贝叶斯', '回归', '概率', '统计', '高斯', '朴素贝叶斯', '马尔可夫', '逻辑回归']
+    return any(keyword in prediction_method for keyword in keywords)
