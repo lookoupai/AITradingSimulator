@@ -12,7 +12,9 @@ ALLOWED_INJECTION_MODES = ('summary', 'raw')
 ALLOWED_API_MODES = ('auto', 'chat_completions', 'responses')
 ALLOWED_PRIMARY_METRICS = ('combo', 'number', 'big_small', 'odd_even', 'double_group', 'kill_group')
 ALLOWED_PROFIT_METRICS = ('combo', 'number', 'big_small', 'odd_even')
+ALLOWED_PROFIT_RULES = ('pc28_netdisk', 'pc28_high')
 ALLOWED_SHARE_LEVELS = ('stats_only', 'records', 'analysis')
+DEFAULT_PROFIT_RULE_ID = 'pc28_netdisk'
 
 TARGET_LABELS = {
     'number': '单点',
@@ -88,6 +90,14 @@ def normalize_profit_metric(value: Optional[str]) -> str:
     if text in ALLOWED_PROFIT_METRICS:
         return text
     return 'big_small'
+
+
+def normalize_profit_rule(value: Optional[str], default: str = DEFAULT_PROFIT_RULE_ID) -> str:
+    """规范化收益规则"""
+    text = str(value or '').strip().lower()
+    if text in ALLOWED_PROFIT_RULES:
+        return text
+    return default
 
 
 def parse_pc28_number(value) -> Optional[int]:

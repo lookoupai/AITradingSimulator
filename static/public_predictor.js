@@ -2,6 +2,7 @@ class PublicPredictorPage {
     constructor() {
         this.predictorId = window.PUBLIC_PREDICTOR_ID;
         this.currentPredictor = window.PUBLIC_PREDICTOR || null;
+        this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
         this.selectedProfitOddsProfile = 'regular';
         this.profitChart = null;
@@ -19,8 +20,16 @@ class PublicPredictorPage {
     }
 
     initEventListeners() {
+        const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
         const oddsSelect = document.getElementById('publicProfitOddsProfileView');
+
+        if (ruleSelect) {
+            ruleSelect.addEventListener('change', (event) => {
+                this.selectedProfitRuleId = event.target.value;
+                this.loadProfitSimulation();
+            });
+        }
 
         if (metricSelect) {
             metricSelect.addEventListener('change', (event) => {
@@ -257,15 +266,28 @@ class PublicPredictorPage {
     }
 
     renderProfitControls(predictor, resetMetric = false) {
+        const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
         const oddsSelect = document.getElementById('publicProfitOddsProfileView');
+        const rules = predictor?.profit_rule_options || [];
         const metrics = predictor?.simulation_metrics || [];
+        const oddsProfiles = predictor?.odds_profiles || [];
 
-        if (!metrics.length) {
+        if (!metrics.length || !rules.length) {
+            ruleSelect.innerHTML = '<option value="">暂无规则</option>';
+            ruleSelect.disabled = true;
             metricSelect.innerHTML = '<option value="">暂无玩法</option>';
             metricSelect.disabled = true;
             oddsSelect.disabled = true;
             return;
+        }
+
+        if (
+            resetMetric ||
+            !this.selectedProfitRuleId ||
+            !rules.some((item) => item.key === this.selectedProfitRuleId)
+        ) {
+            this.selectedProfitRuleId = predictor.profit_rule_id || rules[0].key;
         }
 
         if (
@@ -276,11 +298,27 @@ class PublicPredictorPage {
             this.selectedProfitMetric = predictor.default_simulation_metric || metrics[0].key;
         }
 
+        if (
+            !this.selectedProfitOddsProfile ||
+            !oddsProfiles.some((item) => item.key === this.selectedProfitOddsProfile)
+        ) {
+            this.selectedProfitOddsProfile = oddsProfiles[0]?.key || 'regular';
+        }
+
+        ruleSelect.innerHTML = rules.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        ruleSelect.value = this.selectedProfitRuleId;
+        ruleSelect.disabled = false;
+
         metricSelect.innerHTML = metrics.map((item) => `
             <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
         `).join('');
         metricSelect.value = this.selectedProfitMetric;
         metricSelect.disabled = false;
+        oddsSelect.innerHTML = oddsProfiles.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
         oddsSelect.disabled = false;
         oddsSelect.value = this.selectedProfitOddsProfile;
     }
@@ -297,6 +335,12 @@ class PublicPredictorPage {
             return;
         }
 
+        const rules = this.currentPredictor.profit_rule_options || [];
+        if (!this.selectedProfitRuleId || !rules.some((item) => item.key === this.selectedProfitRuleId)) {
+            this.selectedProfitRuleId = this.currentPredictor.profit_rule_id || rules[0]?.key || 'pc28_netdisk';
+            document.getElementById('publicProfitRuleView').value = this.selectedProfitRuleId;
+        }
+
         if (!this.selectedProfitMetric || !metrics.some((item) => item.key === this.selectedProfitMetric)) {
             this.selectedProfitMetric = this.currentPredictor.default_simulation_metric || metrics[0].key;
             document.getElementById('publicProfitMetricView').value = this.selectedProfitMetric;
@@ -304,7 +348,7 @@ class PublicPredictorPage {
 
         try {
             const response = await fetch(
-                `/api/public/predictors/${this.predictorId}/simulation?metric=${encodeURIComponent(this.selectedProfitMetric)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}`
+                `/api/public/predictors/${this.predictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}`
             );
             const data = await response.json();
             if (!response.ok) {
@@ -337,7 +381,7 @@ class PublicPredictorPage {
         container.innerHTML = `
             <div class="metric-hint-head">
                 <div>
-                    <strong>${this.escapeHtml(simulation.metric_label || '--')} · ${this.escapeHtml(simulation.odds_profile_label || '--')}</strong>
+                    <strong>${this.escapeHtml(simulation.profit_rule_label || '--')} · ${this.escapeHtml(simulation.metric_label || '--')} · ${this.escapeHtml(simulation.odds_profile_label || '--')}</strong>
                     <span class="metric-hint-alias">盘日区间：${this.escapeHtml(period.start_time || '--')} 至 ${this.escapeHtml(period.end_time || '--')} 前</span>
                 </div>
                 <span class="tag">每期固定下注 ${this.formatUsd(simulation.stake_amount || 0)}</span>
@@ -351,6 +395,7 @@ class PublicPredictorPage {
         const container = document.getElementById('publicProfitSummaryGrid');
         const summary = simulation.summary || {};
         const cards = [
+            ['收益规则', simulation.profit_rule_label || '--'],
             ['当前玩法', simulation.metric_label || '--'],
             ['赔率盘', simulation.odds_profile_label || '--'],
             ['总下注', this.formatUsd(summary.total_stake || 0)],

@@ -14,7 +14,7 @@ import config
 from ai_trader import AIPredictor
 from database import Database
 from services.pc28_service import PC28Service
-from services.profit_simulator import DEFAULT_ODDS_PROFILE, ODDS_PROFILE_LABELS, ProfitSimulator
+from services.profit_simulator import DEFAULT_ODDS_PROFILE, ProfitSimulator
 from services.prediction_engine import PredictionEngine
 from utils.prompt_assistant import analyze_prompt, build_optimizer_prompt
 from utils.auth import (
@@ -27,7 +27,7 @@ from utils.auth import (
     set_current_user_with_role,
     verify_password
 )
-from utils.pc28 import TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_primary_metric, normalize_profit_metric, normalize_share_level, normalize_target_list
+from utils.pc28 import DEFAULT_PROFIT_RULE_ID, TARGET_LABELS, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_primary_metric, normalize_profit_metric, normalize_profit_rule, normalize_share_level, normalize_target_list
 from utils.timezone import get_current_beijing_time_str, utc_to_beijing
 
 
@@ -114,6 +114,7 @@ def _serialize_predictor(predictor: dict) -> dict:
     public_links = _build_public_links(predictor['id'])
     simulation_metrics = profit_simulator.get_metric_options(predictor)
     default_simulation_metric = profit_simulator.get_default_metric(predictor)
+    default_profit_rule_id = profit_simulator.get_default_rule_id(predictor)
     data = {
         'id': predictor['id'],
         'user_id': predictor['user_id'],
@@ -124,6 +125,8 @@ def _serialize_predictor(predictor: dict) -> dict:
         'api_mode': predictor.get('api_mode') or 'auto',
         'primary_metric': predictor.get('primary_metric') or 'combo',
         'profit_default_metric': predictor.get('profit_default_metric') or default_simulation_metric,
+        'profit_rule_id': predictor.get('profit_rule_id') or default_profit_rule_id,
+        'profit_rule_label': profit_simulator.get_rule_label(predictor.get('profit_rule_id') or default_profit_rule_id),
         'share_level': share_level,
         'share_level_label': _share_level_label(share_level),
         'share_predictions': share_level != 'stats_only',
@@ -133,6 +136,8 @@ def _serialize_predictor(predictor: dict) -> dict:
         'prediction_targets': predictor.get('prediction_targets') or [],
         'simulation_metrics': simulation_metrics,
         'default_simulation_metric': default_simulation_metric,
+        'profit_rule_options': profit_simulator.get_rule_options(),
+        'odds_profiles': profit_simulator.get_odds_profile_options(),
         'history_window': predictor.get('history_window'),
         'temperature': predictor.get('temperature'),
         'enabled': bool(predictor.get('enabled')),
@@ -212,13 +217,7 @@ def _serialize_public_prediction_with_level(prediction: dict, share_level: str) 
 
 
 def _serialize_profit_simulation(simulation: dict, include_records: bool = True) -> dict:
-    payload = {
-        **simulation,
-        'odds_profiles': [
-            {'key': key, 'label': label}
-            for key, label in ODDS_PROFILE_LABELS.items()
-        ]
-    }
+    payload = dict(simulation)
     if not include_records:
         payload['records'] = []
     return payload
@@ -248,6 +247,8 @@ def _serialize_admin_predictor(item: dict) -> dict:
         'primary_metric_label': TARGET_LABELS.get(item.get('primary_metric'), item.get('primary_metric')),
         'profit_default_metric': item.get('profit_default_metric') or item.get('primary_metric'),
         'profit_default_metric_label': TARGET_LABELS.get(item.get('profit_default_metric') or item.get('primary_metric'), item.get('profit_default_metric') or item.get('primary_metric')),
+        'profit_rule_id': item.get('profit_rule_id') or 'pc28_high',
+        'profit_rule_label': profit_simulator.get_rule_label(item.get('profit_rule_id') or 'pc28_high'),
         'share_level': item.get('share_level'),
         'enabled': bool(item.get('enabled')),
         'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
@@ -424,10 +425,14 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'primary_metric': predictor.get('primary_metric') or 'combo',
             'primary_metric_label': stats.get('primary_metric_label') or '组合投注',
             'profit_default_metric': predictor.get('profit_default_metric') or profit_simulator.get_default_metric(predictor),
+            'profit_rule_id': predictor.get('profit_rule_id') or profit_simulator.get_default_rule_id(predictor),
+            'profit_rule_label': profit_simulator.get_rule_label(predictor.get('profit_rule_id') or profit_simulator.get_default_rule_id(predictor)),
             'prediction_method': predictor.get('prediction_method') or '自定义策略',
             'prediction_targets': predictor.get('prediction_targets') or [],
             'simulation_metrics': profit_simulator.get_metric_options(predictor),
             'default_simulation_metric': profit_simulator.get_default_metric(predictor),
+            'profit_rule_options': profit_simulator.get_rule_options(),
+            'odds_profiles': profit_simulator.get_odds_profile_options(),
             'history_window': predictor.get('history_window'),
             'share_level': share_level,
             'share_level_label': _share_level_label(share_level),
@@ -461,6 +466,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     fallback_api_mode = existing_predictor.get('api_mode') if existing_predictor else 'auto'
     fallback_primary_metric = existing_predictor.get('primary_metric') if existing_predictor else 'big_small'
     fallback_profit_default_metric = existing_predictor.get('profit_default_metric') if existing_predictor else fallback_primary_metric
+    fallback_profit_rule_id = existing_predictor.get('profit_rule_id') if existing_predictor else DEFAULT_PROFIT_RULE_ID
     fallback_share_level = existing_predictor.get('share_level') if existing_predictor else ('records' if (existing_predictor and existing_predictor.get('share_predictions')) else 'stats_only')
     fallback_method = existing_predictor.get('prediction_method') if existing_predictor else ''
     fallback_prompt = existing_predictor.get('system_prompt') if existing_predictor else ''
@@ -473,6 +479,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     api_mode = normalize_api_mode(data.get('api_mode') or fallback_api_mode)
     primary_metric = normalize_primary_metric(data.get('primary_metric') or fallback_primary_metric)
     profit_default_metric = normalize_profit_metric(data.get('profit_default_metric') or fallback_profit_default_metric)
+    profit_rule_id = normalize_profit_rule(data.get('profit_rule_id') or fallback_profit_rule_id)
     share_level = normalize_share_level(data.get('share_level') or fallback_share_level)
     prediction_method = str(data.get('prediction_method') or fallback_method).strip()
     system_prompt = str(data.get('system_prompt') or fallback_prompt).strip()
@@ -526,6 +533,7 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
         'api_mode': api_mode,
         'primary_metric': primary_metric,
         'profit_default_metric': profit_default_metric,
+        'profit_rule_id': profit_rule_id,
         'share_level': share_level,
         'share_predictions': share_level != 'stats_only',
         'prediction_method': prediction_method or '自定义策略',
@@ -594,6 +602,7 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
     fallback_api_mode = existing.get('api_mode') if existing else 'auto'
     fallback_primary_metric = existing.get('primary_metric') if existing else 'big_small'
     fallback_profit_default_metric = existing.get('profit_default_metric') if existing else fallback_primary_metric
+    fallback_profit_rule_id = existing.get('profit_rule_id') if existing else DEFAULT_PROFIT_RULE_ID
     fallback_method = existing.get('prediction_method') if existing else ''
     fallback_prompt = existing.get('system_prompt') if existing else ''
     fallback_injection_mode = existing.get('data_injection_mode') if existing else 'summary'
@@ -607,6 +616,7 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
         'api_mode': normalize_api_mode(data.get('api_mode') or fallback_api_mode),
         'primary_metric': normalize_primary_metric(data.get('primary_metric') or fallback_primary_metric),
         'profit_default_metric': normalize_profit_metric(data.get('profit_default_metric') or fallback_profit_default_metric),
+        'profit_rule_id': normalize_profit_rule(data.get('profit_rule_id') or fallback_profit_rule_id),
         'prediction_method': str(data.get('prediction_method') or fallback_method).strip(),
         'system_prompt': str(data.get('system_prompt') or fallback_prompt).strip(),
         'data_injection_mode': normalize_injection_mode(data.get('data_injection_mode') or fallback_injection_mode),
@@ -891,6 +901,7 @@ def get_public_predictor_simulation(predictor_id: int):
 
     predictor = detail['predictor']
     requested_metric = request.args.get('metric') or predictor.get('default_simulation_metric')
+    profit_rule_id = request.args.get('profit_rule_id') or predictor.get('profit_rule_id')
     odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
     include_records = predictor.get('can_view_records', False)
 
@@ -898,6 +909,7 @@ def get_public_predictor_simulation(predictor_id: int):
         simulation = profit_simulator.build_today_simulation(
             predictor_id,
             requested_metric=requested_metric,
+            profit_rule_id=profit_rule_id,
             odds_profile=odds_profile,
             include_records=include_records
         )
@@ -1006,6 +1018,7 @@ def create_predictor():
         api_mode=payload['api_mode'],
         primary_metric=payload['primary_metric'],
         profit_default_metric=payload['profit_default_metric'],
+        profit_rule_id=payload['profit_rule_id'],
         share_level=payload['share_level'],
         prediction_method=payload['prediction_method'],
         system_prompt=payload['system_prompt'],
@@ -1172,6 +1185,7 @@ def update_predictor(predictor_id: int):
         'api_mode': payload['api_mode'],
         'primary_metric': payload['primary_metric'],
         'profit_default_metric': payload['profit_default_metric'],
+        'profit_rule_id': payload['profit_rule_id'],
         'share_level': payload['share_level'],
         'share_predictions': payload['share_predictions'],
         'prediction_method': payload['prediction_method'],
@@ -1231,12 +1245,14 @@ def get_predictor_simulation(predictor_id: int):
 
     predictor = db.get_predictor(predictor_id, include_secret=False)
     requested_metric = request.args.get('metric') or (profit_simulator.get_default_metric(predictor) if predictor else None)
+    profit_rule_id = request.args.get('profit_rule_id') or (predictor.get('profit_rule_id') if predictor else DEFAULT_PROFIT_RULE_ID)
     odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
 
     try:
         simulation = profit_simulator.build_today_simulation(
             predictor_id,
             requested_metric=requested_metric,
+            profit_rule_id=profit_rule_id,
             odds_profile=odds_profile,
             include_records=True
         )

@@ -178,7 +178,10 @@ class AdminPage {
                     <span class="hint-text">${this.escapeHtml(item.model_name || '--')}</span>
                 </td>
                 <td>${this.escapeHtml(item.primary_metric_label || '--')}</td>
-                <td>${this.escapeHtml(item.profit_default_metric_label || '--')}</td>
+                <td>
+                    <strong>${this.escapeHtml(item.profit_rule_label || '--')}</strong><br>
+                    <span class="hint-text">${this.escapeHtml(item.profit_default_metric_label || '--')}</span>
+                </td>
                 <td>${this.escapeHtml(item.share_level || '--')}</td>
                 <td>${item.prediction_count || 0}</td>
                 <td>${item.failed_prediction_count || 0}</td>

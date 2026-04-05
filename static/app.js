@@ -79,6 +79,7 @@ class PredictionApp {
         this.currentPredictions = [];
         this.currentStats = null;
         this.selectedStatsMetric = null;
+        this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
         this.selectedProfitOddsProfile = 'regular';
         this.overview = null;
@@ -133,6 +134,10 @@ class PredictionApp {
         document.getElementById('predictionOutcomeFilter').addEventListener('change', (event) => {
             this.predictionOutcomeFilter = event.target.value;
             this.renderPredictionsTable(this.currentPredictions || []);
+        });
+        document.getElementById('profitRuleView').addEventListener('change', (event) => {
+            this.selectedProfitRuleId = event.target.value;
+            this.loadProfitSimulation();
         });
         document.getElementById('profitMetricView').addEventListener('change', (event) => {
             this.selectedProfitMetric = event.target.value;
@@ -699,15 +704,28 @@ class PredictionApp {
     }
 
     renderProfitControls(predictor, resetMetric = false) {
+        const ruleSelect = document.getElementById('profitRuleView');
         const metricSelect = document.getElementById('profitMetricView');
         const oddsSelect = document.getElementById('profitOddsProfileView');
+        const rules = predictor?.profit_rule_options || [];
         const metrics = predictor?.simulation_metrics || [];
+        const oddsProfiles = predictor?.odds_profiles || [];
 
-        if (!metrics.length) {
+        if (!metrics.length || !rules.length) {
+            ruleSelect.innerHTML = '<option value="">暂无规则</option>';
+            ruleSelect.disabled = true;
             metricSelect.innerHTML = '<option value="">暂无玩法</option>';
             metricSelect.disabled = true;
             oddsSelect.disabled = true;
             return;
+        }
+
+        if (
+            resetMetric ||
+            !this.selectedProfitRuleId ||
+            !rules.some((item) => item.key === this.selectedProfitRuleId)
+        ) {
+            this.selectedProfitRuleId = predictor.profit_rule_id || rules[0].key;
         }
 
         if (
@@ -718,11 +736,27 @@ class PredictionApp {
             this.selectedProfitMetric = predictor.default_simulation_metric || metrics[0].key;
         }
 
+        if (
+            !this.selectedProfitOddsProfile ||
+            !oddsProfiles.some((item) => item.key === this.selectedProfitOddsProfile)
+        ) {
+            this.selectedProfitOddsProfile = oddsProfiles[0]?.key || 'regular';
+        }
+
+        ruleSelect.innerHTML = rules.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        ruleSelect.value = this.selectedProfitRuleId;
+        ruleSelect.disabled = false;
+
         metricSelect.innerHTML = metrics.map((item) => `
             <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
         `).join('');
         metricSelect.value = this.selectedProfitMetric;
         metricSelect.disabled = false;
+        oddsSelect.innerHTML = oddsProfiles.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
         oddsSelect.disabled = false;
         oddsSelect.value = this.selectedProfitOddsProfile;
     }
@@ -740,6 +774,12 @@ class PredictionApp {
             return;
         }
 
+        const rules = predictor.profit_rule_options || [];
+        if (!this.selectedProfitRuleId || !rules.some((item) => item.key === this.selectedProfitRuleId)) {
+            this.selectedProfitRuleId = predictor.profit_rule_id || rules[0]?.key || 'pc28_netdisk';
+            document.getElementById('profitRuleView').value = this.selectedProfitRuleId;
+        }
+
         if (!this.selectedProfitMetric || !metrics.some((item) => item.key === this.selectedProfitMetric)) {
             this.selectedProfitMetric = predictor.default_simulation_metric || metrics[0].key;
             document.getElementById('profitMetricView').value = this.selectedProfitMetric;
@@ -747,7 +787,7 @@ class PredictionApp {
 
         try {
             const response = await fetch(
-                `/api/predictors/${this.currentPredictorId}/simulation?metric=${encodeURIComponent(this.selectedProfitMetric)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}`,
+                `/api/predictors/${this.currentPredictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}`,
                 { credentials: 'include' }
             );
             if (response.status === 401) {
@@ -787,7 +827,7 @@ class PredictionApp {
         container.innerHTML = `
             <div class="metric-hint-head">
                 <div>
-                    <strong>${this.escapeHtml(simulation.metric_label || '--')} · ${this.escapeHtml(simulation.odds_profile_label || '--')}</strong>
+                    <strong>${this.escapeHtml(simulation.profit_rule_label || '--')} · ${this.escapeHtml(simulation.metric_label || '--')} · ${this.escapeHtml(simulation.odds_profile_label || '--')}</strong>
                     <span class="metric-hint-alias">盘日区间：${this.escapeHtml(period.start_time || '--')} 至 ${this.escapeHtml(period.end_time || '--')} 前</span>
                 </div>
                 <span class="tag">每期固定下注 ${this.formatUsd(simulation.stake_amount || 0)}</span>
@@ -801,6 +841,7 @@ class PredictionApp {
         const container = document.getElementById('profitSummaryGrid');
         const summary = simulation.summary || {};
         const cards = [
+            ['收益规则', simulation.profit_rule_label || '--'],
             ['当前玩法', simulation.metric_label || '--'],
             ['赔率盘', simulation.odds_profile_label || '--'],
             ['总下注', this.formatUsd(summary.total_stake || 0)],
@@ -1079,6 +1120,7 @@ class PredictionApp {
     renderEmptyPredictorState() {
         this.currentStats = null;
         this.selectedStatsMetric = null;
+        this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
         this.currentPredictions = [];
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
@@ -1090,6 +1132,8 @@ class PredictionApp {
         document.getElementById('statsMetricHint').textContent = '请选择玩法查看统计口径';
         document.getElementById('metricStatsBody').innerHTML = '<tr><td colspan="4" class="empty-cell">暂无统计数据</td></tr>';
         document.getElementById('streakStats').innerHTML = '<div class="empty-panel">暂无连中连挂数据</div>';
+        document.getElementById('profitRuleView').innerHTML = '<option value="">暂无规则</option>';
+        document.getElementById('profitRuleView').disabled = true;
         document.getElementById('profitMetricView').innerHTML = '<option value="">暂无玩法</option>';
         document.getElementById('profitMetricView').disabled = true;
         document.getElementById('profitOddsProfileView').value = this.selectedProfitOddsProfile;
@@ -1151,6 +1195,7 @@ class PredictionApp {
         document.getElementById('temperature').value = data.temperature ?? 0.7;
         document.getElementById('dataInjectionMode').value = data.data_injection_mode || 'summary';
         document.getElementById('primaryMetric').value = data.primary_metric || 'combo';
+        document.getElementById('profitRuleId').value = data.profit_rule_id || 'pc28_netdisk';
         document.getElementById('profitDefaultMetric').value = data.profit_default_metric || data.default_simulation_metric || 'big_small';
         document.getElementById('systemPrompt').value = data.system_prompt || '';
         document.getElementById('predictorEnabled').checked = Boolean(data.enabled);
@@ -1186,6 +1231,7 @@ class PredictionApp {
         document.getElementById('temperature').value = '0.7';
         document.getElementById('dataInjectionMode').value = 'summary';
         document.getElementById('primaryMetric').value = 'big_small';
+        document.getElementById('profitRuleId').value = 'pc28_netdisk';
         document.getElementById('profitDefaultMetric').value = 'big_small';
         document.getElementById('systemPrompt').value = '';
         document.getElementById('predictorEnabled').checked = true;
@@ -1257,6 +1303,7 @@ class PredictionApp {
         document.getElementById('temperature').value = String(preset.temperature);
         document.getElementById('dataInjectionMode').value = preset.injectionMode;
         document.getElementById('primaryMetric').value = preset.primaryMetric || 'combo';
+        document.getElementById('profitRuleId').value = preset.profitRuleId || 'pc28_netdisk';
         document.getElementById('profitDefaultMetric').value = preset.profitDefaultMetric || (['big_small', 'odd_even', 'combo', 'number'].includes(preset.primaryMetric) ? preset.primaryMetric : 'combo');
         document.getElementById('systemPrompt').value = preset.prompt;
         document.getElementById('targetNumber').checked = preset.targets.includes('number');
@@ -1284,6 +1331,7 @@ class PredictionApp {
             temperature: Number(document.getElementById('temperature').value || 0.7),
             data_injection_mode: document.getElementById('dataInjectionMode').value,
             primary_metric: document.getElementById('primaryMetric').value,
+            profit_rule_id: document.getElementById('profitRuleId').value,
             profit_default_metric: document.getElementById('profitDefaultMetric').value,
             system_prompt: document.getElementById('systemPrompt').value.trim(),
             enabled: document.getElementById('predictorEnabled').checked,
