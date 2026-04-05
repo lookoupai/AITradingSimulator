@@ -231,6 +231,15 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
     recommendation_lines.append(
         f"- 涉及历史窗口时，优先写成“最近 {_placeholder_token('history_window')} 期”，不要把 {history_window} 这类数字写死在最终提示词里。"
     )
+    recommendation_lines.append(
+        '- 如果我后续补充的个性化需求与当前方案配置、数据注入模式、主玩法优先级冲突，请以当前方案配置为准，在不违背配置的前提下吸收我的需求。'
+    )
+
+    if injection_mode == 'raw':
+        recommendation_lines.append(
+            f"- 当前是原始模式，最终提示词的主要输入应优先围绕 {_placeholder_token('recent_draws_csv')} 或 "
+            f"{_placeholder_token('recent_draws_json')} 组织，不要把 {_placeholder_token('recent_draws_summary')} 写成主输入。"
+        )
 
     if injection_mode == 'summary':
         recommendation_lines.append(
@@ -299,6 +308,10 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
 10. 如果使用贝叶斯、回归、概率统计等方法，请把它写成可执行的分析框架，不要伪造训练过程、参数、公式、样本量或实验结果。
 11. 如果我补充的个性化需求很短，请主动补全成完整、可执行的提示词，不要只是机械复述我的原话。
 12. 最终提示词正文里不要包含变量释义、项目背景、回复格式说明或“第一部分/第二部分”字样。
+13. 请在最终提示词正文里主动写明：只输出 JSON，不要 Markdown，不要额外解释，不确定的字段输出 null。
+14. 请在最终提示词正文里主动限定 JSON 字段为：issue_no、predicted_number、predicted_big_small、predicted_odd_even、predicted_combo、confidence、reasoning_summary。
+15. 如果个性化需求与当前数据注入模式或主玩法冲突，请自动改写为兼容当前方案配置的版本，不要照抄冲突要求。
+16. 默认把我的个性化需求理解为“口语化偏好”，哪怕我只写一句大白话，也要帮我翻译成专业、完整、可执行的提示词要求，不要要求我提供专业术语。
 
 请按以下方式回复：
 - 第一段：仅输出可直接粘贴到项目里的最终提示词正文；不要标题、不要编号、不要代码块、不要“第一部分/第二部分”等标签，也不要额外开场。
@@ -307,8 +320,23 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
 我当前已有提示词（如有价值可继承其风格；如果质量差可以直接重写）：
 {current_prompt or '（暂无）'}
 
-我接下来会在下面补充自己的个性化需求，请基于项目规则和这些需求生成最终提示词：
-【在这里补充你的需求，例如：偏重小六壬、只关心大小单双、不要激进建议、强调遗漏回补、输出理由更短等】"""
+我接下来会在下面补充自己的个性化需求。注意：
+- 我可能只会写一句大白话，甚至写得不专业、不完整，你需要自动把它扩展成适合本项目的专业提示词。
+- 如果我的需求和当前方案配置冲突，请保留我的核心偏好，但自动改写成兼容当前方案的版本。
+- 如果我什么都不补充，你也要基于当前方案配置直接生成一版可用提示词。
+
+小白可直接参考的写法示例：
+- 偏保守一点，不确定就别太激进。
+- 重点看单双，其他玩法拿来辅助判断就行。
+- 更重视最近走势，不要太看长期。
+- 多参考遗漏和冷热变化。
+- 如果信号打架，就选稳一点的结果。
+- 理由写短一点，别太啰嗦。
+- 想要更适合组合投注的判断。
+- 单点别太极端，尽量给稳一点的范围。
+
+我接下来会在下面补充自己的需求，请基于项目规则和这些需求生成最终提示词：
+【这里可以只写一句大白话，例如：偏保守一点；重点看单双；理由短一点；多参考遗漏；别太激进】"""
 
 
 def _extract_placeholders(prompt: str) -> list[str]:
