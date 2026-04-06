@@ -1,0 +1,4 @@
+interface:
+  display_name: "竞彩足球数据源"
+  short_description: "沉淀竞彩网与新浪竞彩接口的抓取方法、字段差异与接入决策"
+  default_prompt: "Use $jingcai-football-data to compare 新浪与竞彩网竞彩接口，并给出可落地的数据接入方案。"

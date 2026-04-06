@@ -46,6 +46,14 @@ python app.py
 docker-compose up -d --build
 ```
 
+## Codex 项目级 Skill
+
+仓库内置了一个竞彩足球数据维护 skill，路径为 `.agents/skills/jingcai-football-data/`。
+
+- 适用场景：维护新浪/体彩竞彩数据源、字段映射、抓取策略、详情补充与预测数据流。
+- 主要内容：`SKILL.md`、`references/` 数据源参考、可选的 `agents/openai.yaml` 元数据。
+- 目的：让从 GitHub 拉取本项目的开发者，可以直接在仓库里复用这份领域知识，而不是依赖某台机器上的全局 skill 目录。
+
 ## 配置项
 
 主要配置位于 `config.py`，也可通过环境变量覆盖：
