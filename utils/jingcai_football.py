@@ -343,7 +343,7 @@ def metric_availability_label(metric_key: str, meta_payload: dict, outcome: Opti
     if status == '0':
         return '未开'
     if status == '3':
-        return '已开奖'
+        return '已截止'
     if status == '2':
         return '单关可售' if metric_has_sellable_odds(metric_key, meta_payload, outcome) else '单关无赔率'
     if status == '1':

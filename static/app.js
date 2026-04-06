@@ -1104,10 +1104,12 @@ class PredictionApp {
                 const spfHint = this.buildFootballAvailabilityHint('spf', marketSnapshot);
                 const rqspfHint = this.buildFootballAvailabilityHint('rqspf', marketSnapshot);
                 const snapshotSummary = this.buildFootballSnapshotSummary(marketSnapshot);
+                const statusLabel = this.footballMatchStatusLabel(marketSnapshot);
                 return `
                     <tr>
                         <td>${this.escapeHtml(item.issue_no || '--')}</td>
                         <td>${this.escapeHtml(item.title || '--')}</td>
+                        <td>${this.escapeHtml(statusLabel)}</td>
                         <td>${this.escapeHtml(spfOutcome || '--')}${spfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(spfOdds)}</span>` : ''}${spfHint ? `<br><span class="hint-text">${this.escapeHtml(spfHint)}</span>` : ''}${snapshotSummary ? `<br><span class="hint-text">${this.escapeHtml(snapshotSummary)}</span>` : ''}</td>
                         <td>${this.escapeHtml(rqspfOutcome || '--')}${rqspfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(rqspfOdds)}</span>` : ''}${rqspfHint ? `<br><span class="hint-text">${this.escapeHtml(rqspfHint)}</span>` : ''}</td>
                         <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
@@ -1185,13 +1187,14 @@ class PredictionApp {
                                 <tr>
                                     <th>编号</th>
                                     <th>比赛</th>
+                                    <th>状态</th>
                                     <th>胜平负</th>
                                     <th>让球胜平负</th>
                                     <th>置信度</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${previewRows || '<tr><td colspan="5" class="empty-cell">暂无预测明细</td></tr>'}
+                                ${previewRows || '<tr><td colspan="6" class="empty-cell">暂无预测明细</td></tr>'}
                             </tbody>
                         </table>
                     </div>
