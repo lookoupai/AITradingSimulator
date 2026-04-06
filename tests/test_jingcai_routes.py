@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+import json
+import unittest
+from unittest import mock
+
+from tests.support import create_predictor, fresh_app_harness
+
+
+class JingcaiRouteTests(unittest.TestCase):
+    def _seed_event(
+        self,
+        harness,
+        *,
+        event_key: str,
+        batch_key: str,
+        issue_no: str,
+        settled: bool,
+        spf_sell_status: str = '2',
+        rqspf_sell_status: str = '1'
+    ):
+        harness.db.upsert_lottery_events([
+            {
+                'lottery_type': 'jingcai_football',
+                'event_key': event_key,
+                'batch_key': batch_key,
+                'event_date': batch_key,
+                'event_time': f'{batch_key} 18:00:00',
+                'event_name': f'[测试] {issue_no}',
+                'league': '测试联赛',
+                'home_team': '主队',
+                'away_team': '客队',
+                'status': '3' if settled else '1',
+                'status_label': '已开奖' if settled else '已开售',
+                'source_provider': 'sina',
+                'result_payload': json.dumps({
+                    'score1': 2 if settled else None,
+                    'score2': 1 if settled else None,
+                    'actual_spf': '胜' if settled else None,
+                    'actual_rqspf': '平' if settled else None
+                }, ensure_ascii=False),
+                'meta_payload': json.dumps({
+                    'match_no': issue_no,
+                    'spf_sell_status': spf_sell_status,
+                    'rqspf_sell_status': rqspf_sell_status,
+                    'spf_odds': {'胜': 1.55, '平': 3.2, '负': 4.8},
+                    'rqspf': {
+                        'handicap': -1,
+                        'handicap_text': '-1',
+                        'odds': {'胜': 3.8, '平': 3.2, '负': 1.8}
+                    },
+                    'settled': settled
+                }, ensure_ascii=False),
+                'source_payload': '{}'
+            }
+        ])
+
+    def test_replay_route_returns_cached_batch_when_sync_unavailable(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'jingcai_football')
+            self._seed_event(
+                harness,
+                event_key='event-1',
+                batch_key='2026-04-06',
+                issue_no='周一001',
+                settled=False
+            )
+
+            with mock.patch.object(harness.module.jingcai_football_service, 'sync_matches', side_effect=RuntimeError('offline')):
+                response = client.post(f'/api/predictors/{predictor_id}/jingcai/replay', json={'date': '2026-04-06'})
+
+            data = response.get_json()
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(data['used_is_prized'], 'cache')
+            self.assertIn('回退本地缓存', data['warning'])
+            self.assertEqual(data['overview']['match_count'], 1)
+
+    def test_settle_route_uses_cached_events_and_settles_pending_item(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'jingcai_football')
+            self._seed_event(
+                harness,
+                event_key='event-2',
+                batch_key='2026-04-06',
+                issue_no='周一002',
+                settled=True
+            )
+
+            run_id = harness.db.upsert_prediction_run({
+                'predictor_id': predictor_id,
+                'lottery_type': 'jingcai_football',
+                'run_key': '2026-04-06',
+                'requested_targets': ['spf', 'rqspf'],
+                'status': 'pending',
+                'total_items': 1,
+                'settled_items': 0,
+                'hit_items': 0
+            })
+            harness.db.upsert_prediction_items([
+                {
+                    'run_id': run_id,
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'jingcai_football',
+                    'run_key': '2026-04-06',
+                    'event_key': 'event-2',
+                    'item_order': 0,
+                    'issue_no': '周一002',
+                    'title': '[测试] 周一002',
+                    'requested_targets': ['spf', 'rqspf'],
+                    'prediction_payload': {'spf': '胜', 'rqspf': '平'},
+                    'actual_payload': {},
+                    'hit_payload': {},
+                    'confidence': 0.7,
+                    'reasoning_summary': 'test',
+                    'raw_response': '{}',
+                    'status': 'pending',
+                    'error_message': None,
+                    'settled_at': None
+                }
+            ])
+
+            with mock.patch.object(harness.module.jingcai_football_service, 'sync_matches', side_effect=RuntimeError('offline')):
+                response = client.post(f'/api/predictors/{predictor_id}/jingcai/settle', json={'run_key': '2026-04-06'})
+
+            data = response.get_json()
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(data['settled_items_count'], 1)
+            self.assertEqual(data['pending_runs_count'], 0)
+
+    def test_public_predictor_detail_exposes_jingcai_single_and_parlay_metrics(self):
+        with fresh_app_harness() as harness:
+            user_id = harness.db.create_user('public-user', harness.module.hash_password('password'))
+            predictor_id = create_predictor(
+                harness,
+                user_id,
+                'jingcai_football',
+                share_level='records'
+            )
+
+            response = harness.app.test_client().get(f'/api/public/predictors/{predictor_id}')
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            labels = [item['label'] for item in data['predictor']['simulation_metrics']]
+            self.assertIn('胜平负单关', labels)
+            self.assertIn('胜平负二串一', labels)
+            self.assertIn('让球胜平负单关', labels)
+            self.assertIn('让球胜平负二串一', labels)
+
+    def test_overview_route_falls_back_to_cached_events(self):
+        with fresh_app_harness() as harness:
+            self._seed_event(
+                harness,
+                event_key='event-3',
+                batch_key='2026-04-06',
+                issue_no='周一003',
+                settled=False
+            )
+
+            with mock.patch.object(harness.module.jingcai_football_service, 'build_overview', side_effect=RuntimeError('offline')):
+                response = harness.app.test_client().get('/api/lotteries/jingcai_football/overview')
+
+            data = response.get_json()
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(data['match_count'], 1)
+            self.assertIn('回退本地缓存', data['warning'])
+
+
+if __name__ == '__main__':
+    unittest.main()
