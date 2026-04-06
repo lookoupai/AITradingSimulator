@@ -75,7 +75,7 @@ LOTTERY_DEFINITIONS = {
             ('spf', '胜平负'),
             ('rqspf', '让球胜平负')
         ),
-        supports_profit_simulation=False,
+        supports_profit_simulation=True,
         supports_public_pages=True,
         supports_prompt_assistant=True,
         overview_mode='jingcai_football'
@@ -118,15 +118,15 @@ def normalize_primary_metric(lottery_type: str, value) -> str:
 
 def normalize_profit_metric(lottery_type: str, value) -> str:
     normalized = normalize_lottery_type(lottery_type)
-    if normalized != 'pc28':
-        return ''
+    if normalized == 'jingcai_football':
+        return football_utils.normalize_profit_metric(value)
     return pc28_utils.normalize_profit_metric(value)
 
 
 def normalize_profit_rule(lottery_type: str, value) -> str:
     normalized = normalize_lottery_type(lottery_type)
-    if normalized != 'pc28':
-        return ''
+    if normalized == 'jingcai_football':
+        return football_utils.normalize_profit_rule(value)
     return pc28_utils.normalize_profit_rule(value)
 
 

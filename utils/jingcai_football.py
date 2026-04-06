@@ -9,9 +9,12 @@ from typing import Iterable, Optional
 
 ALLOWED_TARGETS = ('spf', 'rqspf')
 ALLOWED_PRIMARY_METRICS = ('spf', 'rqspf')
+DEFAULT_PROFIT_RULE_ID = 'jingcai_snapshot'
 TARGET_LABELS = {
     'spf': '胜平负',
-    'rqspf': '让球胜平负'
+    'rqspf': '让球胜平负',
+    'spf_parlay': '胜平负二串一',
+    'rqspf_parlay': '让球胜平负二串一'
 }
 RESULT_LABELS = ('胜', '平', '负')
 
@@ -36,6 +39,19 @@ def normalize_primary_metric(value: Optional[str]) -> str:
     if text in ALLOWED_PRIMARY_METRICS:
         return text
     return 'spf'
+
+
+def normalize_profit_metric(value: Optional[str]) -> str:
+    """竞彩足球收益模拟默认只接受单关主玩法"""
+    return normalize_primary_metric(value)
+
+
+def normalize_profit_rule(value: Optional[str]) -> str:
+    """竞彩足球当前只支持预测批次赔率快照规则"""
+    text = str(value or '').strip().lower()
+    if text == DEFAULT_PROFIT_RULE_ID:
+        return text
+    return DEFAULT_PROFIT_RULE_ID
 
 
 def normalize_prediction_outcome(value) -> Optional[str]:
@@ -175,6 +191,45 @@ def clamp_confidence(value) -> Optional[float]:
     if number is None:
         return None
     return max(0.0, min(number, 1.0))
+
+
+def rank_prediction_items(items: Iterable[dict], metric_key: Optional[str] = None) -> list[dict]:
+    """按置信度和编号对预测项排序，可指定必须命中某个玩法字段"""
+    candidates: list[dict] = []
+    for item in items:
+        payload = item.get('prediction_payload') or {}
+        if item.get('status') not in {'pending', 'settled'}:
+            continue
+        if metric_key:
+            if not payload.get(metric_key):
+                continue
+        elif not payload:
+            continue
+        candidates.append(item)
+
+    return sorted(
+        candidates,
+        key=lambda item: (
+            clamp_confidence(item.get('confidence')) if item.get('confidence') is not None else -1,
+            item.get('issue_no') or ''
+        ),
+        reverse=True
+    )
+
+
+def resolve_snapshot_odds(meta_payload: dict, metric_key: str, outcome: Optional[str]) -> Optional[float]:
+    """从赛事快照里提取指定玩法、指定结果的赔率"""
+    if not outcome:
+        return None
+
+    if metric_key == 'spf':
+        return parse_float((meta_payload.get('spf_odds') or {}).get(outcome))
+
+    if metric_key == 'rqspf':
+        rqspf = meta_payload.get('rqspf') or {}
+        return parse_float((rqspf.get('odds') or {}).get(outcome))
+
+    return None
 
 
 def dump_json(value) -> str:

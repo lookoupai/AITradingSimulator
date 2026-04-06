@@ -191,6 +191,43 @@ class JingcaiFootballService:
             'recent_events': sorted_matches[:limit]
         }
 
+    def build_overview_with_fallback(self, db, limit: int = 20) -> dict:
+        normalized_limit = max(5, min(limit, 50))
+        try:
+            return self.build_overview(db, limit=normalized_limit)
+        except Exception as exc:
+            return self._build_cached_overview(db, normalized_limit, str(exc))
+
+    def _build_cached_overview(self, db, limit: int, error_message: str) -> dict:
+        cached_events = db.get_recent_lottery_events(self.lottery_type, limit=limit)
+        if not cached_events:
+            return {
+                'lottery_type': self.lottery_type,
+                'batch_key': None,
+                'match_count': 0,
+                'open_match_count': 0,
+                'settled_match_count': 0,
+                'next_match_time': None,
+                'next_match_name': None,
+                'recent_events': [],
+                'warning': f'新浪接口不可用，且本地暂无竞彩足球缓存：{error_message}'
+            }
+
+        sorted_events = sorted(cached_events, key=lambda item: item.get('event_time') or '')
+        open_events = [item for item in sorted_events if not (item.get('meta_payload') or {}).get('settled')]
+        next_event = open_events[0] if open_events else None
+        return {
+            'lottery_type': self.lottery_type,
+            'batch_key': None,
+            'match_count': len(sorted_events),
+            'open_match_count': len(open_events),
+            'settled_match_count': len([item for item in sorted_events if (item.get('meta_payload') or {}).get('settled')]),
+            'next_match_time': next_event.get('event_time') if next_event else None,
+            'next_match_name': next_event.get('event_name') if next_event else None,
+            'recent_events': sorted_events[:limit],
+            'warning': f'新浪接口不可用，已回退本地缓存：{error_message}'
+        }
+
     def current_sale_date(self) -> str:
         return get_current_beijing_time().strftime('%Y-%m-%d')
 
@@ -256,12 +293,12 @@ class JingcaiFootballService:
         }
 
     def build_predictor_dashboard(self, db, predictor: dict) -> dict:
-        overview = self.build_overview(db, limit=20)
+        overview = self.build_overview_with_fallback(db, limit=20)
         stats = self.build_predictor_stats(db, predictor['id'], predictor.get('primary_metric', 'spf'))
         recent_items = self.get_recent_prediction_items(db, predictor['id'], limit=100)
         recent_runs = db.get_recent_prediction_runs(predictor['id'], lottery_type=self.lottery_type, limit=20)
-        current_run = next((item for item in recent_runs if item['status'] == 'pending'), None)
-        current_prediction = self._build_run_view_model(db, current_run) if current_run else None
+        current_run = next((item for item in recent_runs if item['status'] == 'pending'), None) or (recent_runs[0] if recent_runs else None)
+        current_prediction = self.build_run_view_model(db, current_run) if current_run else None
         latest_prediction = recent_items[0] if recent_items else None
 
         return {
@@ -273,6 +310,9 @@ class JingcaiFootballService:
             'recent_events': overview.get('recent_events') or [],
             'overview': overview
         }
+
+    def build_run_view_model(self, db, run: dict | None) -> dict | None:
+        return self._build_run_view_model(db, run)
 
     def generate_prediction(self, db, predictor: dict, auto_mode: bool = False, batch_payload: dict | None = None) -> dict:
         batch_payload = batch_payload or self.sync_matches(db, is_prized='')
@@ -493,6 +533,7 @@ class JingcaiFootballService:
 
     def get_recent_prediction_items(self, db, predictor_id: int, limit: int = 100) -> list[dict]:
         items = db.get_recent_prediction_items(predictor_id, lottery_type=self.lottery_type, limit=limit)
+        items = self._decorate_prediction_items(db, items)
         for item in items:
             item['score_percentage'] = self._compute_score_percentage(item)
         return items
@@ -1019,37 +1060,100 @@ class JingcaiFootballService:
     def _build_run_view_model(self, db, run: dict | None) -> dict | None:
         if not run:
             return None
-        items = db.get_prediction_run_items(run['id'])
+        items = self._decorate_prediction_items(db, db.get_prediction_run_items(run['id']))
         return {
             **run,
             'lottery_type': self.lottery_type,
             'items': items,
-            'recommended_parlay': self._build_two_match_recommendation(items)
+            'recommended_parlay': self._build_two_match_recommendation(items),
+            'recommended_tickets': self._build_recommended_tickets(items)
         }
 
     def _build_two_match_recommendation(self, items: list[dict]) -> list[dict]:
-        candidates = [
-            item for item in items
-            if item.get('status') in {'pending', 'settled'} and (item.get('prediction_payload') or {})
-        ]
-        ranked = sorted(
-            candidates,
-            key=lambda item: (
-                item.get('confidence') if item.get('confidence') is not None else -1,
-                item.get('issue_no') or ''
-            ),
-            reverse=True
-        )
-        top_items = ranked[:2]
+        top_items = football_utils.rank_prediction_items(items)[:2]
         return [
             {
                 'issue_no': item.get('issue_no'),
                 'title': item.get('title'),
                 'prediction_payload': item.get('prediction_payload') or {},
+                'market_snapshot': item.get('market_snapshot') or {},
                 'confidence': item.get('confidence')
             }
             for item in top_items
         ]
+
+    def _decorate_prediction_items(self, db, items: list[dict]) -> list[dict]:
+        if not items:
+            return []
+
+        event_map = db.get_lottery_event_map(
+            self.lottery_type,
+            [item.get('event_key') for item in items if item.get('event_key')]
+        )
+        decorated = []
+        for item in items:
+            event = event_map.get(item.get('event_key')) or {}
+            meta_payload = event.get('meta_payload') or {}
+            decorated.append({
+                **item,
+                'market_snapshot': {
+                    'event_time': event.get('event_time') or '',
+                    'spf_odds': meta_payload.get('spf_odds') or {},
+                    'rqspf': meta_payload.get('rqspf') or {},
+                    'odds_source_label': '预测批次赔率快照'
+                }
+            })
+        return decorated
+
+    def _build_recommended_tickets(self, items: list[dict]) -> list[dict]:
+        top_items = self._build_two_match_recommendation(items)
+        if len(top_items) < 2:
+            return []
+
+        tickets = []
+        for metric in ('spf', 'rqspf'):
+            legs = []
+            for item in top_items:
+                market_snapshot = item.get('market_snapshot') or {}
+                meta_payload = {
+                    'spf_odds': market_snapshot.get('spf_odds') or {},
+                    'rqspf': market_snapshot.get('rqspf') or {}
+                }
+                prediction_payload = item.get('prediction_payload') or {}
+                outcome = prediction_payload.get(metric)
+                odds = football_utils.resolve_snapshot_odds(meta_payload, metric, outcome)
+                if not outcome or odds is None or odds <= 0:
+                    legs = []
+                    break
+                legs.append({
+                    'issue_no': item.get('issue_no') or '--',
+                    'title': item.get('title') or '--',
+                    'outcome': outcome,
+                    'display_outcome': self._format_ticket_outcome(metric, outcome, meta_payload),
+                    'odds': float(odds)
+                })
+
+            if not legs:
+                continue
+
+            tickets.append({
+                'metric': f'{metric}_parlay',
+                'metric_label': football_utils.TARGET_LABELS.get(f'{metric}_parlay', metric),
+                'ticket_text': ' + '.join(f"{leg['issue_no']} {leg['display_outcome']}" for leg in legs),
+                'odds': round(legs[0]['odds'] * legs[1]['odds'], 4),
+                'legs': legs,
+                'odds_source_label': '预测批次赔率快照'
+            })
+
+        return tickets
+
+    def _format_ticket_outcome(self, metric: str, outcome: str, meta_payload: dict) -> str:
+        if metric != 'rqspf':
+            return outcome
+        handicap_text = str(((meta_payload.get('rqspf') or {}).get('handicap_text') or '')).strip()
+        if not handicap_text:
+            return outcome
+        return f'{outcome}(让{handicap_text})'
 
     def _build_metric_stats(self, items: list[dict], metric_key: str) -> dict:
         outcomes = [

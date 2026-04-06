@@ -180,7 +180,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'primary_metric_label': get_target_label(lottery_type, predictor.get('primary_metric') or ''),
         'profit_default_metric': predictor.get('profit_default_metric') or default_simulation_metric,
         'profit_rule_id': predictor.get('profit_rule_id') or default_profit_rule_id,
-        'profit_rule_label': profit_simulator.get_rule_label(predictor.get('profit_rule_id') or default_profit_rule_id) if supports_profit_simulation(lottery_type) else '',
+        'profit_rule_label': profit_simulator.get_rule_label(predictor.get('profit_rule_id') or default_profit_rule_id, predictor) if supports_profit_simulation(lottery_type) else '',
         'share_level': share_level,
         'share_level_label': _share_level_label(share_level),
         'share_predictions': share_level != 'stats_only',
@@ -193,8 +193,8 @@ def _serialize_predictor(predictor: dict) -> dict:
         'capabilities': lottery_definition.to_catalog_item()['capabilities'],
         'simulation_metrics': simulation_metrics,
         'default_simulation_metric': default_simulation_metric,
-        'profit_rule_options': profit_simulator.get_rule_options() if supports_profit_simulation(lottery_type) else [],
-        'odds_profiles': profit_simulator.get_odds_profile_options() if supports_profit_simulation(lottery_type) else [],
+        'profit_rule_options': profit_simulator.get_rule_options(predictor) if supports_profit_simulation(lottery_type) else [],
+        'odds_profiles': profit_simulator.get_odds_profile_options(predictor) if supports_profit_simulation(lottery_type) else [],
         'history_window': predictor.get('history_window'),
         'temperature': predictor.get('temperature'),
         'enabled': bool(predictor.get('enabled')),
@@ -265,6 +265,9 @@ def _serialize_lottery_event(event: dict) -> dict:
 def _serialize_prediction_item_group(item: dict) -> dict:
     return {
         **item,
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None,
+        'settled_at': utc_to_beijing(item['settled_at']) if item.get('settled_at') else None,
         'predicted_spf_label': item.get('predicted_spf_label') or '--',
         'predicted_rqspf_label': item.get('predicted_rqspf_label') or '--',
         'actual_spf_label': item.get('actual_spf_label') or '--',
@@ -359,6 +362,7 @@ def _serialize_admin_user(item: dict) -> dict:
 
 def _serialize_admin_predictor(item: dict) -> dict:
     lottery_type = normalize_lottery_type(item.get('lottery_type'))
+    default_profit_rule_id = profit_simulator.get_default_rule_id(lottery_type=lottery_type) if supports_profit_simulation(lottery_type) else ''
     return {
         'id': item['id'],
         'user_id': item['user_id'],
@@ -369,8 +373,8 @@ def _serialize_admin_predictor(item: dict) -> dict:
         'primary_metric_label': get_target_label(lottery_type, item.get('primary_metric')),
         'profit_default_metric': item.get('profit_default_metric') or item.get('primary_metric'),
         'profit_default_metric_label': get_target_label(lottery_type, item.get('profit_default_metric') or item.get('primary_metric')),
-        'profit_rule_id': item.get('profit_rule_id') or ('pc28_high' if supports_profit_simulation(lottery_type) else ''),
-        'profit_rule_label': profit_simulator.get_rule_label(item.get('profit_rule_id') or 'pc28_high') if supports_profit_simulation(lottery_type) else '',
+        'profit_rule_id': item.get('profit_rule_id') or default_profit_rule_id,
+        'profit_rule_label': profit_simulator.get_rule_label(item.get('profit_rule_id') or default_profit_rule_id, lottery_type) if supports_profit_simulation(lottery_type) else '',
         'lottery_type': lottery_type,
         'lottery_label': get_lottery_definition(lottery_type).label,
         'share_level': item.get('share_level'),
@@ -500,7 +504,7 @@ def _build_public_predictor_rankings(sort_by: str = 'recent100', metric: str = '
             'share_predictions': bool(predictor.get('share_predictions')),
             'lottery_type': normalized_lottery_type,
             'lottery_label': get_lottery_definition(normalized_lottery_type).label,
-            'primary_metric': predictor.get('primary_metric') or 'combo',
+            'primary_metric': predictor.get('primary_metric') or ('spf' if normalized_lottery_type == 'jingcai_football' else 'combo'),
             'primary_metric_label': stats.get('primary_metric_label') or get_target_label(normalized_lottery_type, predictor.get('primary_metric') or ''),
             'metric': metric,
             'metric_label': metric_stats.get('label') or get_target_label(normalized_lottery_type, metric),
@@ -559,14 +563,16 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
     can_view_records = share_level in {'records', 'analysis'}
     can_view_analysis = share_level == 'analysis'
     if lottery_type == 'jingcai_football':
-        predictions = jingcai_football_service.get_recent_prediction_items(db, predictor_id, limit=20) if can_view_records else []
-        current_prediction = None
+        raw_predictions = jingcai_football_service.get_recent_prediction_items(db, predictor_id, limit=20) if can_view_records else []
+        predictions = [_serialize_prediction_item_group(item) for item in raw_predictions]
+        recent_runs = db.get_recent_prediction_runs(predictor_id, lottery_type=lottery_type, limit=5) if can_view_records else []
+        current_run = next((item for item in recent_runs if item.get('status') == 'pending'), None) or (recent_runs[0] if recent_runs else None)
+        current_prediction = _serialize_prediction_run(jingcai_football_service.build_run_view_model(db, current_run)) if current_run else None
         latest_prediction = predictions[0] if predictions else None
     else:
         predictions = db.get_recent_predictions(predictor_id, limit=20) if can_view_records else []
         current_prediction = next((item for item in predictions if item['status'] == 'pending'), None) if predictions else None
         latest_prediction = predictions[0] if predictions else None
-    current_prediction = next((item for item in predictions if item['status'] == 'pending'), None) if predictions else None
     user = db.get_user_by_id(predictor['user_id'])
     public_links = _build_public_links(predictor['id'])
 
@@ -578,17 +584,17 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'lottery_type': lottery_type,
             'lottery_label': get_lottery_definition(lottery_type).label,
             'model_name': predictor['model_name'],
-            'primary_metric': predictor.get('primary_metric') or 'combo',
+            'primary_metric': predictor.get('primary_metric') or ('spf' if lottery_type == 'jingcai_football' else 'combo'),
             'primary_metric_label': stats.get('primary_metric_label') or get_target_label(lottery_type, predictor.get('primary_metric') or ''),
             'profit_default_metric': predictor.get('profit_default_metric') or (profit_simulator.get_default_metric(predictor) if supports_profit_simulation(lottery_type) else ''),
             'profit_rule_id': predictor.get('profit_rule_id') or (profit_simulator.get_default_rule_id(predictor) if supports_profit_simulation(lottery_type) else ''),
-            'profit_rule_label': profit_simulator.get_rule_label(predictor.get('profit_rule_id') or profit_simulator.get_default_rule_id(predictor)) if supports_profit_simulation(lottery_type) else '',
+            'profit_rule_label': profit_simulator.get_rule_label(predictor.get('profit_rule_id') or profit_simulator.get_default_rule_id(predictor), predictor) if supports_profit_simulation(lottery_type) else '',
             'prediction_method': predictor.get('prediction_method') or '自定义策略',
             'prediction_targets': predictor.get('prediction_targets') or [],
             'simulation_metrics': profit_simulator.get_metric_options(predictor) if supports_profit_simulation(lottery_type) else [],
             'default_simulation_metric': profit_simulator.get_default_metric(predictor) if supports_profit_simulation(lottery_type) else None,
-            'profit_rule_options': profit_simulator.get_rule_options() if supports_profit_simulation(lottery_type) else [],
-            'odds_profiles': profit_simulator.get_odds_profile_options() if supports_profit_simulation(lottery_type) else [],
+            'profit_rule_options': profit_simulator.get_rule_options(predictor) if supports_profit_simulation(lottery_type) else [],
+            'odds_profiles': profit_simulator.get_odds_profile_options(predictor) if supports_profit_simulation(lottery_type) else [],
             'capabilities': get_lottery_definition(lottery_type).to_catalog_item()['capabilities'],
             'history_window': predictor.get('history_window'),
             'share_level': share_level,

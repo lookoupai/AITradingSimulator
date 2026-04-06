@@ -1,19 +1,22 @@
 """
-PC28 收益模拟服务
+多彩种收益模拟服务
 """
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from typing import Optional
 
+from lotteries.registry import normalize_lottery_type
+from utils import jingcai_football as football_utils
 from utils.pc28 import (
-    DEFAULT_PROFIT_RULE_ID,
-    TARGET_LABELS,
+    DEFAULT_PROFIT_RULE_ID as PC28_DEFAULT_PROFIT_RULE_ID,
+    TARGET_LABELS as PC28_TARGET_LABELS,
     is_pc28_baozi,
     is_pc28_pair,
     is_pc28_straight,
-    normalize_target_list,
-    normalize_profit_rule,
+    normalize_profit_rule as normalize_pc28_profit_rule,
+    normalize_target_list as normalize_pc28_target_list,
     parse_pc28_triplet
 )
 from utils.timezone import (
@@ -24,7 +27,12 @@ from utils.timezone import (
 )
 
 
-SUPPORTED_SIMULATION_METRICS = ('big_small', 'odd_even', 'combo', 'number')
+PC28_SUPPORTED_SIMULATION_METRICS = ('big_small', 'odd_even', 'combo', 'number')
+FOOTBALL_DEFAULT_ODDS_PROFILE = 'snapshot'
+FOOTBALL_PARLAY_METRIC_MAP = {
+    'spf_parlay': 'spf',
+    'rqspf_parlay': 'rqspf'
+}
 DEFAULT_ODDS_PROFILE = 'regular'
 DEFAULT_BASE_STAKE = 10.0
 DEFAULT_BET_MODE = 'flat'
@@ -40,6 +48,10 @@ BET_MODE_LABELS = {
 ODDS_PROFILE_LABELS = {
     'regular': '常规盘',
     'abc': 'ABC赔率'
+}
+
+FOOTBALL_ODDS_PROFILE_LABELS = {
+    FOOTBALL_DEFAULT_ODDS_PROFILE: '预测批次赔率快照'
 }
 
 COMBO_GROUPS = {
@@ -109,7 +121,7 @@ NETDISK_NUMBER_ODDS = {
     27: 888.0
 }
 
-PROFIT_RULES = {
+PC28_PROFIT_RULES = {
     'pc28_netdisk': {
         'label': '加拿大28网盘',
         'metrics': {
@@ -182,14 +194,38 @@ PROFIT_RULES = {
     }
 }
 
+FOOTBALL_PROFIT_RULES = {
+    football_utils.DEFAULT_PROFIT_RULE_ID: {
+        'label': '竞彩足球赔率快照',
+        'metrics': {
+            'spf': {
+                FOOTBALL_DEFAULT_ODDS_PROFILE: {'kind': 'football_single', 'metric': 'spf'}
+            },
+            'rqspf': {
+                FOOTBALL_DEFAULT_ODDS_PROFILE: {'kind': 'football_single', 'metric': 'rqspf'}
+            },
+            'spf_parlay': {
+                FOOTBALL_DEFAULT_ODDS_PROFILE: {'kind': 'football_parlay', 'metric': 'spf'}
+            },
+            'rqspf_parlay': {
+                FOOTBALL_DEFAULT_ODDS_PROFILE: {'kind': 'football_parlay', 'metric': 'rqspf'}
+            }
+        }
+    }
+}
+
 
 class ProfitSimulator:
     def __init__(self, db):
         self.db = db
 
     def get_available_metrics(self, predictor: dict) -> list[str]:
-        targets = normalize_target_list(predictor.get('prediction_targets'))
-        metrics = [metric for metric in targets if metric in SUPPORTED_SIMULATION_METRICS]
+        lottery_type = self._resolve_lottery_type(predictor)
+        if lottery_type == 'jingcai_football':
+            return self._get_football_available_metrics(predictor)
+
+        targets = normalize_pc28_target_list(predictor.get('prediction_targets'))
+        metrics = [metric for metric in targets if metric in PC28_SUPPORTED_SIMULATION_METRICS]
         profit_default_metric = predictor.get('profit_default_metric')
         primary_metric = predictor.get('primary_metric')
 
@@ -207,39 +243,50 @@ class ProfitSimulator:
         return metrics[0] if metrics else None
 
     def get_metric_options(self, predictor: dict) -> list[dict]:
+        lottery_type = self._resolve_lottery_type(predictor)
         return [
             {
                 'key': metric,
-                'label': TARGET_LABELS.get(metric, metric)
+                'label': self._metric_label(metric, lottery_type)
             }
             for metric in self.get_available_metrics(predictor)
         ]
 
-    def get_rule_options(self) -> list[dict]:
+    def get_rule_options(self, predictor_or_lottery_type=None) -> list[dict]:
+        lottery_type = self._resolve_lottery_type(predictor_or_lottery_type)
         return [
             {
                 'key': key,
                 'label': config['label']
             }
-            for key, config in PROFIT_RULES.items()
+            for key, config in self._rule_catalog(lottery_type).items()
         ]
 
-    def get_rule_label(self, profit_rule_id: Optional[str]) -> str:
-        normalized = normalize_profit_rule(profit_rule_id)
-        return PROFIT_RULES.get(normalized, PROFIT_RULES[DEFAULT_PROFIT_RULE_ID])['label']
+    def get_rule_label(self, profit_rule_id: Optional[str], predictor_or_lottery_type=None) -> str:
+        lottery_type = self._resolve_lottery_type(predictor_or_lottery_type)
+        rules = self._rule_catalog(lottery_type)
+        normalized = self._normalize_profit_rule(lottery_type, profit_rule_id)
+        default_rule_id = self.get_default_rule_id(lottery_type=lottery_type)
+        return rules.get(normalized, rules[default_rule_id])['label']
 
-    def get_default_rule_id(self, predictor: dict | None = None) -> str:
+    def get_default_rule_id(self, predictor: dict | None = None, lottery_type: str | None = None) -> str:
+        resolved_lottery_type = self._resolve_lottery_type(predictor or lottery_type)
+        if resolved_lottery_type == 'jingcai_football':
+            if predictor and predictor.get('profit_rule_id'):
+                return football_utils.normalize_profit_rule(predictor.get('profit_rule_id'))
+            return football_utils.DEFAULT_PROFIT_RULE_ID
         if predictor and predictor.get('profit_rule_id'):
-            return normalize_profit_rule(predictor.get('profit_rule_id'))
-        return DEFAULT_PROFIT_RULE_ID
+            return normalize_pc28_profit_rule(predictor.get('profit_rule_id'))
+        return PC28_DEFAULT_PROFIT_RULE_ID
 
-    def get_odds_profile_options(self) -> list[dict]:
+    def get_odds_profile_options(self, predictor_or_lottery_type=None) -> list[dict]:
+        lottery_type = self._resolve_lottery_type(predictor_or_lottery_type)
         return [
             {
                 'key': key,
                 'label': label
             }
-            for key, label in ODDS_PROFILE_LABELS.items()
+            for key, label in self._odds_profile_labels(lottery_type).items()
         ]
 
     def get_bet_mode_options(self) -> list[dict]:
@@ -267,13 +314,51 @@ class ProfitSimulator:
         if not predictor:
             raise ValueError('预测方案不存在')
 
+        lottery_type = self._resolve_lottery_type(predictor)
+        if lottery_type == 'jingcai_football':
+            return self._build_football_today_simulation(
+                predictor,
+                requested_metric=requested_metric,
+                profit_rule_id=profit_rule_id,
+                odds_profile=odds_profile,
+                bet_mode=bet_mode,
+                base_stake=base_stake,
+                multiplier=multiplier,
+                max_steps=max_steps,
+                include_records=include_records
+            )
+
+        return self._build_pc28_today_simulation(
+            predictor,
+            requested_metric=requested_metric,
+            profit_rule_id=profit_rule_id,
+            odds_profile=odds_profile,
+            bet_mode=bet_mode,
+            base_stake=base_stake,
+            multiplier=multiplier,
+            max_steps=max_steps,
+            include_records=include_records
+        )
+
+    def _build_pc28_today_simulation(
+        self,
+        predictor: dict,
+        requested_metric: Optional[str],
+        profit_rule_id: Optional[str],
+        odds_profile: str,
+        bet_mode: Optional[str],
+        base_stake: Optional[float],
+        multiplier: Optional[float],
+        max_steps: Optional[int],
+        include_records: bool
+    ) -> dict:
         available_metrics = self.get_available_metrics(predictor)
         if not available_metrics:
             raise ValueError('当前方案没有可用于收益模拟的玩法')
 
         effective_metric = self._resolve_metric(predictor, requested_metric, available_metrics)
         effective_rule_id = self._resolve_rule_id(predictor, profit_rule_id)
-        normalized_odds_profile = self._resolve_odds_profile(odds_profile)
+        normalized_odds_profile = self._resolve_odds_profile(odds_profile, predictor)
         bet_strategy = self._build_bet_strategy(
             bet_mode=bet_mode,
             base_stake=base_stake,
@@ -282,7 +367,7 @@ class ProfitSimulator:
         )
         period = get_pc28_day_window(get_current_beijing_time())
 
-        predictions = self.db.get_recent_predictions(predictor_id, limit=None)
+        predictions = self.db.get_recent_predictions(predictor['id'], limit=None)
         settled_predictions = [item for item in predictions if item.get('status') == 'settled']
         draws_by_issue = self.db.get_draws_by_issues('pc28', [item['issue_no'] for item in settled_predictions])
 
@@ -327,6 +412,8 @@ class ProfitSimulator:
             total_payout += record['payout_amount']
             cumulative_profit += record['net_profit']
             record['cumulative_profit'] = round(cumulative_profit, 2)
+            record['bet_step'] = current_bet_step
+            record['bet_step_label'] = self._bet_step_label(bet_strategy, current_bet_step)
             current_bet_step = self._resolve_next_bet_step(
                 bet_strategy,
                 current_bet_step,
@@ -346,20 +433,19 @@ class ProfitSimulator:
         bet_count = hit_count + refund_count + miss_count
         total_stake = round(total_stake, 2)
         total_payout = round(total_payout, 2)
-
         net_profit = round(total_payout - total_stake, 2)
         roi_percentage = round(net_profit / total_stake * 100, 2) if total_stake else 0.0
         average_profit = round(net_profit / bet_count, 2) if bet_count else 0.0
 
         return {
             'metric': effective_metric,
-            'metric_label': TARGET_LABELS.get(effective_metric, effective_metric),
+            'metric_label': self._metric_label(effective_metric, 'pc28'),
             'profit_rule_id': effective_rule_id,
-            'profit_rule_label': self.get_rule_label(effective_rule_id),
+            'profit_rule_label': self.get_rule_label(effective_rule_id, predictor),
             'odds_profile': normalized_odds_profile,
-            'odds_profile_label': ODDS_PROFILE_LABELS[normalized_odds_profile],
-            'profit_rules': self.get_rule_options(),
-            'odds_profiles': self.get_odds_profile_options(),
+            'odds_profile_label': self._odds_profile_labels('pc28')[normalized_odds_profile],
+            'profit_rules': self.get_rule_options(predictor),
+            'odds_profiles': self.get_odds_profile_options(predictor),
             'bet_modes': self.get_bet_mode_options(),
             'bet_mode': bet_strategy['mode'],
             'bet_mode_label': bet_strategy['mode_label'],
@@ -379,13 +465,15 @@ class ProfitSimulator:
             'default_profit_rule_id': self.get_default_rule_id(predictor),
             'period': {
                 'mode': 'pc28_day',
-                'label': '按PC28盘日',
+                'label': '按 PC28 盘日',
                 'start_time': format_beijing_time(period['start']),
                 'end_time': format_beijing_time(period['end_exclusive']),
                 'timezone': 'Asia/Shanghai',
                 'is_dst': period['is_dst'],
                 'boundary_hour': period['boundary_hour']
             },
+            'odds_source_label': self._odds_profile_labels('pc28')[normalized_odds_profile],
+            'odds_source_description': '按当前所选赔率盘和收益规则计算，不回看历史盘口变化。',
             'summary': {
                 'bet_count': bet_count,
                 'hit_count': hit_count,
@@ -401,6 +489,244 @@ class ProfitSimulator:
             'records': records
         }
 
+    def _build_football_today_simulation(
+        self,
+        predictor: dict,
+        requested_metric: Optional[str],
+        profit_rule_id: Optional[str],
+        odds_profile: str,
+        bet_mode: Optional[str],
+        base_stake: Optional[float],
+        multiplier: Optional[float],
+        max_steps: Optional[int],
+        include_records: bool
+    ) -> dict:
+        available_metrics = self.get_available_metrics(predictor)
+        if not available_metrics:
+            raise ValueError('当前方案没有可用于收益模拟的玩法')
+
+        effective_metric = self._resolve_metric(predictor, requested_metric, available_metrics)
+        effective_rule_id = self._resolve_rule_id(predictor, profit_rule_id)
+        normalized_odds_profile = self._resolve_odds_profile(odds_profile, predictor)
+        bet_strategy = self._build_bet_strategy(
+            bet_mode=bet_mode,
+            base_stake=base_stake,
+            multiplier=multiplier,
+            max_steps=max_steps
+        )
+
+        items = self.db.get_recent_prediction_items(
+            predictor['id'],
+            lottery_type='jingcai_football',
+            limit=2000
+        )
+        settled_items = [item for item in items if item.get('status') == 'settled']
+        event_map = self.db.get_lottery_event_map(
+            'jingcai_football',
+            [item.get('event_key') for item in settled_items if item.get('event_key')]
+        )
+
+        records: list[dict] = []
+        cumulative_profit = 0.0
+        hit_count = 0
+        refund_count = 0
+        miss_count = 0
+        skipped_count = 0
+        total_stake = 0.0
+        total_payout = 0.0
+        current_bet_step = 1
+        processed_open_times: list[str] = []
+
+        if effective_metric in FOOTBALL_PARLAY_METRIC_MAP:
+            grouped_items: dict[int, list[dict]] = defaultdict(list)
+            for item in settled_items:
+                if item.get('run_id') is None:
+                    continue
+                grouped_items[int(item['run_id'])].append(item)
+
+            ordered_groups = sorted(
+                grouped_items.values(),
+                key=lambda group: (
+                    self._football_group_time(group, event_map) or '',
+                    group[0].get('run_key') or ''
+                )
+            )
+
+            for group in ordered_groups:
+                record = self._build_football_parlay_record(
+                    group,
+                    event_map,
+                    effective_metric,
+                    effective_rule_id,
+                    normalized_odds_profile,
+                    bet_strategy,
+                    current_bet_step
+                )
+                if not record:
+                    skipped_count += 1
+                    continue
+
+                total_stake += record['stake_amount']
+                total_payout += record['payout_amount']
+                cumulative_profit += record['net_profit']
+                processed_open_times.append(record.get('open_time') or '--')
+                record['cumulative_profit'] = round(cumulative_profit, 2)
+                record['bet_step'] = current_bet_step
+                record['bet_step_label'] = self._bet_step_label(bet_strategy, current_bet_step)
+                current_bet_step = self._resolve_next_bet_step(
+                    bet_strategy,
+                    current_bet_step,
+                    record['result_type']
+                )
+
+                if record['result_type'] == 'hit':
+                    hit_count += 1
+                else:
+                    miss_count += 1
+
+                if include_records:
+                    records.append(record)
+        else:
+            ordered_items = sorted(
+                settled_items,
+                key=lambda item: (
+                    (event_map.get(item.get('event_key')) or {}).get('event_time') or '',
+                    item.get('issue_no') or '',
+                    item.get('id') or 0
+                )
+            )
+
+            for item in ordered_items:
+                record = self._build_football_single_record(
+                    item,
+                    event_map.get(item.get('event_key')) or {},
+                    effective_metric,
+                    effective_rule_id,
+                    normalized_odds_profile,
+                    bet_strategy,
+                    current_bet_step
+                )
+                if not record:
+                    skipped_count += 1
+                    continue
+
+                total_stake += record['stake_amount']
+                total_payout += record['payout_amount']
+                cumulative_profit += record['net_profit']
+                processed_open_times.append(record.get('open_time') or '--')
+                record['cumulative_profit'] = round(cumulative_profit, 2)
+                record['bet_step'] = current_bet_step
+                record['bet_step_label'] = self._bet_step_label(bet_strategy, current_bet_step)
+                current_bet_step = self._resolve_next_bet_step(
+                    bet_strategy,
+                    current_bet_step,
+                    record['result_type']
+                )
+
+                if record['result_type'] == 'hit':
+                    hit_count += 1
+                else:
+                    miss_count += 1
+
+                if include_records:
+                    records.append(record)
+
+        bet_count = hit_count + refund_count + miss_count
+        total_stake = round(total_stake, 2)
+        total_payout = round(total_payout, 2)
+        net_profit = round(total_payout - total_stake, 2)
+        roi_percentage = round(net_profit / total_stake * 100, 2) if total_stake else 0.0
+        average_profit = round(net_profit / bet_count, 2) if bet_count else 0.0
+        period = self._build_football_period(processed_open_times)
+
+        return {
+            'metric': effective_metric,
+            'metric_label': self._metric_label(effective_metric, 'jingcai_football'),
+            'profit_rule_id': effective_rule_id,
+            'profit_rule_label': self.get_rule_label(effective_rule_id, predictor),
+            'odds_profile': normalized_odds_profile,
+            'odds_profile_label': self._odds_profile_labels('jingcai_football')[normalized_odds_profile],
+            'profit_rules': self.get_rule_options(predictor),
+            'odds_profiles': self.get_odds_profile_options(predictor),
+            'bet_modes': self.get_bet_mode_options(),
+            'bet_mode': bet_strategy['mode'],
+            'bet_mode_label': bet_strategy['mode_label'],
+            'bet_strategy_label': self._bet_strategy_label(bet_strategy),
+            'bet_config': {
+                'base_stake': bet_strategy['base_stake'],
+                'multiplier': bet_strategy['multiplier'],
+                'max_steps': bet_strategy['max_steps'],
+                'refund_action': bet_strategy['refund_action'],
+                'refund_action_label': bet_strategy['refund_action_label'],
+                'cap_action': bet_strategy['cap_action'],
+                'cap_action_label': bet_strategy['cap_action_label']
+            },
+            'stake_amount': bet_strategy['base_stake'],
+            'available_metrics': self.get_metric_options(predictor),
+            'default_metric': self.get_default_metric(predictor),
+            'default_profit_rule_id': self.get_default_rule_id(predictor),
+            'period': period,
+            'odds_source_label': self._odds_profile_labels('jingcai_football')[normalized_odds_profile],
+            'odds_source_description': '使用生成该批预测时已落库的赔率快照，不回溯临场或封盘前盘口变化。',
+            'summary': {
+                'bet_count': bet_count,
+                'hit_count': hit_count,
+                'refund_count': refund_count,
+                'miss_count': miss_count,
+                'skipped_count': skipped_count,
+                'total_stake': total_stake,
+                'total_payout': total_payout,
+                'net_profit': net_profit,
+                'roi_percentage': roi_percentage,
+                'average_profit': average_profit
+            },
+            'records': records
+        }
+
+    def _resolve_lottery_type(self, predictor_or_lottery_type=None) -> str:
+        if isinstance(predictor_or_lottery_type, dict):
+            return normalize_lottery_type(predictor_or_lottery_type.get('lottery_type'))
+        return normalize_lottery_type(predictor_or_lottery_type or 'pc28')
+
+    def _metric_label(self, metric: str, lottery_type: str) -> str:
+        if lottery_type == 'jingcai_football':
+            mapping = {
+                'spf': '胜平负单关',
+                'rqspf': '让球胜平负单关',
+                'spf_parlay': '胜平负二串一',
+                'rqspf_parlay': '让球胜平负二串一'
+            }
+            return mapping.get(metric, football_utils.TARGET_LABELS.get(metric, metric))
+        return PC28_TARGET_LABELS.get(metric, metric)
+
+    def _get_football_available_metrics(self, predictor: dict) -> list[str]:
+        targets = football_utils.normalize_target_list(predictor.get('prediction_targets'))
+        primary_metric = football_utils.normalize_primary_metric(
+            predictor.get('profit_default_metric') or predictor.get('primary_metric')
+        )
+        ordered_targets = [primary_metric] + [item for item in targets if item != primary_metric] if primary_metric in targets else list(targets)
+
+        metrics: list[str] = []
+        for target in ordered_targets:
+            metrics.append(target)
+            metrics.append(f'{target}_parlay')
+        return metrics
+
+    def _rule_catalog(self, lottery_type: str) -> dict:
+        if lottery_type == 'jingcai_football':
+            return FOOTBALL_PROFIT_RULES
+        return PC28_PROFIT_RULES
+
+    def _odds_profile_labels(self, lottery_type: str) -> dict[str, str]:
+        if lottery_type == 'jingcai_football':
+            return FOOTBALL_ODDS_PROFILE_LABELS
+        return ODDS_PROFILE_LABELS
+
+    def _normalize_profit_rule(self, lottery_type: str, value: Optional[str]) -> str:
+        if lottery_type == 'jingcai_football':
+            return football_utils.normalize_profit_rule(value)
+        return normalize_pc28_profit_rule(value)
+
     def _resolve_metric(self, predictor: dict, requested_metric: Optional[str], available_metrics: list[str]) -> str:
         metric = str(requested_metric or '').strip().lower()
         if metric in available_metrics:
@@ -408,15 +734,18 @@ class ProfitSimulator:
         return self.get_default_metric(predictor) or available_metrics[0]
 
     def _resolve_rule_id(self, predictor: dict, requested_rule_id: Optional[str]) -> str:
+        lottery_type = self._resolve_lottery_type(predictor)
         if requested_rule_id:
-            return normalize_profit_rule(requested_rule_id)
+            return self._normalize_profit_rule(lottery_type, requested_rule_id)
         return self.get_default_rule_id(predictor)
 
-    def _resolve_odds_profile(self, odds_profile: Optional[str]) -> str:
+    def _resolve_odds_profile(self, odds_profile: Optional[str], predictor_or_lottery_type=None) -> str:
+        lottery_type = self._resolve_lottery_type(predictor_or_lottery_type)
+        labels = self._odds_profile_labels(lottery_type)
         text = str(odds_profile or '').strip().lower()
-        if text in ODDS_PROFILE_LABELS:
+        if text in labels:
             return text
-        return DEFAULT_ODDS_PROFILE
+        return FOOTBALL_DEFAULT_ODDS_PROFILE if lottery_type == 'jingcai_football' else DEFAULT_ODDS_PROFILE
 
     def _build_bet_strategy(
         self,
@@ -502,7 +831,7 @@ class ProfitSimulator:
         bet_strategy: dict,
         bet_step: int
     ) -> Optional[dict]:
-        profile = self._get_metric_profile(profit_rule_id, metric, odds_profile)
+        profile = self._get_metric_profile(profit_rule_id, metric, odds_profile, lottery_type='pc28')
         if not profile:
             return None
 
@@ -577,9 +906,9 @@ class ProfitSimulator:
             'issue_no': prediction['issue_no'],
             'open_time': format_beijing_time(open_time),
             'metric': metric,
-            'metric_label': TARGET_LABELS.get(metric, metric),
+            'metric_label': self._metric_label(metric, 'pc28'),
             'profit_rule_id': profit_rule_id,
-            'profit_rule_label': self.get_rule_label(profit_rule_id),
+            'profit_rule_label': self.get_rule_label(profit_rule_id, 'pc28'),
             'ticket_label': ticket_label,
             'predicted_value': self._display_value(metric, predicted_value),
             'actual_value': self._display_value(metric, actual_value),
@@ -595,12 +924,184 @@ class ProfitSimulator:
             'net_profit': net_profit
         }
 
-    def _get_metric_profile(self, profit_rule_id: str, metric: str, odds_profile: str) -> Optional[dict]:
-        rule = PROFIT_RULES.get(profit_rule_id)
+    def _build_football_single_record(
+        self,
+        item: dict,
+        event: dict,
+        metric: str,
+        profit_rule_id: str,
+        odds_profile: str,
+        bet_strategy: dict,
+        bet_step: int
+    ) -> Optional[dict]:
+        profile = self._get_metric_profile(profit_rule_id, metric, odds_profile, lottery_type='jingcai_football')
+        if not profile:
+            return None
+
+        meta_payload = event.get('meta_payload') or {}
+        prediction_payload = item.get('prediction_payload') or {}
+        actual_payload = item.get('actual_payload') or {}
+        predicted_value = prediction_payload.get(metric)
+        actual_value = actual_payload.get(metric)
+        odds = football_utils.resolve_snapshot_odds(meta_payload, metric, predicted_value)
+
+        if not predicted_value or not actual_value or odds is None or odds <= 0:
+            return None
+
+        stake_amount = self._resolve_stake_amount(bet_strategy, bet_step)
+        result_type = 'hit' if predicted_value == actual_value else 'miss'
+        payout_amount = self._resolve_payout_amount(result_type, odds, stake_amount)
+        net_profit = round(payout_amount - stake_amount, 2)
+
+        return {
+            'issue_no': item.get('issue_no') or '--',
+            'open_time': event.get('event_time') or '--',
+            'metric': metric,
+            'metric_label': self._metric_label(metric, 'jingcai_football'),
+            'profit_rule_id': profit_rule_id,
+            'profit_rule_label': self.get_rule_label(profit_rule_id, 'jingcai_football'),
+            'ticket_label': self._football_ticket_text(item.get('issue_no'), metric, predicted_value, meta_payload),
+            'predicted_value': self._football_display_outcome(metric, predicted_value, meta_payload),
+            'actual_value': self._football_display_outcome(metric, actual_value, meta_payload),
+            'result_type': result_type,
+            'result_label': self._result_label(result_type),
+            'refund_reason': None,
+            'bet_step': bet_step,
+            'bet_step_label': self._bet_step_label(bet_strategy, bet_step),
+            'odds': float(odds),
+            'stake_amount': round(stake_amount, 2),
+            'payout_amount': round(payout_amount, 2),
+            'net_profit': net_profit
+        }
+
+    def _build_football_parlay_record(
+        self,
+        items: list[dict],
+        event_map: dict[str, dict],
+        metric: str,
+        profit_rule_id: str,
+        odds_profile: str,
+        bet_strategy: dict,
+        bet_step: int
+    ) -> Optional[dict]:
+        profile = self._get_metric_profile(profit_rule_id, metric, odds_profile, lottery_type='jingcai_football')
+        if not profile:
+            return None
+
+        base_metric = FOOTBALL_PARLAY_METRIC_MAP.get(metric)
+        if not base_metric:
+            return None
+
+        ranked_items = football_utils.rank_prediction_items(items, metric_key=base_metric)
+        legs: list[dict] = []
+        for item in ranked_items:
+            event = event_map.get(item.get('event_key')) or {}
+            meta_payload = event.get('meta_payload') or {}
+            prediction_payload = item.get('prediction_payload') or {}
+            actual_payload = item.get('actual_payload') or {}
+            predicted_value = prediction_payload.get(base_metric)
+            actual_value = actual_payload.get(base_metric)
+            odds = football_utils.resolve_snapshot_odds(meta_payload, base_metric, predicted_value)
+            if not predicted_value or not actual_value or odds is None or odds <= 0:
+                continue
+            legs.append({
+                'issue_no': item.get('issue_no') or '--',
+                'run_key': item.get('run_key') or '--',
+                'event_time': event.get('event_time') or '--',
+                'predicted_value': predicted_value,
+                'actual_value': actual_value,
+                'odds': float(odds),
+                'meta_payload': meta_payload
+            })
+            if len(legs) == 2:
+                break
+
+        if len(legs) < 2:
+            return None
+
+        stake_amount = self._resolve_stake_amount(bet_strategy, bet_step)
+        combined_odds = round(legs[0]['odds'] * legs[1]['odds'], 4)
+        result_type = 'hit' if all(leg['predicted_value'] == leg['actual_value'] for leg in legs) else 'miss'
+        payout_amount = self._resolve_payout_amount(result_type, combined_odds, stake_amount)
+        net_profit = round(payout_amount - stake_amount, 2)
+
+        ticket_label = ' + '.join(
+            self._football_ticket_text(leg['issue_no'], base_metric, leg['predicted_value'], leg['meta_payload'])
+            for leg in legs
+        )
+        actual_text = ' + '.join(
+            self._football_ticket_text(leg['issue_no'], base_metric, leg['actual_value'], leg['meta_payload'])
+            for leg in legs
+        )
+
+        return {
+            'issue_no': legs[0]['run_key'],
+            'open_time': max(leg['event_time'] for leg in legs),
+            'metric': metric,
+            'metric_label': self._metric_label(metric, 'jingcai_football'),
+            'profit_rule_id': profit_rule_id,
+            'profit_rule_label': self.get_rule_label(profit_rule_id, 'jingcai_football'),
+            'ticket_label': ticket_label,
+            'predicted_value': '两场全中',
+            'actual_value': actual_text,
+            'result_type': result_type,
+            'result_label': self._result_label(result_type),
+            'refund_reason': None,
+            'bet_step': bet_step,
+            'bet_step_label': self._bet_step_label(bet_strategy, bet_step),
+            'odds': combined_odds,
+            'stake_amount': round(stake_amount, 2),
+            'payout_amount': round(payout_amount, 2),
+            'net_profit': net_profit
+        }
+
+    def _football_group_time(self, items: list[dict], event_map: dict[str, dict]) -> str:
+        times = [
+            (event_map.get(item.get('event_key')) or {}).get('event_time')
+            for item in items
+        ]
+        times = [item for item in times if item]
+        return max(times) if times else ''
+
+    def _build_football_period(self, open_times: list[str]) -> dict:
+        if not open_times:
+            return {
+                'mode': 'football_history',
+                'label': '按已结算比赛样本',
+                'start_time': '--',
+                'end_time': '--',
+                'timezone': 'Asia/Shanghai'
+            }
+
+        return {
+            'mode': 'football_history',
+            'label': '按已结算比赛样本',
+            'start_time': open_times[0] or '--',
+            'end_time': open_times[-1] or '--',
+            'timezone': 'Asia/Shanghai'
+        }
+
+    def _football_display_outcome(self, metric: str, outcome: str, meta_payload: dict) -> str:
+        if not outcome:
+            return '--'
+        if metric != 'rqspf':
+            return str(outcome)
+        handicap_text = str(((meta_payload.get('rqspf') or {}).get('handicap_text') or '')).strip()
+        if not handicap_text:
+            return str(outcome)
+        return f'{outcome}（让{handicap_text}）'
+
+    def _football_ticket_text(self, issue_no: str, metric: str, outcome: str, meta_payload: dict) -> str:
+        outcome_text = self._football_display_outcome(metric, outcome, meta_payload)
+        return f'{issue_no or "--"} {outcome_text}'
+
+    def _get_metric_profile(self, profit_rule_id: str, metric: str, odds_profile: str, lottery_type: str = 'pc28') -> Optional[dict]:
+        rule = self._rule_catalog(lottery_type).get(profit_rule_id)
         if not rule:
             return None
         metric_profiles = rule.get('metrics', {}).get(metric, {})
-        return metric_profiles.get(odds_profile) or metric_profiles.get(DEFAULT_ODDS_PROFILE)
+        default_odds_profile = FOOTBALL_DEFAULT_ODDS_PROFILE if lottery_type == 'jingcai_football' else DEFAULT_ODDS_PROFILE
+        return metric_profiles.get(odds_profile) or metric_profiles.get(default_odds_profile)
 
     def _build_special_flags(self, draw: dict) -> dict:
         source_payload = {}

@@ -169,10 +169,18 @@ class PublicPredictorPage {
         const hero = document.getElementById('publicPredictorHero');
         const predictor = data.predictor || {};
         const stats = data.stats || {};
-        const latestPrediction = data.latest_prediction || data.current_prediction || {};
+        const currentRun = data.current_prediction && Array.isArray(data.current_prediction.items) ? data.current_prediction : null;
+        const latestPrediction = data.latest_prediction || {};
         const actualPayload = latestPrediction.actual_payload || {};
+        const recommendationTags = currentRun && Array.isArray(currentRun.recommended_tickets) && currentRun.recommended_tickets.length
+            ? currentRun.recommended_tickets.map((ticket) => `<span class="tag">${this.escapeHtml(ticket.metric_label || '--')} ${this.escapeHtml(ticket.ticket_text || '--')}</span>`).join('')
+            : `
+                <span class="tag">胜平负 ${this.escapeHtml(this.buildFootballOutcomeText('spf', (latestPrediction.prediction_payload || {}).spf, latestPrediction.market_snapshot || {}))}</span>
+                <span class="tag">让球 ${this.escapeHtml(this.buildFootballOutcomeText('rqspf', (latestPrediction.prediction_payload || {}).rqspf, latestPrediction.market_snapshot || {}))}</span>
+                <span class="tag">${this.escapeHtml(actualPayload.score_text || '--')}</span>
+            `;
 
-        document.getElementById('publicHeroDescription').textContent = '公开展示该竞彩足球方案的统计表现与分享内容，不展示 API 配置和原始调用数据。';
+        document.getElementById('publicHeroDescription').textContent = '公开展示该竞彩足球方案的统计表现、推荐票面与收益模拟结果，不展示 API 配置和原始调用数据。';
         document.getElementById('publicStatsSubtitle').textContent = '展示竞彩足球胜平负与让球胜平负的公开统计表现。';
 
         hero.innerHTML = `
@@ -191,9 +199,7 @@ class PublicPredictorPage {
             <div class="hero-metric">
                 <span class="mini-label">最新公开预测</span>
                 <div class="badge-row">
-                    <span class="tag">胜平负 ${this.escapeHtml((latestPrediction.prediction_payload || {}).spf || '--')}</span>
-                    <span class="tag">让球 ${this.escapeHtml((latestPrediction.prediction_payload || {}).rqspf || '--')}</span>
-                    <span class="tag">${this.escapeHtml(actualPayload.score_text || '--')}</span>
+                    ${recommendationTags}
                 </div>
             </div>
         `;
@@ -349,7 +355,7 @@ class PublicPredictorPage {
                 <tr>
                     <td>${this.escapeHtml(item.issue_no || '--')}</td>
                     <td>${this.escapeHtml(this.statusLabel(item.status))}</td>
-                    <td>${this.renderFootballResultStack(item.prediction_payload || {}, item.title || '--')}</td>
+                    <td>${this.renderFootballResultStack(item)}</td>
                     <td>${this.renderFootballActualStack(item.actual_payload || {}, item.status)}</td>
                     <td>${this.renderHitSummary(item)}</td>
                     <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
@@ -373,10 +379,6 @@ class PublicPredictorPage {
     }
 
     renderProfitControls(predictor, resetMetric = false) {
-        if ((predictor?.lottery_type || 'pc28') !== 'pc28') {
-            this.renderProfitSimulationEmpty('当前彩种暂不支持收益模拟');
-            return;
-        }
         const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
         const betModeSelect = document.getElementById('publicProfitBetModeView');
@@ -466,11 +468,6 @@ class PublicPredictorPage {
             return;
         }
 
-        if ((this.currentPredictor.lottery_type || 'pc28') !== 'pc28') {
-            this.renderProfitSimulationEmpty('当前彩种暂不支持收益模拟');
-            return;
-        }
-
         const metrics = this.currentPredictor.simulation_metrics || [];
         if (!metrics.length) {
             this.renderProfitSimulationEmpty('当前方案没有可用于收益模拟的玩法');
@@ -519,18 +516,24 @@ class PublicPredictorPage {
         const recordText = canViewRecords
             ? '当前公开层级允许查看单期收益明细。'
             : '当前公开层级仅公开收益汇总，不公开单期收益明细。';
+        const periodText = period.start_time && period.end_time
+            ? `${period.label || '模拟区间'}：${period.start_time} 至 ${period.end_time}`
+            : `${period.label || '模拟区间'}：--`;
+        const oddsText = simulation.odds_source_label
+            ? `赔率口径：${simulation.odds_source_label}`
+            : `赔率盘：${simulation.odds_profile_label || '--'}`;
 
         container.className = 'metric-hint';
         container.innerHTML = `
             <div class="metric-hint-head">
                 <div>
                     <strong>${this.escapeHtml(simulation.profit_rule_label || '--')} · ${this.escapeHtml(simulation.metric_label || '--')} · ${this.escapeHtml(simulation.odds_profile_label || '--')}</strong>
-                    <span class="metric-hint-alias">盘日区间：${this.escapeHtml(period.start_time || '--')} 至 ${this.escapeHtml(period.end_time || '--')} 前</span>
+                    <span class="metric-hint-alias">${this.escapeHtml(periodText)}</span>
                 </div>
                 <span class="tag">${this.escapeHtml(simulation.bet_strategy_label || '--')}</span>
             </div>
             <p>${recordText}</p>
-            <p class="metric-hint-foot">基础注 ${this.formatUsd(simulation.bet_config?.base_stake || 0)} · ${this.escapeHtml(simulation.bet_config?.refund_action_label || '--')} · ${this.escapeHtml(simulation.bet_config?.cap_action_label || '--')} · 今日共计下注 ${summary.bet_count || 0} 期。</p>
+            <p class="metric-hint-foot">基础注 ${this.formatUsd(simulation.bet_config?.base_stake || 0)} · ${this.escapeHtml(oddsText)} · ${this.escapeHtml(simulation.bet_config?.refund_action_label || '--')} · ${this.escapeHtml(simulation.bet_config?.cap_action_label || '--')} · 当前共计下注 ${summary.bet_count || 0} 笔模拟票。</p>
         `;
     }
 
@@ -541,7 +544,7 @@ class PublicPredictorPage {
             ['收益规则', simulation.profit_rule_label || '--'],
             ['当前玩法', simulation.metric_label || '--'],
             ['下注策略', simulation.bet_strategy_label || '--'],
-            ['赔率盘', simulation.odds_profile_label || '--'],
+            ['赔率口径', simulation.odds_source_label || simulation.odds_profile_label || '--'],
             ['总下注', this.formatUsd(summary.total_stake || 0)],
             ['净收益', this.formatSignedUsd(summary.net_profit || 0)],
             ['ROI', this.formatPercent(summary.roi_percentage || 0)],
@@ -615,7 +618,7 @@ class PublicPredictorPage {
             return;
         }
         if (!records.length) {
-            tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前盘日暂无收益模拟记录</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前区间暂无收益模拟记录</td></tr>';
             return;
         }
 
@@ -768,18 +771,32 @@ class PublicPredictorPage {
         if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
             const footballMapping = {
                 spf: {
-                    label: '胜平负',
+                    label: '胜平负单关',
                     alias: '常规盘',
                     shortRule: '三分类',
                     description: '按 90 分钟含伤停补时赛果统计主胜、平局、客胜。',
                     formula: '预测胜平负 = 实际胜平负'
                 },
                 rqspf: {
-                    label: '让球胜平负',
+                    label: '让球胜平负单关',
                     alias: '让球盘',
                     shortRule: '三分类',
                     description: '按官方让球数修正主队比分后统计胜平负。',
                     formula: '预测让球胜平负 = 实际让球胜平负'
+                },
+                spf_parlay: {
+                    label: '胜平负二串一',
+                    alias: '默认两场组合',
+                    shortRule: '两场全中',
+                    description: '先按置信度选出两场，再把两场胜平负票面组合成二串一。',
+                    formula: '两场胜平负都命中才算命中'
+                },
+                rqspf_parlay: {
+                    label: '让球胜平负二串一',
+                    alias: '默认两场组合',
+                    shortRule: '两场全中',
+                    description: '先按置信度选出两场，再把两场让球胜平负票面组合成二串一。',
+                    formula: '两场让球胜平负都命中才算命中'
                 }
             };
 
@@ -1010,11 +1027,18 @@ class PublicPredictorPage {
         return value.replace(/[&<>"']/g, (char) => map[char]);
     }
 
-    renderFootballResultStack(payload, title) {
+    renderFootballResultStack(item) {
+        const payload = item.prediction_payload || {};
+        const marketSnapshot = item.market_snapshot || {};
+        const spfText = this.buildFootballOutcomeText('spf', payload.spf, marketSnapshot);
+        const rqspfText = this.buildFootballOutcomeText('rqspf', payload.rqspf, marketSnapshot);
+        const spfOdds = this.buildFootballOddsText('spf', payload.spf, marketSnapshot);
+        const rqspfOdds = this.buildFootballOddsText('rqspf', payload.rqspf, marketSnapshot);
         return `
             <div class="result-stack">
-                <strong>${this.escapeHtml(title || '--')}</strong>
-                <span class="result-meta-text">胜平负：${this.escapeHtml(payload.spf || '--')} · 让球胜平负：${this.escapeHtml(payload.rqspf || '--')}</span>
+                <strong>${this.escapeHtml(item.title || item.issue_no || '--')}</strong>
+                <span class="result-meta-text">胜平负：${this.escapeHtml(spfText || '--')} · 让球胜平负：${this.escapeHtml(rqspfText || '--')}</span>
+                <span class="result-meta-text">赔率快照：SPF ${this.escapeHtml(spfOdds || '--')} · RQSPF ${this.escapeHtml(rqspfOdds || '--')}</span>
             </div>
         `;
     }
@@ -1047,6 +1071,33 @@ class PublicPredictorPage {
                 </div>
             </div>
         `;
+    }
+
+    buildFootballOutcomeText(metricKey, outcome, marketSnapshot = {}) {
+        if (!outcome) {
+            return '--';
+        }
+        if (metricKey !== 'rqspf') {
+            return outcome;
+        }
+        const handicapText = ((marketSnapshot.rqspf || {}).handicap_text || '').trim();
+        if (!handicapText) {
+            return outcome;
+        }
+        return `${outcome}(让${handicapText})`;
+    }
+
+    buildFootballOddsText(metricKey, outcome, marketSnapshot = {}) {
+        if (!outcome) {
+            return '';
+        }
+        const rawValue = metricKey === 'rqspf'
+            ? ((marketSnapshot.rqspf || {}).odds || {})[outcome]
+            : (marketSnapshot.spf_odds || {})[outcome];
+        if (rawValue === null || rawValue === undefined || rawValue === '') {
+            return '';
+        }
+        return `${Number(rawValue).toFixed(2)} 倍`;
     }
 }
 

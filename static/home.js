@@ -22,7 +22,7 @@ const HOME_LOTTERY_CONFIG = {
         description: '查看竞彩足球当前批次、近期赛事与公开方案表现，首版支持胜平负和让球胜平负预测。',
         drawSubtitle: '当前批次与近期开奖赛程',
         rankingSubtitle: '基于已启用竞彩足球方案的近期命中表现做公开排序。',
-        rankingHint: '竞彩足球公开页当前展示命中统计与公开预测记录，不包含收益模拟。',
+        rankingHint: '竞彩足球公开页会展示命中统计、公开预测记录和基于赔率快照的收益模拟。',
         metricOptions: [
             { value: 'spf', label: '胜平负' },
             { value: 'rqspf', label: '让球胜平负' }

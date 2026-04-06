@@ -134,7 +134,7 @@ const LOTTERY_UI_CONFIG = {
     },
     jingcai_football: {
         label: '竞彩足球',
-        supportsProfitSimulation: false,
+        supportsProfitSimulation: true,
         supportsPromptAssistant: true,
         supportsPresets: true,
         defaultHistoryWindow: 30,
@@ -149,7 +149,7 @@ const LOTTERY_UI_CONFIG = {
             { key: 'rqspf', label: '让球胜平负：按让球盘结果统计命中' }
         ],
         defaultPrimaryMetric: 'spf',
-        targetHint: '竞彩足球首版只支持胜平负与让球胜平负；默认按二串一思路使用单场预测结果，不做收益模拟。'
+        targetHint: '竞彩足球支持胜平负与让球胜平负预测；收益模拟会基于预测批次赔率快照计算单关与默认二串一。'
     }
 };
 
@@ -788,6 +788,7 @@ class PredictionApp {
         const recent20 = currentMetric.recent_20 || {};
         const recent100 = currentMetric.recent_100 || {};
         const metricLabel = this.targetLabel(currentMetricKey);
+        const streaks = stats.streaks || {};
 
         container.innerHTML = `
             <article class="stat-card">
@@ -814,11 +815,15 @@ class PredictionApp {
                 <span class="stat-label">100 场命中率</span>
                 <strong class="stat-value">${this.formatRatioRate(recent100)}</strong>
             </article>
+            <article class="stat-card">
+                <span class="stat-label">当前连中 / 连挂</span>
+                <strong class="stat-value">${streaks.current_hit_streak || 0} / ${streaks.current_miss_streak || 0}</strong>
+            </article>
         `;
 
         this.renderStatsMetricHint(currentMetricKey);
         this.renderMetricStats(stats.metrics || {});
-        document.getElementById('streakStats').innerHTML = '<div class="empty-panel">竞彩足球首版暂不展示连中连挂</div>';
+        this.renderStreakStats(stats, currentMetricKey);
     }
 
     renderStatsMetricHint(metricKey) {
@@ -1053,94 +1058,8 @@ class PredictionApp {
             return;
         }
 
-        const targetTags = (predictor.prediction_targets || []).map((item) => this.renderBadge(this.targetLabel(item, predictor.lottery_type || 'pc28'))).join('');
-        const run = currentPrediction || latestPrediction;
-        if (!run) {
-            container.className = 'prediction-summary empty-panel';
-            container.innerHTML = `
-                <div class="summary-head">
-                    <div>
-                        <h4>${this.escapeHtml(predictor.name)}</h4>
-                        <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
-                    </div>
-                    <div class="badge-row">${targetTags}</div>
-                </div>
-                <p>当前尚无竞彩足球预测记录，点击“立即预测”或等待自动轮询。</p>
-            `;
-            return;
-        }
-
-        const statusText = this.predictionStatusLabel(run.status);
-        const items = run.items || [];
-        const previewRows = items.slice(0, 8).map((item) => `
-            <tr>
-                <td>${this.escapeHtml(item.issue_no || '--')}</td>
-                <td>${this.escapeHtml(item.title || '--')}</td>
-                <td>${this.escapeHtml(item.predicted_spf_label || '--')}</td>
-                <td>${this.escapeHtml(item.predicted_rqspf_label || '--')}</td>
-                <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
-            </tr>
-        `).join('');
-
-        container.className = 'prediction-summary';
-        container.innerHTML = `
-            <div class="summary-head">
-                <div>
-                    <h4>${this.escapeHtml(predictor.name)}</h4>
-                    <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
-                </div>
-                <div class="badge-row">
-                    ${targetTags}
-                    <span class="status-chip ${run.status}">${statusText}</span>
-                </div>
-            </div>
-            <div class="prediction-grid prediction-grid-compact">
-                ${this.renderCurrentPredictionCard('预测批次', run.run_key || '--')}
-                ${this.renderCurrentPredictionCard('场次数量', String((run.items || []).length))}
-                ${this.renderCurrentPredictionCard('已结算', String(run.settled_items || 0))}
-                ${this.renderCurrentPredictionCard('平均置信度', this.formatPercent(run.confidence !== null && run.confidence !== undefined ? run.confidence * 100 : null))}
-            </div>
-            <div class="prediction-section">
-                <div class="prediction-section-head">
-                    <div>
-                        <span class="mini-label">本批次前 8 场预测</span>
-                        <p class="section-hint">首版只展示胜平负和让球胜平负，不做串关收益模拟。</p>
-                    </div>
-                </div>
-                <div class="table-wrap">
-                    <table class="data-table compact-table">
-                        <thead>
-                            <tr>
-                                <th>编号</th>
-                                <th>比赛</th>
-                                <th>胜平负</th>
-                                <th>让球胜平负</th>
-                                <th>置信度</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${previewRows || '<tr><td colspan="5" class="empty-cell">暂无预测明细</td></tr>'}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="summary-foot">
-                <div>
-                    <span class="mini-label">简要说明</span>
-                    <p>${this.escapeHtml(run.reasoning_summary || '无')}</p>
-                </div>
-                <div>
-                    <span class="mini-label">更新时间</span>
-                    <p>${this.escapeHtml(run.updated_at || run.created_at || '--')}</p>
-                </div>
-            </div>
-        `;
-    }
-
-    renderFootballCurrentPrediction(currentPrediction, latestPrediction, predictor) {
-        const container = document.getElementById('currentPrediction');
-        const prediction = currentPrediction || latestPrediction;
-        const targetTags = (predictor.prediction_targets || []).map((item) => this.renderBadge(this.targetLabel(item, predictor.lottery_type))).join('');
+        const prediction = currentPrediction && Array.isArray(currentPrediction.items) ? currentPrediction : latestPrediction;
+        const targetTags = (predictor.prediction_targets || []).map((item) => this.renderBadge(this.targetLabel(item, predictor.lottery_type || 'jingcai_football'))).join('');
 
         if (!prediction) {
             container.className = 'prediction-summary empty-panel';
@@ -1157,14 +1076,54 @@ class PredictionApp {
             return;
         }
 
-        const parlay = Array.isArray(prediction.recommended_parlay) ? prediction.recommended_parlay : [];
-        if (parlay.length) {
+        if (Array.isArray(prediction.items)) {
+            const items = prediction.items || [];
+            const parlay = Array.isArray(prediction.recommended_parlay) ? prediction.recommended_parlay : [];
+            const tickets = Array.isArray(prediction.recommended_tickets) ? prediction.recommended_tickets : [];
+            const previewRows = items.slice(0, 8).map((item) => {
+                const marketSnapshot = item.market_snapshot || {};
+                const spfOutcome = this.buildFootballOutcomeText('spf', (item.prediction_payload || {}).spf, marketSnapshot);
+                const rqspfOutcome = this.buildFootballOutcomeText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
+                const spfOdds = this.buildFootballOddsText('spf', (item.prediction_payload || {}).spf, marketSnapshot);
+                const rqspfOdds = this.buildFootballOddsText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
+                return `
+                    <tr>
+                        <td>${this.escapeHtml(item.issue_no || '--')}</td>
+                        <td>${this.escapeHtml(item.title || '--')}</td>
+                        <td>${this.escapeHtml(spfOutcome || '--')}${spfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(spfOdds)}</span>` : ''}</td>
+                        <td>${this.escapeHtml(rqspfOutcome || '--')}${rqspfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(rqspfOdds)}</span>` : ''}</td>
+                        <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            const candidateCards = parlay.map((item, index) => {
+                const marketSnapshot = item.market_snapshot || {};
+                const spfOutcome = this.buildFootballOutcomeText('spf', (item.prediction_payload || {}).spf, marketSnapshot);
+                const rqspfOutcome = this.buildFootballOutcomeText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
+                const spfOdds = this.buildFootballOddsText('spf', (item.prediction_payload || {}).spf, marketSnapshot);
+                const rqspfOdds = this.buildFootballOddsText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
+                return this.renderCurrentPredictionCard(
+                    `候选场次 ${index + 1}`,
+                    `${item.issue_no || '--'} · ${item.title || '--'}`,
+                    `SPF ${spfOutcome || '--'}${spfOdds ? ` @ ${spfOdds}` : ''} · RQSPF ${rqspfOutcome || '--'}${rqspfOdds ? ` @ ${rqspfOdds}` : ''} · 置信度 ${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}`
+                );
+            }).join('');
+
+            const ticketCards = tickets.length
+                ? tickets.map((ticket) => this.renderCurrentPredictionCard(
+                    ticket.metric_label || '--',
+                    ticket.ticket_text || '--',
+                    `${ticket.odds_source_label || '预测批次赔率快照'} · 合计赔率 ${this.formatOdds(ticket.odds)}`
+                )).join('')
+                : this.renderCurrentPredictionCard('推荐逻辑', '按置信度挑两场', '若某个玩法缺少有效赔率快照，则不生成对应二串一票面。');
+
             container.className = 'prediction-summary';
             container.innerHTML = `
                 <div class="summary-head">
                     <div>
                         <h4>${this.escapeHtml(predictor.name)}</h4>
-                        <p>${this.escapeHtml(prediction.run_key || prediction.issue_no || '--')} · 默认二串一推荐</p>
+                        <p>${this.escapeHtml(prediction.run_key || '--')} · 当前批次推荐票面</p>
                     </div>
                     <div class="badge-row">
                         ${targetTags}
@@ -1173,18 +1132,52 @@ class PredictionApp {
                 </div>
                 ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
                 <div class="prediction-grid prediction-grid-compact">
-                    ${parlay.map((item, index) => this.renderCurrentPredictionCard(
-                        `推荐场次 ${index + 1}`,
-                        `${item.issue_no || '--'} · ${(item.prediction_payload || {}).spf || '--'} / ${(item.prediction_payload || {}).rqspf || '--'}`,
-                        `${item.title || '--'} · 置信度 ${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}`
-                    )).join('')}
-                    ${this.renderCurrentPredictionCard('推荐逻辑', '默认按置信度选两场', '后续可扩展为更完整的二串一策略层')}
+                    ${this.renderCurrentPredictionCard('预测批次', prediction.run_key || '--')}
+                    ${this.renderCurrentPredictionCard('场次数量', String(items.length))}
+                    ${this.renderCurrentPredictionCard('已结算', String(prediction.settled_items || 0))}
+                    ${this.renderCurrentPredictionCard('平均置信度', this.formatPercent(prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null))}
                     ${this.renderCurrentPredictionCard('更新时间', prediction.updated_at || prediction.created_at || '--')}
+                </div>
+                <div class="prediction-section">
+                    <div class="prediction-section-head">
+                        <div>
+                            <span class="mini-label">默认推荐票面</span>
+                            <p class="section-hint">默认先按置信度挑两场，再分别生成胜平负与让球胜平负二串一票面；赔率取预测批次快照。</p>
+                        </div>
+                    </div>
+                    <div class="prediction-grid prediction-grid-compact">
+                        ${ticketCards}
+                        ${candidateCards}
+                    </div>
+                </div>
+                <div class="prediction-section">
+                    <div class="prediction-section-head">
+                        <div>
+                            <span class="mini-label">本批次前 8 场预测</span>
+                            <p class="section-hint">每场同时展示 SPF / RQSPF 预测及对应赔率快照，避免把“胜 / 胜”误读成两场组合。</p>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table class="data-table compact-table">
+                            <thead>
+                                <tr>
+                                    <th>编号</th>
+                                    <th>比赛</th>
+                                    <th>胜平负</th>
+                                    <th>让球胜平负</th>
+                                    <th>置信度</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${previewRows || '<tr><td colspan="5" class="empty-cell">暂无预测明细</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
                 <div class="summary-foot">
                     <div>
                         <span class="mini-label">批次说明</span>
-                        <p>${this.escapeHtml(prediction.reasoning_summary || '当前批次已生成竞彩足球预测，可先参考默认二串一推荐。')}</p>
+                        <p>${this.escapeHtml(prediction.reasoning_summary || '当前批次已生成竞彩足球预测，可先参考默认单关与二串一票面。')}</p>
                     </div>
                 </div>
             `;
@@ -1212,8 +1205,8 @@ class PredictionApp {
             ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
             <div class="prediction-grid prediction-grid-compact">
                 ${this.renderCurrentPredictionCard('场次', prediction.issue_no || '--')}
-                ${this.renderCurrentPredictionCard('胜平负', predictionPayload.spf || '--')}
-                ${this.renderCurrentPredictionCard('让球胜平负', predictionPayload.rqspf || '--')}
+                ${this.renderCurrentPredictionCard('胜平负', this.buildFootballOutcomeText('spf', predictionPayload.spf, prediction.market_snapshot || {}), this.buildFootballOddsText('spf', predictionPayload.spf, prediction.market_snapshot || {}) ? `赔率 ${this.buildFootballOddsText('spf', predictionPayload.spf, prediction.market_snapshot || {})}` : '')}
+                ${this.renderCurrentPredictionCard('让球胜平负', this.buildFootballOutcomeText('rqspf', predictionPayload.rqspf, prediction.market_snapshot || {}), this.buildFootballOddsText('rqspf', predictionPayload.rqspf, prediction.market_snapshot || {}) ? `赔率 ${this.buildFootballOddsText('rqspf', predictionPayload.rqspf, prediction.market_snapshot || {})}` : '')}
                 ${this.renderCurrentPredictionCard('置信度', this.formatPercent(prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null))}
                 ${this.renderCurrentPredictionCard('赛果', actualPayload.score_text ? `${actualPayload.score_text} (${actualPayload.spf || '--'})` : '--')}
                 ${this.renderCurrentPredictionCard('命中', attemptedCount ? `${hitCount}/${attemptedCount}` : '--')}
@@ -1231,6 +1224,33 @@ class PredictionApp {
         `;
     }
 
+    buildFootballOutcomeText(metricKey, outcome, marketSnapshot = {}) {
+        if (!outcome) {
+            return '--';
+        }
+        if (metricKey !== 'rqspf') {
+            return outcome;
+        }
+        const handicapText = ((marketSnapshot.rqspf || {}).handicap_text || '').trim();
+        if (!handicapText) {
+            return outcome;
+        }
+        return `${outcome}(让${handicapText})`;
+    }
+
+    buildFootballOddsText(metricKey, outcome, marketSnapshot = {}) {
+        if (!outcome) {
+            return '';
+        }
+        const rawValue = metricKey === 'rqspf'
+            ? ((marketSnapshot.rqspf || {}).odds || {})[outcome]
+            : (marketSnapshot.spf_odds || {})[outcome];
+        if (rawValue === null || rawValue === undefined || rawValue === '') {
+            return '';
+        }
+        return `${Number(rawValue).toFixed(2)} 倍`;
+    }
+
     renderPublicSharePanel(predictor) {
         const container = document.getElementById('publicSharePanel');
         if (!container) {
@@ -1243,22 +1263,11 @@ class PredictionApp {
             return;
         }
 
-        if ((predictor.lottery_type || 'pc28') !== 'pc28') {
-            container.className = 'prediction-summary empty-panel';
-            container.innerHTML = `
-                <div>
-                    <strong>${this.escapeHtml(predictor.name || '--')}</strong>
-                    <p class="field-hint">竞彩足球首版暂不开放公开页与公开榜单，当前仅支持登录后的控制台查看。</p>
-                </div>
-            `;
-            return;
-        }
-
         const publicUrl = predictor.public_url || predictor.public_path || '--';
         const isAvailable = Boolean(predictor.public_page_available);
         const availabilityText = isAvailable ? '公开页可访问' : '方案已停用，公开页当前不可访问';
         const availabilityHint = isAvailable
-            ? '当前地址可直接分享给访客；访客能看到的内容取决于公开层级。'
+            ? '当前地址可直接分享给访客；访客能看到的内容取决于公开层级，竞彩足球也会同步展示收益模拟结果。'
             : '启用自动预测后，公开页才会重新出现在首页榜单和公开详情中。';
         const disabledAttr = isAvailable ? '' : 'disabled';
         const openButton = isAvailable
@@ -1433,20 +1442,26 @@ class PredictionApp {
         const summary = simulation.summary || {};
         const primaryMetric = predictor?.primary_metric || '';
         const fallbackText = primaryMetric && primaryMetric !== simulation.metric
-            ? `当前方案主玩法为 ${this.escapeHtml(this.targetLabel(primaryMetric))}，收益模拟已回退为 ${this.escapeHtml(simulation.metric_label || '--')}。`
+            ? `当前方案主玩法为 ${this.escapeHtml(this.targetLabel(primaryMetric, predictor?.lottery_type || this.currentLotteryType))}，收益模拟已回退为 ${this.escapeHtml(simulation.metric_label || '--')}。`
             : '当前默认按方案主玩法计算；切换其他玩法时才会额外发起计算。';
+        const periodText = period.start_time && period.end_time
+            ? `${period.label || '模拟区间'}：${period.start_time} 至 ${period.end_time}`
+            : `${period.label || '模拟区间'}：--`;
+        const oddsText = simulation.odds_source_label
+            ? `赔率口径：${simulation.odds_source_label}`
+            : `赔率盘：${simulation.odds_profile_label || '--'}`;
 
         container.className = 'metric-hint';
         container.innerHTML = `
             <div class="metric-hint-head">
                 <div>
                     <strong>${this.escapeHtml(simulation.profit_rule_label || '--')} · ${this.escapeHtml(simulation.metric_label || '--')} · ${this.escapeHtml(simulation.odds_profile_label || '--')}</strong>
-                    <span class="metric-hint-alias">盘日区间：${this.escapeHtml(period.start_time || '--')} 至 ${this.escapeHtml(period.end_time || '--')} 前</span>
+                    <span class="metric-hint-alias">${this.escapeHtml(periodText)}</span>
                 </div>
                 <span class="tag">${this.escapeHtml(simulation.bet_strategy_label || '--')}</span>
             </div>
             <p>${fallbackText}</p>
-            <p class="metric-hint-foot">基础注 ${this.formatUsd(simulation.bet_config?.base_stake || 0)} · ${this.escapeHtml(simulation.bet_config?.refund_action_label || '--')} · ${this.escapeHtml(simulation.bet_config?.cap_action_label || '--')} · 今日共计下注 ${summary.bet_count || 0} 期。</p>
+            <p class="metric-hint-foot">基础注 ${this.formatUsd(simulation.bet_config?.base_stake || 0)} · ${this.escapeHtml(oddsText)} · ${this.escapeHtml(simulation.bet_config?.refund_action_label || '--')} · ${this.escapeHtml(simulation.bet_config?.cap_action_label || '--')} · 当前共计下注 ${summary.bet_count || 0} 笔模拟票。</p>
         `;
     }
 
@@ -1457,7 +1472,7 @@ class PredictionApp {
             ['收益规则', simulation.profit_rule_label || '--'],
             ['当前玩法', simulation.metric_label || '--'],
             ['下注策略', simulation.bet_strategy_label || '--'],
-            ['赔率盘', simulation.odds_profile_label || '--'],
+            ['赔率口径', simulation.odds_source_label || simulation.odds_profile_label || '--'],
             ['总下注', this.formatUsd(summary.total_stake || 0)],
             ['净收益', this.formatSignedUsd(summary.net_profit || 0)],
             ['ROI', this.formatPercent(summary.roi_percentage || 0)],
@@ -1483,7 +1498,7 @@ class PredictionApp {
             this.profitChart.clear();
             this.profitChart.setOption({
                 title: {
-                    text: '当前盘日暂无收益数据',
+                    text: '当前区间暂无收益数据',
                     left: 'center',
                     top: 'middle',
                     textStyle: { color: this.darkMode ? '#94a3b8' : '#64748b', fontSize: 14 }
@@ -1527,7 +1542,7 @@ class PredictionApp {
     renderProfitTable(records) {
         const tbody = document.getElementById('profitSimulationBody');
         if (!records.length) {
-            tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前盘日暂无收益模拟记录</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前区间暂无收益模拟记录</td></tr>';
             return;
         }
 
@@ -2826,18 +2841,32 @@ class PredictionApp {
         if (lotteryType === 'jingcai_football') {
             const footballMapping = {
                 spf: {
-                    label: '胜平负',
+                    label: '胜平负单关',
                     alias: '常规盘',
                     shortRule: '三分类',
                     description: '按 90 分钟含伤停补时赛果统计主胜、平局、客胜。',
                     formula: '预测胜平负 = 实际胜平负'
                 },
                 rqspf: {
-                    label: '让球胜平负',
+                    label: '让球胜平负单关',
                     alias: '让球盘',
                     shortRule: '三分类',
                     description: '按官方让球数修正主队比分后统计胜平负。',
                     formula: '预测让球胜平负 = 实际让球胜平负'
+                },
+                spf_parlay: {
+                    label: '胜平负二串一',
+                    alias: '默认两场组合',
+                    shortRule: '两场全中',
+                    description: '先按置信度选出两场，再把两场胜平负票面组合成二串一。',
+                    formula: '两场胜平负都命中才算命中'
+                },
+                rqspf_parlay: {
+                    label: '让球胜平负二串一',
+                    alias: '默认两场组合',
+                    shortRule: '两场全中',
+                    description: '先按置信度选出两场，再把两场让球胜平负票面组合成二串一。',
+                    formula: '两场让球胜平负都命中才算命中'
                 }
             };
             return footballMapping[metricKey] || {
@@ -2904,10 +2933,16 @@ class PredictionApp {
 
     renderFootballPredictionResult(prediction) {
         const payload = prediction.prediction_payload || {};
+        const marketSnapshot = prediction.market_snapshot || {};
+        const spfText = this.buildFootballOutcomeText('spf', payload.spf, marketSnapshot);
+        const rqspfText = this.buildFootballOutcomeText('rqspf', payload.rqspf, marketSnapshot);
+        const spfOdds = this.buildFootballOddsText('spf', payload.spf, marketSnapshot);
+        const rqspfOdds = this.buildFootballOddsText('rqspf', payload.rqspf, marketSnapshot);
         return `
             <div class="result-stack">
                 <strong>${this.escapeHtml(prediction.title || prediction.issue_no || '--')}</strong>
-                <span class="result-meta-text">胜平负：${this.escapeHtml(payload.spf || '--')} · 让球胜平负：${this.escapeHtml(payload.rqspf || '--')}</span>
+                <span class="result-meta-text">胜平负：${this.escapeHtml(spfText || '--')} · 让球胜平负：${this.escapeHtml(rqspfText || '--')}</span>
+                <span class="result-meta-text">赔率快照：SPF ${this.escapeHtml(spfOdds || '--')} · RQSPF ${this.escapeHtml(rqspfOdds || '--')}</span>
             </div>
         `;
     }
