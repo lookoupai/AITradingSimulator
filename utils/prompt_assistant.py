@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import re
 
+from utils import jingcai_football as football_utils
 from utils.pc28 import TARGET_LABELS, normalize_injection_mode, normalize_primary_metric, normalize_target_list
 
 PLACEHOLDER_PATTERN = re.compile(r'\{\{\s*([a-zA-Z0-9_]+)\s*\}\}')
 
-PLACEHOLDER_DEFINITIONS = [
+PC28_PLACEHOLDER_DEFINITIONS = [
     {
         'name': 'recent_draws_summary',
         'description': '最近若干期的自然语言开奖摘要，适合摘要模式。'
@@ -80,21 +81,90 @@ PLACEHOLDER_DEFINITIONS = [
     }
 ]
 
-KNOWN_PLACEHOLDERS = {item['name'] for item in PLACEHOLDER_DEFINITIONS}
+FOOTBALL_PLACEHOLDER_DEFINITIONS = [
+    {
+        'name': 'match_batch_summary',
+        'description': '当前待预测比赛批次的自然语言摘要，适合摘要模式。'
+    },
+    {
+        'name': 'match_detail_summary',
+        'description': '每场比赛的详情摘要，含积分、交锋、近期战绩、伤停与情报。'
+    },
+    {
+        'name': 'market_odds_summary',
+        'description': '欧赔、亚盘、大小球等市场赔率摘要。'
+    },
+    {
+        'name': 'recent_results_summary',
+        'description': '近期已结束比赛结果摘要。'
+    },
+    {
+        'name': 'injury_summary',
+        'description': '待预测比赛的伤停摘要。'
+    },
+    {
+        'name': 'intelligence_summary',
+        'description': '平台整理的比赛情报摘要，适合作为补充信息。'
+    },
+    {
+        'name': 'current_time_beijing',
+        'description': '当前北京时间完整字符串。'
+    },
+    {
+        'name': 'history_window',
+        'description': '当前方案使用的历史窗口场数。'
+    },
+    {
+        'name': 'prediction_targets',
+        'description': '当前方案勾选的预测目标文本。'
+    }
+]
+
+KNOWN_PLACEHOLDERS = {item['name'] for item in [*PC28_PLACEHOLDER_DEFINITIONS, *FOOTBALL_PLACEHOLDER_DEFINITIONS]}
 
 
-def get_prompt_placeholder_catalog() -> list[dict]:
+def get_prompt_placeholder_catalog(lottery_type: str = 'all') -> list[dict]:
+    if lottery_type == 'pc28':
+        source = [('pc28', item) for item in PC28_PLACEHOLDER_DEFINITIONS]
+    elif lottery_type == 'jingcai_football':
+        source = [('jingcai_football', item) for item in FOOTBALL_PLACEHOLDER_DEFINITIONS]
+    else:
+        source = [('pc28', item) for item in PC28_PLACEHOLDER_DEFINITIONS] + [('jingcai_football', item) for item in FOOTBALL_PLACEHOLDER_DEFINITIONS]
+
     return [
         {
             'name': item['name'],
             'token': _placeholder_token(item['name']),
-            'description': item['description']
+            'description': item['description'],
+            'scope': scope
         }
-        for item in PLACEHOLDER_DEFINITIONS
+        for scope, item in source
     ]
 
 
 def analyze_prompt(
+    prompt: str,
+    prediction_targets: list[str] | None,
+    data_injection_mode: str,
+    primary_metric: str,
+    lottery_type: str = 'pc28'
+) -> dict:
+    if lottery_type == 'jingcai_football':
+        return _analyze_football_prompt(
+            prompt=prompt,
+            prediction_targets=prediction_targets,
+            data_injection_mode=data_injection_mode,
+            primary_metric=primary_metric
+        )
+    return _analyze_pc28_prompt(
+        prompt=prompt,
+        prediction_targets=prediction_targets,
+        data_injection_mode=data_injection_mode,
+        primary_metric=primary_metric
+    )
+
+
+def _analyze_pc28_prompt(
     prompt: str,
     prediction_targets: list[str] | None,
     data_injection_mode: str,
@@ -163,7 +233,79 @@ def analyze_prompt(
     }
 
 
+def _analyze_football_prompt(
+    prompt: str,
+    prediction_targets: list[str] | None,
+    data_injection_mode: str,
+    primary_metric: str
+) -> dict:
+    prompt_text = (prompt or '').strip()
+    targets = football_utils.normalize_target_list(prediction_targets)
+    injection_mode = normalize_injection_mode(data_injection_mode)
+    metric = football_utils.normalize_primary_metric(primary_metric)
+    issues = []
+
+    placeholders = _extract_placeholders(prompt_text)
+    valid_placeholders = {item['name'] for item in FOOTBALL_PLACEHOLDER_DEFINITIONS}
+    unknown_placeholders = [item for item in placeholders if item not in valid_placeholders]
+
+    if not prompt_text:
+        issues.append(_issue('error', '提示词为空', '当前还没有填写任何提示词。', '先用竞彩足球示例一键填充，再基于示例修改。'))
+
+    if len(prompt_text) > 2600:
+        issues.append(_issue('warning', '提示词偏长', f'当前提示词约 {len(prompt_text)} 个字符，过长会增加模型跑偏和耗时。', '优先删掉重复说明、冗余背景和无关赛事故事。'))
+
+    if any(keyword in prompt_text for keyword in ['PC28', '加拿大28', '和值', '大小单双', '组合投注']):
+        issues.append(_issue('error', '提示词仍带 PC28 语义', '当前提示词里仍出现 PC28/和值/大小单双等词，容易让模型走错任务。', '改为竞彩足球语义，只围绕胜平负、让球胜平负、赔率、交锋、积分和伤停分析。'))
+
+    if any(keyword in prompt_text for keyword in ['比分', '总进球', '半全场']) and not any(keyword in prompt_text for keyword in ['不要输出比分', '不预测比分']):
+        issues.append(_issue('warning', '要求了当前未支持的玩法', '当前竞彩足球首版只支持胜平负和让球胜平负，但提示词里提到了比分/总进球/半全场。', '删掉这些输出要求，或明确写成仅作辅助分析，不进入最终 JSON 字段。'))
+
+    if 'json' not in prompt_text.lower() and '结构化' not in prompt_text and '字段' not in prompt_text:
+        issues.append(_issue('warning', '缺少结构化输出约束', '提示词里没有明显要求输出 JSON 或结构化字段。', '补上“只输出 JSON”以及固定字段说明，减少解析失败。'))
+
+    if unknown_placeholders:
+        issues.append(_issue('warning', '存在未知变量', f'检测到未识别变量：{", ".join(sorted(unknown_placeholders))}', '改成竞彩足球提示词助手支持的标准变量名。'))
+
+    if 'spf' not in targets and '胜平负' in prompt_text:
+        issues.append(_issue('warning', '提示词与目标玩法不一致', '当前没有勾选胜平负，但提示词里要求输出胜平负结论。', '如果确实需要，请勾选胜平负目标。'))
+
+    if 'rqspf' not in targets and any(keyword in prompt_text for keyword in ['让球', '盘口']):
+        issues.append(_issue('warning', '提示词与目标玩法不一致', '当前没有勾选让球胜平负，但提示词里强调让球或盘口输出。', '如果确实需要，请勾选让球胜平负目标。'))
+
+    if not placeholders:
+        issues.append(_issue('info', '未使用变量占位符', '当前提示词完全依赖平台默认注入数据。', '这不是错误；如果你想精确控制输入结构，可手动加入竞彩足球变量占位符。'))
+
+    recommendations = _build_football_variable_recommendations(prompt_text, placeholders, injection_mode)
+    risk_level = _risk_level(issues)
+    summary = _build_summary(risk_level, issues, targets, injection_mode, metric)
+
+    return {
+        'risk_level': risk_level,
+        'summary': summary,
+        'issues': issues,
+        'detected_placeholders': placeholders,
+        'unknown_placeholders': unknown_placeholders,
+        'recommended_variables': recommendations['variables'],
+        'recommended_snippets': recommendations['snippets'],
+        'prediction_targets': targets,
+        'data_injection_mode': injection_mode,
+        'primary_metric': metric
+    }
+
+
 def build_optimizer_prompt(
+    current_prompt: str,
+    analysis: dict,
+    predictor_payload: dict,
+    lottery_type: str = 'pc28'
+) -> str:
+    if lottery_type == 'jingcai_football':
+        return _build_football_optimizer_prompt(current_prompt, analysis, predictor_payload)
+    return _build_pc28_optimizer_prompt(current_prompt, analysis, predictor_payload)
+
+
+def _build_pc28_optimizer_prompt(
     current_prompt: str,
     analysis: dict,
     predictor_payload: dict
@@ -173,7 +315,7 @@ def build_optimizer_prompt(
         for item in analysis.get('issues', [])
     ) or '- 暂未发现明显问题'
 
-    placeholders_text = ', '.join(item['token'] for item in get_prompt_placeholder_catalog())
+    placeholders_text = ', '.join(item['token'] for item in get_prompt_placeholder_catalog('pc28'))
     targets_text = ', '.join(TARGET_LABELS.get(item, item) for item in analysis.get('prediction_targets', []))
 
     return f"""你是 PC28 提示词优化助手。你的任务是帮助新手把提示词改得更稳定、更容易命中目标玩法。
@@ -209,7 +351,59 @@ def build_optimizer_prompt(
 5. 只输出 JSON。"""
 
 
-def build_external_prompt_template(predictor_payload: dict) -> str:
+def _build_football_optimizer_prompt(
+    current_prompt: str,
+    analysis: dict,
+    predictor_payload: dict
+) -> str:
+    issues_text = '\n'.join(
+        f"- [{item['level']}] {item['title']}：{item['detail']}"
+        for item in analysis.get('issues', [])
+    ) or '- 暂未发现明显问题'
+
+    placeholders_text = ', '.join(item['token'] for item in get_prompt_placeholder_catalog('jingcai_football'))
+    targets_text = ', '.join(football_utils.TARGET_LABELS.get(item, item) for item in analysis.get('prediction_targets', []))
+
+    return f"""你是竞彩足球提示词优化助手。你的任务是帮助用户把竞彩足球提示词改得更稳定、更贴近胜平负与让球胜平负预测。
+
+当前方案配置：
+- 目标玩法：{targets_text or '未设置'}
+- 数据注入模式：{analysis.get('data_injection_mode')}
+- 主玩法统计口径：{analysis.get('primary_metric')}
+- 历史窗口：最近 {predictor_payload.get('history_window')} 场已结束比赛
+
+可用变量：
+{placeholders_text}
+
+静态检查发现的问题：
+{issues_text}
+
+当前提示词：
+{current_prompt or '（空）'}
+
+请输出 JSON，字段如下：
+{{
+  "summary": "一句话总结当前提示词的主要问题",
+  "issues": ["问题1", "问题2"],
+  "why": ["为什么这样改1", "为什么这样改2"],
+  "optimized_prompt": "给出一版可直接替换的新提示词"
+}}
+
+要求：
+1. 新提示词必须兼容竞彩足球当前目标玩法。
+2. 重点围绕赔率、让球、积分、交锋、近期战绩、伤停和情报，不要跑去预测比分/总进球/半全场。
+3. 不要写死具体场次、概率或赛果示例。
+4. 如果适合，主动使用竞彩足球变量占位符。
+5. 只输出 JSON。"""
+
+
+def build_external_prompt_template(predictor_payload: dict, lottery_type: str = 'pc28') -> str:
+    if lottery_type == 'jingcai_football':
+        return _build_football_external_prompt_template(predictor_payload)
+    return _build_pc28_external_prompt_template(predictor_payload)
+
+
+def _build_pc28_external_prompt_template(predictor_payload: dict) -> str:
     targets = normalize_target_list(predictor_payload.get('prediction_targets'))
     target_labels = ', '.join(TARGET_LABELS.get(item, item) for item in targets) or '未设置'
     injection_mode = normalize_injection_mode(predictor_payload.get('data_injection_mode'))
@@ -220,7 +414,7 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
     history_window = predictor_payload.get('history_window') or '未设置'
     placeholders_text = '\n'.join(
         f"- {item['token']}：{item['description']}"
-        for item in get_prompt_placeholder_catalog()
+        for item in get_prompt_placeholder_catalog('pc28')
     )
 
     recommendation_lines = [
@@ -342,6 +536,67 @@ def build_external_prompt_template(predictor_payload: dict) -> str:
 【这里可以只写一句大白话，例如：偏保守一点；重点看单双；理由短一点；多参考遗漏；别太激进】"""
 
 
+def _build_football_external_prompt_template(predictor_payload: dict) -> str:
+    targets = football_utils.normalize_target_list(predictor_payload.get('prediction_targets'))
+    target_labels = '、'.join(football_utils.TARGET_LABELS.get(item, item) for item in targets) or '未设置'
+    metric = football_utils.normalize_primary_metric(predictor_payload.get('primary_metric'))
+    metric_label = football_utils.TARGET_LABELS.get(metric, metric)
+    prediction_method = predictor_payload.get('prediction_method') or '自定义策略'
+    current_prompt = (predictor_payload.get('system_prompt') or '').strip()
+    history_window = predictor_payload.get('history_window') or '未设置'
+    injection_mode = normalize_injection_mode(predictor_payload.get('data_injection_mode'))
+    placeholders_text = '\n'.join(
+        f"- {item['token']}：{item['description']}"
+        for item in get_prompt_placeholder_catalog('jingcai_football')
+    )
+    preferred_input = '{{match_detail_summary}}' if injection_mode == 'summary' else '{{match_batch_summary}}'
+
+    return f"""你是一个资深提示词工程师。请帮我为“AITradingSimulator”的竞彩足球预测项目编写一版可直接使用的“自定义提示词”。
+
+重要背景：
+- 你写出的内容不是完整系统提示词，而是项目里“自定义提示词”输入框的内容。
+- 平台外层已经会补充固定规则、方案信息，并要求模型最终输出 JSON。
+- 你的任务重点是：帮我写好分析方法、变量使用方式、推理步骤、风险控制和输出约束细节。
+
+当前方案配置：
+- 方案名称：{predictor_payload.get('name') or '未命名方案'}
+- 预测方法：{prediction_method}
+- 预测目标：{target_labels}
+- 主玩法：{metric_label}
+- 数据注入模式：{'原始模式' if injection_mode == 'raw' else '摘要模式'}
+- 历史窗口：当前配置为最近 {history_window} 场已结束比赛；如果你在最终提示词里引用历史窗口，请优先使用 {{{{history_window}}}}
+
+这个项目允许在提示词中使用以下变量，占位格式必须原样保留，只能使用这些变量，不要发明新变量：
+{placeholders_text}
+
+结合当前配置，优先注意：
+- 当前主要输入建议围绕 {preferred_input}、{{market_odds_summary}}、{{recent_results_summary}} 组织。
+- 如果你使用情报文本，请把它当成补充信息，不要压过赔率、积分、交锋、近期战绩和伤停这些结构化信号。
+- 当前首版只支持胜平负和让球胜平负，不要要求输出比分、总进球、半全场。
+- 如果信号冲突，优先选择更稳健的一侧，并适当降低 confidence。
+
+编写要求：
+1. 最终提示词必须服务于竞彩足球批量预测，不要写成 PC28 或通用聊天助手。
+2. 必须兼容当前预测目标；不要要求输出未勾选的玩法。
+3. 只允许使用上面列出的变量名；不需要时可以不用，但不要自造变量。
+4. 不要写死具体比赛、赛果、概率或置信度示例。
+5. 提示词尽量简洁、稳定、可执行，避免空泛套话和重复要求。
+6. 如果适合，明确告诉模型先看什么、再看什么、如何权衡冲突信号。
+7. 请在最终提示词正文里主动写明：只输出 JSON，不要 Markdown，不要额外解释，不确定的字段输出 null。
+8. 请在最终提示词正文里主动限定 JSON 字段为：batch_key、predictions；prediction 项字段为：event_key、match_no、predicted_spf、predicted_rqspf、confidence、reasoning_summary。
+9. 默认把我的个性化需求理解为“口语化偏好”，哪怕我只写一句大白话，也要帮我翻译成专业、完整、可执行的提示词要求。
+
+请按以下方式回复：
+- 第一段：仅输出可直接粘贴到项目里的最终提示词正文；不要标题、不要编号、不要代码块，也不要额外开场。
+- 空一行后，第二段：用 2-4 句简短说明你用了哪些变量、为什么这样安排。
+
+我当前已有提示词：
+{current_prompt or '（暂无）'}
+
+我接下来会在下面补充自己的需求，请基于项目规则和这些需求生成最终提示词：
+【这里可以只写一句大白话，例如：偏保守一点；更重视赔率变化；让球盘优先；理由短一点；不要太激进】"""
+
+
 def _extract_placeholders(prompt: str) -> list[str]:
     if not prompt:
         return []
@@ -438,6 +693,50 @@ def _build_variable_recommendations(prompt: str, placeholders: list[str], inject
 
     if any(keyword in prompt for keyword in ['走势', '预览', '趋势']):
         add('preview_summary', '你提到了走势或趋势，建议补充聚合走势摘要。', '走势预览：\n{{preview_summary}}')
+
+    if 'history_window' not in placeholders:
+        add('history_window', '如果你想让提示词和方案历史窗口保持一致，可以直接使用历史窗口变量。')
+
+    return {
+        'variables': recommendations,
+        'snippets': snippets
+    }
+
+
+def _build_football_variable_recommendations(prompt: str, placeholders: list[str], injection_mode: str) -> dict:
+    recommendations = []
+    snippets = []
+
+    def add(variable: str, reason: str, snippet: str = ''):
+        if any(item['name'] == variable for item in recommendations):
+            return
+        recommendations.append({
+            'name': variable,
+            'reason': reason
+        })
+        if snippet:
+            snippets.append({
+                'variable': variable,
+                'snippet': snippet
+            })
+
+    if any(keyword in prompt for keyword in ['比赛列表', '待售比赛', '批次', '场次']):
+        add('match_batch_summary', '你提到了待预测比赛列表，建议显式引用批次摘要。', '待预测比赛：\n{{match_batch_summary}}')
+
+    if any(keyword in prompt for keyword in ['赔率', '盘口', '欧赔', '亚盘', '大小球']):
+        add('market_odds_summary', '你提到了赔率或盘口，建议显式注入市场赔率摘要。', '市场赔率摘要：\n{{market_odds_summary}}')
+
+    if any(keyword in prompt for keyword in ['交锋', '积分', '排名', '伤停', '情报', '基本面']):
+        add('match_detail_summary', '你提到了比赛详情、积分、交锋、伤停或基本面，建议显式引用比赛详情摘要。', '比赛详情摘要：\n{{match_detail_summary}}')
+
+    if any(keyword in prompt for keyword in ['近期战绩', '近况', '历史赛果', '最近比赛', '近期结果']):
+        add('recent_results_summary', '你提到了近期战绩或历史赛果，建议显式引用最近已结束比赛摘要。', '近期赛果：\n{{recent_results_summary}}')
+
+    if any(keyword in prompt for keyword in ['伤停', '停赛']):
+        add('injury_summary', '你提到了伤停或停赛，建议显式注入伤停摘要。', '伤停摘要：\n{{injury_summary}}')
+
+    if any(keyword in prompt for keyword in ['情报', '资讯', '分析文章']):
+        add('intelligence_summary', '你提到了情报类文本，建议显式引用情报摘要，但只作为补充。', '情报摘要：\n{{intelligence_summary}}')
 
     if 'history_window' not in placeholders:
         add('history_window', '如果你想让提示词和方案历史窗口保持一致，可以直接使用历史窗口变量。')

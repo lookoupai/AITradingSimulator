@@ -71,6 +71,37 @@ const PREDICTOR_PRESETS = [
     }
 ];
 
+const FOOTBALL_PREDICTOR_PRESETS = [
+    {
+        id: 'football-conservative',
+        title: '保守赔率型',
+        description: '优先参考欧赔、让球、积分与近期战绩，适合先跑稳定版。',
+        method: '赔率 + 基本面',
+        injectionMode: 'summary',
+        historyWindow: 30,
+        temperature: 0.3,
+        apiMode: 'auto',
+        primaryMetric: 'spf',
+        targets: ['spf', 'rqspf'],
+        tags: ['竞彩足球', '稳健', '30场'],
+        prompt: `角色：\n你是一个中国竞彩足球预测助手。\n\n目标：\n基于待售比赛列表、市场赔率、积分排名、历史交锋、近期战绩与伤停信息，给出稳健的胜平负与让球胜平负判断。\n\n要求：\n1. 优先相信结构化信息，不要让平台情报文本压过赔率与排名。\n2. 如果信号冲突，优先选择更稳健的一侧，并适当降低 confidence。\n3. reasoning_summary 要简短，不要空泛。\n4. 只输出 JSON。`
+    },
+    {
+        id: 'football-market',
+        title: '盘口变化型',
+        description: '更重视欧赔、亚盘和大小球的初赔/即赔变化，适合关注市场预期变化。',
+        method: '盘口变化',
+        injectionMode: 'raw',
+        historyWindow: 30,
+        temperature: 0.35,
+        apiMode: 'chat_completions',
+        primaryMetric: 'rqspf',
+        targets: ['spf', 'rqspf'],
+        tags: ['竞彩足球', '盘口', '原始模式'],
+        prompt: `角色：\n你是一个擅长赔率与盘口变化分析的竞彩足球预测助手。\n\n任务：\n1. 重点分析欧赔、亚盘、大小球的初赔到即赔变化。\n2. 结合让球盘口方向、积分差距、近期战绩，判断当前市场是否过热或低估。\n3. 输出胜平负和让球胜平负预测；如果某个目标把握不足，可以输出 null。\n4. 只输出 JSON。`
+    }
+];
+
 const DEFAULT_PROFIT_BET_MODE = 'flat';
 const DEFAULT_PROFIT_BASE_STAKE = 10;
 const DEFAULT_PROFIT_MULTIPLIER = 2;
@@ -81,6 +112,9 @@ const LOTTERY_UI_CONFIG = {
         supportsProfitSimulation: true,
         supportsPromptAssistant: true,
         supportsPresets: true,
+        defaultHistoryWindow: 60,
+        historyWindowLabel: '历史窗口',
+        historyWindowHint: 'PC28 按最近 N 期历史开奖构造上下文。',
         targetOptions: [
             { key: 'number', label: '单点（固定开启）', fixed: true },
             { key: 'big_small', label: '大/小' },
@@ -101,8 +135,11 @@ const LOTTERY_UI_CONFIG = {
     jingcai_football: {
         label: '竞彩足球',
         supportsProfitSimulation: false,
-        supportsPromptAssistant: false,
-        supportsPresets: false,
+        supportsPromptAssistant: true,
+        supportsPresets: true,
+        defaultHistoryWindow: 30,
+        historyWindowLabel: '历史窗口（场）',
+        historyWindowHint: '竞彩足球按最近 N 场已结束比赛构造上下文，默认建议 30 场。',
         targetOptions: [
             { key: 'spf', label: '胜平负' },
             { key: 'rqspf', label: '让球胜平负' }
@@ -310,6 +347,8 @@ class PredictionApp {
         });
 
         document.getElementById('targetHint').textContent = config.targetHint;
+        document.getElementById('historyWindowLabel').textContent = config.historyWindowLabel || '历史窗口';
+        document.getElementById('historyWindowHint').textContent = config.historyWindowHint || '';
         this.renderPrimaryMetricOptions(currentType, selectedPrimaryMetric);
 
         const showProfit = config.supportsProfitSimulation;
@@ -325,8 +364,10 @@ class PredictionApp {
 
         if (!showPromptAssistant) {
             this.hidePromptAssistantResult();
-            this.clearExternalPromptTemplate();
         }
+        this.clearExternalPromptTemplate();
+        this.updatePromptVariableVisibility(currentType);
+        this.updatePromptTemplateExample(currentType);
 
         if (!config.supportsPresets) {
             document.getElementById('presetCards').innerHTML = '<div class="empty-panel">当前彩种暂未提供内置方案示例</div>';
@@ -335,7 +376,57 @@ class PredictionApp {
             this.renderPresetCards();
         }
 
+        if (!options.selectedHistoryWindow) {
+            document.getElementById('historyWindow').value = String(config.defaultHistoryWindow || 60);
+        }
         this.syncProfitMetricOptions();
+    }
+
+    updatePromptVariableVisibility(lotteryType) {
+        document.querySelectorAll('#promptVariablesBlock .code-tag').forEach((element) => {
+            const scope = element.dataset.scope || 'common';
+            element.style.display = (scope === 'common' || scope === lotteryType) ? 'inline-flex' : 'none';
+        });
+    }
+
+    updatePromptTemplateExample(lotteryType) {
+        const example = document.getElementById('promptTemplateExample');
+        if (!example) {
+            return;
+        }
+
+        if (lotteryType === 'jingcai_football') {
+            example.textContent = `角色：你是一个中国竞彩足球预测助手。
+
+待预测比赛：
+{{match_batch_summary}}
+
+市场赔率摘要：
+{{market_odds_summary}}
+
+比赛详情摘要：
+{{match_detail_summary}}
+
+近期赛果：
+{{recent_results_summary}}
+
+请结合赔率、让球、积分排名、历史交锋、近期战绩和伤停信息，输出每场比赛的胜平负与让球胜平负预测，只输出 JSON。`;
+            return;
+        }
+
+        example.textContent = `角色：你是一个 PC28 预测引擎。
+
+输入：
+最近 {{history_window}} 期 PC28 数据：
+{{recent_draws_csv}}
+
+当前北京时间：
+{{current_time_beijing}}
+
+下一期期号：
+{{next_issue_no}}
+
+请结合统计模型 + 小六壬输出下一期的和值、大小单双、风险和策略，只输出 JSON。`;
     }
 
     renderPrimaryMetricOptions(lotteryType, selectedValue = null) {
@@ -1849,7 +1940,6 @@ class PredictionApp {
         document.getElementById('modelName').value = data.model_name || '';
         document.getElementById('apiMode').value = data.api_mode || 'auto';
         document.getElementById('apiKey').value = '';
-        document.getElementById('historyWindow').value = data.history_window || 60;
         document.getElementById('temperature').value = data.temperature ?? 0.7;
         document.getElementById('dataInjectionMode').value = data.data_injection_mode || 'summary';
         document.getElementById('profitRuleId').value = data.profit_rule_id || 'pc28_netdisk';
@@ -1859,8 +1949,10 @@ class PredictionApp {
         document.getElementById('shareLevel').value = data.share_level || (data.share_predictions ? 'records' : 'stats_only');
         this.updateLotteryForm({
             selectedTargets: data.prediction_targets || [],
-            selectedPrimaryMetric: data.primary_metric || null
+            selectedPrimaryMetric: data.primary_metric || null,
+            selectedHistoryWindow: data.history_window || 60
         });
+        document.getElementById('historyWindow').value = data.history_window || 60;
         this.clearExternalPromptTemplate();
         this.presetExpanded = false;
         this.renderPresetCards();
@@ -1896,7 +1988,8 @@ class PredictionApp {
         document.getElementById('shareLevel').value = 'stats_only';
         this.updateLotteryForm({
             selectedTargets: ['number', 'big_small', 'odd_even', 'combo'],
-            selectedPrimaryMetric: 'big_small'
+            selectedPrimaryMetric: 'big_small',
+            selectedHistoryWindow: 60
         });
         this.hideTestResult();
         this.hidePromptAssistantResult();
@@ -1907,13 +2000,9 @@ class PredictionApp {
         const container = document.getElementById('presetCards');
         const toggleButton = document.getElementById('togglePresetListBtn');
         const visibleCount = 3;
-        if (this.currentLotteryType !== 'pc28') {
-            container.innerHTML = '<div class="empty-panel">当前彩种暂未提供内置方案示例</div>';
-            toggleButton.style.display = 'none';
-            return;
-        }
+        const presets = this.currentLotteryType === 'jingcai_football' ? FOOTBALL_PREDICTOR_PRESETS : PREDICTOR_PRESETS;
 
-        container.innerHTML = PREDICTOR_PRESETS.map((preset, index) => `
+        container.innerHTML = presets.map((preset, index) => `
             <article class="preset-card ${index >= visibleCount && !this.presetExpanded ? 'hidden' : ''}" data-preset-id="${preset.id}">
                 <div class="preset-card-head">
                     <div>
@@ -1923,7 +2012,7 @@ class PredictionApp {
                 </div>
                 <div class="preset-meta">
                     ${preset.tags.map((tag) => `<span class="tag">${this.escapeHtml(tag)}</span>`).join('')}
-                    <span class="tag">历史 ${preset.historyWindow} 期</span>
+                    <span class="tag">${this.currentLotteryType === 'jingcai_football' ? `历史 ${preset.historyWindow} 场` : `历史 ${preset.historyWindow} 期`}</span>
                     <span class="tag">${preset.injectionMode === 'raw' ? '原始模式' : '摘要模式'}</span>
                     <span class="tag">${preset.apiMode === 'responses' ? 'Responses' : preset.apiMode === 'chat_completions' ? 'Chat Completions' : '自动模式'}</span>
                 </div>
@@ -1937,7 +2026,7 @@ class PredictionApp {
             button.addEventListener('click', () => this.applyPreset(button.dataset.applyPreset));
         });
 
-        if (PREDICTOR_PRESETS.length <= visibleCount) {
+        if (presets.length <= visibleCount) {
             toggleButton.style.display = 'none';
             return;
         }
@@ -1952,10 +2041,8 @@ class PredictionApp {
     }
 
     applyPreset(presetId) {
-        if (this.currentLotteryType !== 'pc28') {
-            return;
-        }
-        const preset = PREDICTOR_PRESETS.find((item) => item.id === presetId);
+        const presetSource = this.currentLotteryType === 'jingcai_football' ? FOOTBALL_PREDICTOR_PRESETS : PREDICTOR_PRESETS;
+        const preset = presetSource.find((item) => item.id === presetId);
         if (!preset) {
             return;
         }
@@ -1972,9 +2059,13 @@ class PredictionApp {
         document.getElementById('profitDefaultMetric').value = preset.profitDefaultMetric || (['big_small', 'odd_even', 'combo', 'number'].includes(preset.primaryMetric) ? preset.primaryMetric : 'combo');
         document.getElementById('systemPrompt').value = preset.prompt;
         this.updateLotteryForm({
-            selectedTargets: ['number', ...preset.targets.filter((item) => item !== 'number')],
-            selectedPrimaryMetric: preset.primaryMetric || 'combo'
+            selectedTargets: this.currentLotteryType === 'pc28'
+                ? ['number', ...preset.targets.filter((item) => item !== 'number')]
+                : preset.targets,
+            selectedPrimaryMetric: preset.primaryMetric || 'combo',
+            selectedHistoryWindow: preset.historyWindow
         });
+        document.getElementById('historyWindow').value = String(preset.historyWindow);
         this.clearExternalPromptTemplate();
     }
 

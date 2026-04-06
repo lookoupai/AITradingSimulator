@@ -852,7 +852,7 @@ def public_predictor_page(predictor_id: int):
 def dashboard():
     if not get_current_user_id():
         return redirect('/login')
-    return render_template('dashboard.html', prompt_placeholders=get_prompt_placeholder_catalog())
+    return render_template('dashboard.html', prompt_placeholders=get_prompt_placeholder_catalog('all'))
 
 
 @app.route('/admin')
@@ -1375,7 +1375,8 @@ def check_predictor_prompt():
         prompt=resolved['system_prompt'],
         prediction_targets=resolved['prediction_targets'],
         data_injection_mode=resolved['data_injection_mode'],
-        primary_metric=resolved['primary_metric']
+        primary_metric=resolved['primary_metric'],
+        lottery_type=resolved['lottery_type']
     )
     return jsonify(analysis)
 
@@ -1405,13 +1406,15 @@ def optimize_predictor_prompt():
         prompt=resolved['system_prompt'],
         prediction_targets=resolved['prediction_targets'],
         data_injection_mode=resolved['data_injection_mode'],
-        primary_metric=resolved['primary_metric']
+        primary_metric=resolved['primary_metric'],
+        lottery_type=resolved['lottery_type']
     )
 
     optimizer_prompt = build_optimizer_prompt(
         current_prompt=resolved['system_prompt'],
         analysis=analysis,
-        predictor_payload=resolved
+        predictor_payload=resolved,
+        lottery_type=resolved['lottery_type']
     )
     optimizer = AIPredictor(
         api_key=resolved['api_key'],
@@ -1452,13 +1455,8 @@ def build_predictor_prompt_template():
     except PermissionError as exc:
         return jsonify({'error': str(exc)}), 403
 
-    if normalize_lottery_type(resolved['lottery_type']) == 'jingcai_football':
-        return jsonify({
-            'prompt_template': _build_jingcai_external_prompt_template(resolved)
-        })
-
     return jsonify({
-        'prompt_template': build_external_prompt_template(resolved)
+        'prompt_template': build_external_prompt_template(resolved, lottery_type=resolved['lottery_type'])
     })
 
 

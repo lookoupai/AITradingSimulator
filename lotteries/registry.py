@@ -77,7 +77,7 @@ LOTTERY_DEFINITIONS = {
         ),
         supports_profit_simulation=False,
         supports_public_pages=True,
-        supports_prompt_assistant=False,
+        supports_prompt_assistant=True,
         overview_mode='jingcai_football'
     )
 }

@@ -342,8 +342,9 @@
                     <input type="password" id="apiKey" placeholder="编辑时留空表示保持原值">
                 </label>
                 <label class="form-field">
-                    <span>历史窗口</span>
+                    <span id="historyWindowLabel">历史窗口</span>
                     <input type="number" id="historyWindow" min="10" max="200" value="60">
+                    <small class="field-hint" id="historyWindowHint">PC28 按最近 N 期历史开奖构造上下文。</small>
                 </label>
                 <label class="form-field">
                     <span>温度</span>
@@ -425,7 +426,7 @@
                 <small class="field-hint">如果你想去 ChatGPT、Claude、Gemini 等网页让它们帮你写提示词，可以先生成下方“网页 AI 帮写模板”，其中会自动带上这些变量说明和当前方案配置。</small>
                 <div class="variable-grid">
                     {% for item in prompt_placeholders %}
-                    <span class="tag code-tag" title="{{ item.description }}">{{ '{{' }}{{ item.name }}{{ '}}' }}</span>
+                    <span class="tag code-tag" data-scope="{{ item.scope or 'common' }}" title="{{ item.description }}">{{ '{{' }}{{ item.name }}{{ '}}' }}</span>
                     {% endfor %}
                 </div>
                 <div class="help-panel">
