@@ -1559,7 +1559,7 @@ class PredictionApp {
 
     renderDrawsTable(draws) {
         const tbody = document.getElementById('drawsBody');
-        const headerRow = document.getElementById('drawsHeadRow');
+        const headerRow = document.getElementById('drawTableHeadRow');
         if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
             headerRow.innerHTML = `
                 <th>场次</th>
