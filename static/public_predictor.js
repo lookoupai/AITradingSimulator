@@ -1034,11 +1034,13 @@ class PublicPredictorPage {
         const rqspfText = this.buildFootballOutcomeText('rqspf', payload.rqspf, marketSnapshot);
         const spfOdds = this.buildFootballOddsText('spf', payload.spf, marketSnapshot);
         const rqspfOdds = this.buildFootballOddsText('rqspf', payload.rqspf, marketSnapshot);
+        const snapshotSummary = this.buildFootballSnapshotSummary(marketSnapshot);
         return `
             <div class="result-stack">
                 <strong>${this.escapeHtml(item.title || item.issue_no || '--')}</strong>
                 <span class="result-meta-text">胜平负：${this.escapeHtml(spfText || '--')} · 让球胜平负：${this.escapeHtml(rqspfText || '--')}</span>
                 <span class="result-meta-text">赔率快照：SPF ${this.escapeHtml(spfOdds || '--')} · RQSPF ${this.escapeHtml(rqspfOdds || '--')}</span>
+                ${snapshotSummary ? `<span class="result-meta-text">${this.escapeHtml(snapshotSummary)}</span>` : ''}
             </div>
         `;
     }
@@ -1098,6 +1100,26 @@ class PublicPredictorPage {
             return '';
         }
         return `${Number(rawValue).toFixed(2)} 倍`;
+    }
+
+    buildFootballSnapshotSummary(marketSnapshot = {}) {
+        const snapshots = marketSnapshot.odds_snapshots || {};
+        const euro = snapshots.euro || {};
+        const initial = euro.initial || {};
+        const current = euro.current || {};
+        const hasEuro = initial.win !== undefined || current.win !== undefined;
+        if (!hasEuro) {
+            return '';
+        }
+        return `欧赔 ${this.formatFootballSnapshotTriplet(initial)} -> ${this.formatFootballSnapshotTriplet(current)}`;
+    }
+
+    formatFootballSnapshotTriplet(payload = {}) {
+        const values = ['win', 'draw', 'lose'].map((key) => {
+            const value = payload[key];
+            return value === null || value === undefined || value === '' ? '--' : Number(value).toFixed(2);
+        });
+        return values.join('/');
     }
 }
 

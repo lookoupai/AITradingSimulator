@@ -1101,11 +1101,12 @@ class PredictionApp {
                 const rqspfOdds = this.buildFootballOddsText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
                 const spfHint = this.buildFootballAvailabilityHint('spf', marketSnapshot);
                 const rqspfHint = this.buildFootballAvailabilityHint('rqspf', marketSnapshot);
+                const snapshotSummary = this.buildFootballSnapshotSummary(marketSnapshot);
                 return `
                     <tr>
                         <td>${this.escapeHtml(item.issue_no || '--')}</td>
                         <td>${this.escapeHtml(item.title || '--')}</td>
-                        <td>${this.escapeHtml(spfOutcome || '--')}${spfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(spfOdds)}</span>` : ''}${spfHint ? `<br><span class="hint-text">${this.escapeHtml(spfHint)}</span>` : ''}</td>
+                        <td>${this.escapeHtml(spfOutcome || '--')}${spfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(spfOdds)}</span>` : ''}${spfHint ? `<br><span class="hint-text">${this.escapeHtml(spfHint)}</span>` : ''}${snapshotSummary ? `<br><span class="hint-text">${this.escapeHtml(snapshotSummary)}</span>` : ''}</td>
                         <td>${this.escapeHtml(rqspfOutcome || '--')}${rqspfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(rqspfOdds)}</span>` : ''}${rqspfHint ? `<br><span class="hint-text">${this.escapeHtml(rqspfHint)}</span>` : ''}</td>
                         <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
                     </tr>
@@ -1120,10 +1121,11 @@ class PredictionApp {
                 const rqspfOdds = this.buildFootballOddsText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
                 const spfHint = this.buildFootballAvailabilityHint('spf', marketSnapshot);
                 const rqspfHint = this.buildFootballAvailabilityHint('rqspf', marketSnapshot);
+                const snapshotSummary = this.buildFootballSnapshotSummary(marketSnapshot);
                 return this.renderCurrentPredictionCard(
                     `候选场次 ${index + 1}`,
                     `${item.issue_no || '--'} · ${item.title || '--'}`,
-                    `SPF ${spfOutcome || '--'}${spfOdds ? ` @ ${spfOdds}` : ''}${spfHint ? ` · ${spfHint}` : ''} · RQSPF ${rqspfOutcome || '--'}${rqspfOdds ? ` @ ${rqspfOdds}` : ''}${rqspfHint ? ` · ${rqspfHint}` : ''} · 置信度 ${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}`
+                    `SPF ${spfOutcome || '--'}${spfOdds ? ` @ ${spfOdds}` : ''}${spfHint ? ` · ${spfHint}` : ''} · RQSPF ${rqspfOutcome || '--'}${rqspfOdds ? ` @ ${rqspfOdds}` : ''}${rqspfHint ? ` · ${rqspfHint}` : ''} · 置信度 ${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}${snapshotSummary ? ` · ${snapshotSummary}` : ''}`
                 );
             }).join('');
 
@@ -1225,6 +1227,7 @@ class PredictionApp {
                 ${this.renderCurrentPredictionCard('场次', prediction.issue_no || '--')}
                 ${this.renderCurrentPredictionCard('胜平负', this.buildFootballOutcomeText('spf', predictionPayload.spf, prediction.market_snapshot || {}), this.buildFootballOddsText('spf', predictionPayload.spf, prediction.market_snapshot || {}) ? `赔率 ${this.buildFootballOddsText('spf', predictionPayload.spf, prediction.market_snapshot || {})}` : '')}
                 ${this.renderCurrentPredictionCard('让球胜平负', this.buildFootballOutcomeText('rqspf', predictionPayload.rqspf, prediction.market_snapshot || {}), this.buildFootballOddsText('rqspf', predictionPayload.rqspf, prediction.market_snapshot || {}) ? `赔率 ${this.buildFootballOddsText('rqspf', predictionPayload.rqspf, prediction.market_snapshot || {})}` : '')}
+                ${this.renderCurrentPredictionCard('赔率快照', this.buildFootballSnapshotSummary(prediction.market_snapshot || {}) || '--')}
                 ${this.renderCurrentPredictionCard('置信度', this.formatPercent(prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null))}
                 ${this.renderCurrentPredictionCard('赛果', actualPayload.score_text ? `${actualPayload.score_text} (${actualPayload.spf || '--'})` : '--')}
                 ${this.renderCurrentPredictionCard('命中', attemptedCount ? `${hitCount}/${attemptedCount}` : '--')}
@@ -1277,6 +1280,26 @@ class PredictionApp {
             ? marketSnapshot.rqspf_availability_label
             : marketSnapshot.spf_availability_label;
         return sellable ? '' : (label || '停售或无赔率快照');
+    }
+
+    buildFootballSnapshotSummary(marketSnapshot = {}) {
+        const snapshots = marketSnapshot.odds_snapshots || {};
+        const euro = snapshots.euro || {};
+        const initial = euro.initial || {};
+        const current = euro.current || {};
+        const hasEuro = initial.win !== undefined || current.win !== undefined;
+        if (!hasEuro) {
+            return '';
+        }
+        return `欧赔 ${this.formatFootballSnapshotTriplet(initial)} -> ${this.formatFootballSnapshotTriplet(current)}`;
+    }
+
+    formatFootballSnapshotTriplet(payload = {}) {
+        const values = ['win', 'draw', 'lose'].map((key) => {
+            const value = payload[key];
+            return value === null || value === undefined || value === '' ? '--' : Number(value).toFixed(2);
+        });
+        return values.join('/');
     }
 
     renderPublicSharePanel(predictor) {

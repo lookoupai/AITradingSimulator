@@ -1229,10 +1229,16 @@ class JingcaiFootballService:
             self.lottery_type,
             [item.get('event_key') for item in items if item.get('event_key')]
         )
+        detail_map = {
+            event_key: db.get_lottery_event_details(self.lottery_type, event_key, source_provider='sina')
+            for event_key in {item.get('event_key') for item in items if item.get('event_key')}
+        }
         decorated = []
         for item in items:
             event = event_map.get(item.get('event_key')) or {}
             meta_payload = event.get('meta_payload') or {}
+            detail_payload = detail_map.get(item.get('event_key')) or {}
+            odds_snapshots = ((detail_payload.get('odds_snapshots') or {}).get('payload') or {})
             decorated.append({
                 **item,
                 'market_snapshot': {
@@ -1241,6 +1247,7 @@ class JingcaiFootballService:
                     'status_label': event.get('status_label') or '',
                     'spf_odds': meta_payload.get('spf_odds') or {},
                     'rqspf': meta_payload.get('rqspf') or {},
+                    'odds_snapshots': odds_snapshots,
                     'spf_sell_status': meta_payload.get('spf_sell_status') or '',
                     'rqspf_sell_status': meta_payload.get('rqspf_sell_status') or '',
                     'spf_single_sellable': self._is_metric_on_sale('spf', meta_payload, play_mode='single'),

@@ -149,6 +149,74 @@ class JingcaiRouteTests(unittest.TestCase):
             self.assertIn('让球胜平负单关', labels)
             self.assertIn('让球胜平负二串一', labels)
 
+    def test_dashboard_current_prediction_exposes_odds_snapshots_in_market_snapshot(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'jingcai_football')
+
+            self._seed_event(
+                harness,
+                event_key='event-4',
+                batch_key='2026-04-06',
+                issue_no='周一004',
+                settled=False
+            )
+            harness.db.upsert_lottery_event_details([
+                {
+                    'lottery_type': 'jingcai_football',
+                    'event_key': 'event-4',
+                    'detail_type': 'odds_snapshots',
+                    'source_provider': 'sina',
+                    'payload': {
+                        'euro': {
+                            'company': '竞彩官方',
+                            'initial': {'win': 1.8, 'draw': 3.3, 'lose': 4.2},
+                            'current': {'win': 1.7, 'draw': 3.4, 'lose': 4.5},
+                            'updated_at': '2026-04-06 17:55:00'
+                        }
+                    }
+                }
+            ])
+
+            run_id = harness.db.upsert_prediction_run({
+                'predictor_id': predictor_id,
+                'lottery_type': 'jingcai_football',
+                'run_key': '2026-04-06',
+                'requested_targets': ['spf', 'rqspf'],
+                'status': 'pending',
+                'total_items': 1,
+                'settled_items': 0,
+                'hit_items': 0
+            })
+            harness.db.upsert_prediction_items([
+                {
+                    'run_id': run_id,
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'jingcai_football',
+                    'run_key': '2026-04-06',
+                    'event_key': 'event-4',
+                    'item_order': 0,
+                    'issue_no': '周一004',
+                    'title': '[测试] 周一004',
+                    'requested_targets': ['spf', 'rqspf'],
+                    'prediction_payload': {'spf': '胜', 'rqspf': '平'},
+                    'actual_payload': {},
+                    'hit_payload': {},
+                    'confidence': 0.65,
+                    'reasoning_summary': 'test',
+                    'raw_response': '{}',
+                    'status': 'pending',
+                    'error_message': None,
+                    'settled_at': None
+                }
+            ])
+
+            dashboard = harness.module._get_predictor_dashboard_data(predictor_id)
+            market_snapshot = dashboard['current_prediction']['items'][0]['market_snapshot']
+
+            self.assertIn('odds_snapshots', market_snapshot)
+            self.assertEqual(market_snapshot['odds_snapshots']['euro']['company'], '竞彩官方')
+
     def test_overview_route_falls_back_to_cached_events(self):
         with fresh_app_harness() as harness:
             self._seed_event(
