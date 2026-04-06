@@ -10,6 +10,7 @@ from typing import Iterable, Optional
 ALLOWED_TARGETS = ('spf', 'rqspf')
 ALLOWED_PRIMARY_METRICS = ('spf', 'rqspf')
 DEFAULT_PROFIT_RULE_ID = 'jingcai_snapshot'
+CLOSED_SELL_STATUSES = {'0', '3'}
 TARGET_LABELS = {
     'spf': '胜平负',
     'rqspf': '让球胜平负',
@@ -230,6 +231,56 @@ def resolve_snapshot_odds(meta_payload: dict, metric_key: str, outcome: Optional
         return parse_float((rqspf.get('odds') or {}).get(outcome))
 
     return None
+
+
+def metric_sell_status(metric_key: str, meta_payload: dict) -> str:
+    """读取指定玩法的原始销售状态码"""
+    if metric_key == 'spf':
+        return str(meta_payload.get('spf_sell_status') or '').strip()
+    if metric_key == 'rqspf':
+        return str(meta_payload.get('rqspf_sell_status') or '').strip()
+    return ''
+
+
+def metric_has_sellable_odds(metric_key: str, meta_payload: dict, outcome: Optional[str] = None) -> bool:
+    """判断指定玩法是否存在可用于模拟的赔率快照"""
+    if outcome:
+        odds = resolve_snapshot_odds(meta_payload, metric_key, outcome)
+        return odds is not None and odds > 0
+
+    odds_map = (
+        meta_payload.get('spf_odds') or {}
+        if metric_key == 'spf'
+        else ((meta_payload.get('rqspf') or {}).get('odds') or {})
+    )
+    return any((parse_float(value) or 0) > 0 for value in odds_map.values())
+
+
+def is_metric_sellable(metric_key: str, meta_payload: dict, outcome: Optional[str] = None) -> bool:
+    """基于结算状态、销售状态与赔率快照，判断玩法是否可纳入推荐/模拟"""
+    if meta_payload.get('settled'):
+        return False
+
+    status = metric_sell_status(metric_key, meta_payload)
+    if status in CLOSED_SELL_STATUSES:
+        return False
+
+    return metric_has_sellable_odds(metric_key, meta_payload, outcome)
+
+
+def metric_availability_label(metric_key: str, meta_payload: dict, outcome: Optional[str] = None) -> str:
+    """给页面展示玩法可用性说明"""
+    if meta_payload.get('settled'):
+        return '已开奖'
+
+    status = metric_sell_status(metric_key, meta_payload)
+    if status == '0':
+        return '停售'
+    if status == '3':
+        return '已开奖'
+    if metric_has_sellable_odds(metric_key, meta_payload, outcome):
+        return '赔率快照可用'
+    return '无赔率快照'
 
 
 def dump_json(value) -> str:

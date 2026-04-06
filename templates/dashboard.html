@@ -135,8 +135,18 @@
                                 <i class="bi bi-lightning-charge"></i>
                                 立即预测
                             </button>
+                            <button class="btn ghost" id="footballManualSettleBtn" style="display: none;">
+                                <i class="bi bi-check2-circle"></i>
+                                手动结算
+                            </button>
+                            <input type="date" id="footballReplayDate" class="home-select" style="display: none;" title="按日期回放/刷新赛程">
+                            <button class="btn ghost" id="footballReplayBtn" style="display: none;">
+                                <i class="bi bi-calendar2-week"></i>
+                                按日期回放/刷新赛程
+                            </button>
                         </div>
                     </div>
+                    <div id="footballActionResult" class="metric-hint empty-panel" style="display: none;"></div>
                     <div id="currentPrediction" class="prediction-summary empty-panel">
                         请选择预测方案
                     </div>

@@ -943,6 +943,8 @@ class ProfitSimulator:
         actual_payload = item.get('actual_payload') or {}
         predicted_value = prediction_payload.get(metric)
         actual_value = actual_payload.get(metric)
+        if not football_utils.is_metric_sellable(metric, meta_payload, predicted_value):
+            return None
         odds = football_utils.resolve_snapshot_odds(meta_payload, metric, predicted_value)
 
         if not predicted_value or not actual_value or odds is None or odds <= 0:
@@ -1001,6 +1003,8 @@ class ProfitSimulator:
             actual_payload = item.get('actual_payload') or {}
             predicted_value = prediction_payload.get(base_metric)
             actual_value = actual_payload.get(base_metric)
+            if not football_utils.is_metric_sellable(base_metric, meta_payload, predicted_value):
+                continue
             odds = football_utils.resolve_snapshot_odds(meta_payload, base_metric, predicted_value)
             if not predicted_value or not actual_value or odds is None or odds <= 0:
                 continue

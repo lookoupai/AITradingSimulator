@@ -29,6 +29,17 @@ description: Chinese football lottery / 竞彩足球 / 足球彩票 data-source 
 5. Cache detail payloads by `event_key` and `detail_type`, then summarize them before sending them to the model.
 6. Keep sale-status enums raw unless enough evidence exists to map them safely.
 
+## Current Observations
+
+- Sale-status mapping must still be treated as observational, not absolute. Re-verify on new dates before hard-coding business rules.
+- In the Sina sample for `2026-04-06`, `spfSellStatus=2` matched the same-day matches that appeared to open `胜平负` 单关, including `周一002` and `周一012`.
+- In the same sample, `spfSellStatus=0` matched matches that did not open `胜平负`, including `周一016`.
+- `rqspfSellStatus` still has weaker evidence. Do not expand the above observation to `rqspf` unless a fresh sample confirms it.
+- Prefer a conservative implementation pattern in product code:
+  - Treat `0` and explicit settled states as unavailable.
+  - Allow recommendation/simulation only when odds are present and the event is not already settled.
+  - If later you need to explicitly label “单关”, surface it as a tentative UI/ops hint first, not as a hard-coded invariant.
+
 ## Project Touchpoints
 
 - Batch fetch and detail fetch live in `services/jingcai_football_service.py`.

@@ -206,6 +206,8 @@ class PredictionApp {
         document.getElementById('predictNowBtn').addEventListener('click', () => this.predictNow());
         document.getElementById('editPredictorBtn').addEventListener('click', () => this.openEditModal());
         document.getElementById('togglePredictorBtn').addEventListener('click', () => this.toggleCurrentPredictor());
+        document.getElementById('footballManualSettleBtn').addEventListener('click', () => this.manualSettleFootball());
+        document.getElementById('footballReplayBtn').addEventListener('click', () => this.replayFootballScheduleByDate());
         document.getElementById('togglePresetListBtn').addEventListener('click', () => this.togglePresetList());
         document.getElementById('statsMetricView').addEventListener('change', (event) => {
             this.selectedStatsMetric = event.target.value;
@@ -286,6 +288,10 @@ class PredictionApp {
         this.renderPresetCards();
         this.enforceNumberTarget();
         this.updateLotteryForm();
+        const footballReplayDate = document.getElementById('footballReplayDate');
+        if (footballReplayDate && !footballReplayDate.value) {
+            footballReplayDate.value = this.getTodayDateValue();
+        }
     }
 
     enforceNumberTarget() {
@@ -1080,18 +1086,27 @@ class PredictionApp {
             const items = prediction.items || [];
             const parlay = Array.isArray(prediction.recommended_parlay) ? prediction.recommended_parlay : [];
             const tickets = Array.isArray(prediction.recommended_tickets) ? prediction.recommended_tickets : [];
+            const ticketWarnings = Array.isArray(prediction.recommended_ticket_warnings) ? prediction.recommended_ticket_warnings : [];
+            const saleNotice = ticketWarnings.length
+                ? ticketWarnings.map((item) => item.message || '--').join('；')
+                : '若当前玩法停售、已开奖或缺少有效赔率快照，系统会自动跳过该玩法，不纳入推荐票面与收益模拟。';
+            const saleNoticeBlock = ticketWarnings.length
+                ? `<div class="warning-banner">${this.escapeHtml(saleNotice)}</div>`
+                : `<div class="metric-hint prediction-note"><p>${this.escapeHtml(saleNotice)}</p></div>`;
             const previewRows = items.slice(0, 8).map((item) => {
                 const marketSnapshot = item.market_snapshot || {};
                 const spfOutcome = this.buildFootballOutcomeText('spf', (item.prediction_payload || {}).spf, marketSnapshot);
                 const rqspfOutcome = this.buildFootballOutcomeText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
                 const spfOdds = this.buildFootballOddsText('spf', (item.prediction_payload || {}).spf, marketSnapshot);
                 const rqspfOdds = this.buildFootballOddsText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
+                const spfHint = this.buildFootballAvailabilityHint('spf', marketSnapshot);
+                const rqspfHint = this.buildFootballAvailabilityHint('rqspf', marketSnapshot);
                 return `
                     <tr>
                         <td>${this.escapeHtml(item.issue_no || '--')}</td>
                         <td>${this.escapeHtml(item.title || '--')}</td>
-                        <td>${this.escapeHtml(spfOutcome || '--')}${spfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(spfOdds)}</span>` : ''}</td>
-                        <td>${this.escapeHtml(rqspfOutcome || '--')}${rqspfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(rqspfOdds)}</span>` : ''}</td>
+                        <td>${this.escapeHtml(spfOutcome || '--')}${spfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(spfOdds)}</span>` : ''}${spfHint ? `<br><span class="hint-text">${this.escapeHtml(spfHint)}</span>` : ''}</td>
+                        <td>${this.escapeHtml(rqspfOutcome || '--')}${rqspfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(rqspfOdds)}</span>` : ''}${rqspfHint ? `<br><span class="hint-text">${this.escapeHtml(rqspfHint)}</span>` : ''}</td>
                         <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
                     </tr>
                 `;
@@ -1103,10 +1118,12 @@ class PredictionApp {
                 const rqspfOutcome = this.buildFootballOutcomeText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
                 const spfOdds = this.buildFootballOddsText('spf', (item.prediction_payload || {}).spf, marketSnapshot);
                 const rqspfOdds = this.buildFootballOddsText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
+                const spfHint = this.buildFootballAvailabilityHint('spf', marketSnapshot);
+                const rqspfHint = this.buildFootballAvailabilityHint('rqspf', marketSnapshot);
                 return this.renderCurrentPredictionCard(
                     `候选场次 ${index + 1}`,
                     `${item.issue_no || '--'} · ${item.title || '--'}`,
-                    `SPF ${spfOutcome || '--'}${spfOdds ? ` @ ${spfOdds}` : ''} · RQSPF ${rqspfOutcome || '--'}${rqspfOdds ? ` @ ${rqspfOdds}` : ''} · 置信度 ${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}`
+                    `SPF ${spfOutcome || '--'}${spfOdds ? ` @ ${spfOdds}` : ''}${spfHint ? ` · ${spfHint}` : ''} · RQSPF ${rqspfOutcome || '--'}${rqspfOdds ? ` @ ${rqspfOdds}` : ''}${rqspfHint ? ` · ${rqspfHint}` : ''} · 置信度 ${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}`
                 );
             }).join('');
 
@@ -1131,6 +1148,7 @@ class PredictionApp {
                     </div>
                 </div>
                 ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
+                ${saleNoticeBlock}
                 <div class="prediction-grid prediction-grid-compact">
                     ${this.renderCurrentPredictionCard('预测批次', prediction.run_key || '--')}
                     ${this.renderCurrentPredictionCard('场次数量', String(items.length))}
@@ -1249,6 +1267,16 @@ class PredictionApp {
             return '';
         }
         return `${Number(rawValue).toFixed(2)} 倍`;
+    }
+
+    buildFootballAvailabilityHint(metricKey, marketSnapshot = {}) {
+        const sellable = metricKey === 'rqspf'
+            ? marketSnapshot.rqspf_sellable
+            : marketSnapshot.spf_sellable;
+        const label = metricKey === 'rqspf'
+            ? marketSnapshot.rqspf_availability_label
+            : marketSnapshot.spf_availability_label;
+        return sellable ? '' : (label || '停售或无赔率快照');
     }
 
     renderPublicSharePanel(predictor) {
@@ -1872,8 +1900,10 @@ class PredictionApp {
         this.selectedProfitMaxSteps = DEFAULT_PROFIT_MAX_STEPS;
         this.selectedProfitOrder = 'desc';
         this.currentPredictions = [];
+        this.updatePredictorActionState(null);
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
+        this.hideFootballActionResult();
         document.getElementById('publicSharePanel').className = 'prediction-summary empty-panel';
         document.getElementById('publicSharePanel').textContent = '暂无预测方案，请先新建方案';
         document.getElementById('profitPanel').style.display = '';
@@ -2427,6 +2457,96 @@ class PredictionApp {
         }
     }
 
+    async manualSettleFootball() {
+        if (!this.currentPredictorId || !this.currentPredictor || (this.currentPredictor.lottery_type || 'pc28') !== 'jingcai_football') {
+            alert('当前仅竞彩足球方案支持手动结算');
+            return;
+        }
+
+        const button = document.getElementById('footballManualSettleBtn');
+        if (!button) {
+            return;
+        }
+
+        const originalButtonHtml = button.innerHTML;
+        button.disabled = true;
+        button.textContent = '结算中...';
+        this.showFootballActionResult('info', '正在执行手动结算，请稍候...');
+
+        try {
+            const response = await fetch(`/api/predictors/${this.currentPredictorId}/jingcai/settle`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    run_key: this.currentPredictions?.[0]?.run_key || this.currentPredictor?.latest_issue_no || ''
+                })
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '手动结算失败');
+            }
+            this.showFootballActionResult('success', data.message || '手动结算执行完成');
+        } catch (error) {
+            this.showFootballActionResult('error', error.message);
+        } finally {
+            button.disabled = false;
+            button.innerHTML = originalButtonHtml;
+            if (this.currentPredictorId) {
+                await this.loadPredictorDashboard(this.currentPredictorId);
+            }
+        }
+    }
+
+    async replayFootballScheduleByDate() {
+        if (!this.currentPredictorId || !this.currentPredictor || (this.currentPredictor.lottery_type || 'pc28') !== 'jingcai_football') {
+            alert('当前仅竞彩足球方案支持按日期回放/刷新赛程');
+            return;
+        }
+
+        const button = document.getElementById('footballReplayBtn');
+        const dateInput = document.getElementById('footballReplayDate');
+        if (!button || !dateInput) {
+            return;
+        }
+
+        const selectedDate = String(dateInput.value || '').trim() || this.getTodayDateValue();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+            this.showFootballActionResult('error', '请输入有效日期（YYYY-MM-DD）');
+            return;
+        }
+
+        const originalButtonHtml = button.innerHTML;
+        button.disabled = true;
+        button.textContent = '刷新中...';
+        this.showFootballActionResult('info', `正在回放/刷新 ${selectedDate} 赛程，请稍候...`);
+
+        try {
+            const response = await fetch(`/api/predictors/${this.currentPredictorId}/jingcai/replay`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ date: selectedDate })
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '按日期回放/刷新赛程失败');
+            }
+            const successMessage = data.warning
+                ? `${data.message || `${selectedDate} 赛程回放/刷新完成`}；${data.warning}`
+                : (data.message || `${selectedDate} 赛程回放/刷新完成`);
+            this.showFootballActionResult('success', successMessage);
+        } catch (error) {
+            this.showFootballActionResult('error', error.message);
+        } finally {
+            button.disabled = false;
+            button.innerHTML = originalButtonHtml;
+            if (this.currentPredictorId) {
+                await this.loadPredictorDashboard(this.currentPredictorId);
+            }
+        }
+    }
+
     async logout() {
         await fetch('/api/auth/logout', {
             method: 'POST',
@@ -2459,9 +2579,32 @@ class PredictionApp {
     updatePredictorActionState(predictor) {
         const toggleButton = document.getElementById('togglePredictorBtn');
         const predictNowButton = document.getElementById('predictNowBtn');
+        const footballManualSettleButton = document.getElementById('footballManualSettleBtn');
+        const footballReplayButton = document.getElementById('footballReplayBtn');
+        const footballReplayDate = document.getElementById('footballReplayDate');
 
         if (!toggleButton || !predictNowButton) {
             return;
+        }
+
+        const isFootballPredictor = Boolean(predictor) && (predictor.lottery_type || 'pc28') === 'jingcai_football';
+        if (footballManualSettleButton) {
+            footballManualSettleButton.style.display = isFootballPredictor ? 'inline-flex' : 'none';
+            footballManualSettleButton.disabled = !isFootballPredictor;
+        }
+        if (footballReplayButton) {
+            footballReplayButton.style.display = isFootballPredictor ? 'inline-flex' : 'none';
+            footballReplayButton.disabled = !isFootballPredictor;
+        }
+        if (footballReplayDate) {
+            footballReplayDate.style.display = isFootballPredictor ? '' : 'none';
+            footballReplayDate.disabled = !isFootballPredictor;
+            if (isFootballPredictor && !footballReplayDate.value) {
+                footballReplayDate.value = this.getTodayDateValue();
+            }
+        }
+        if (!isFootballPredictor) {
+            this.hideFootballActionResult();
         }
 
         if (!predictor) {
@@ -2476,6 +2619,57 @@ class PredictionApp {
             ? '<i class="bi bi-pause-circle"></i> 暂停方案'
             : '<i class="bi bi-play-circle"></i> 恢复方案';
         predictNowButton.disabled = false;
+    }
+
+    getTodayDateValue() {
+        const now = new Date();
+        const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+        return localDate.toISOString().slice(0, 10);
+    }
+
+    async parseJsonSafely(response) {
+        try {
+            return await response.json();
+        } catch (error) {
+            return {};
+        }
+    }
+
+    showFootballActionResult(type, message, endpoint = '') {
+        const container = document.getElementById('footballActionResult');
+        if (!container) {
+            return;
+        }
+
+        const timestamp = new Date().toLocaleString('zh-CN', { hour12: false });
+        if (type === 'error') {
+            container.className = 'warning-banner';
+            container.textContent = `操作失败：${message}`;
+            container.style.display = 'block';
+            return;
+        }
+
+        container.className = 'metric-hint';
+        container.style.display = 'block';
+        const title = type === 'success' ? '操作成功' : '执行中';
+        container.innerHTML = `
+            <div class="metric-hint-head">
+                <div><strong>${this.escapeHtml(title)}</strong></div>
+                <span class="tag">${this.escapeHtml(timestamp)}</span>
+            </div>
+            <p>${this.escapeHtml(message)}</p>
+            ${endpoint ? `<p class="metric-hint-foot">接口：${this.escapeHtml(endpoint)}</p>` : ''}
+        `;
+    }
+
+    hideFootballActionResult() {
+        const container = document.getElementById('footballActionResult');
+        if (!container) {
+            return;
+        }
+        container.className = 'metric-hint empty-panel';
+        container.textContent = '';
+        container.style.display = 'none';
     }
 
     buildTestResultMessage(data, preview) {

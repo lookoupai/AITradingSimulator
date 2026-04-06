@@ -31,6 +31,7 @@ from services.lottery_runtime import LotteryRuntime
 from services.pc28_service import PC28Service
 from services.profit_simulator import DEFAULT_ODDS_PROFILE, ProfitSimulator
 from services.prediction_engine import PredictionEngine
+from utils import jingcai_football as football_utils
 from utils.prompt_assistant import analyze_prompt, build_external_prompt_template, build_optimizer_prompt, get_prompt_placeholder_catalog
 from utils.auth import (
     admin_required,
@@ -256,7 +257,7 @@ def _serialize_lottery_event(event: dict) -> dict:
     meta_payload = event.get('meta_payload') or {}
     return {
         **event,
-        'issue_no': event.get('issue_no') or meta_payload.get('match_no') or meta_payload.get('match_no_value') or '',
+        'issue_no': event.get('issue_no') or event.get('match_no') or meta_payload.get('match_no') or meta_payload.get('match_no_value') or '',
         'created_at': utc_to_beijing(event['created_at']) if event.get('created_at') else None,
         'updated_at': utc_to_beijing(event['updated_at']) if event.get('updated_at') else None
     }
@@ -344,6 +345,218 @@ def _serialize_profit_simulation(simulation: dict, include_records: bool = True)
     payload = dict(simulation)
     if not include_records:
         payload['records'] = []
+    return payload
+
+
+def _format_jingcai_simulation_outcome(metric: str, outcome: str, meta_payload: dict) -> str:
+    if not outcome:
+        return '--'
+    if metric != 'rqspf':
+        return str(outcome)
+    handicap_text = str(((meta_payload.get('rqspf') or {}).get('handicap_text') or '')).strip()
+    if not handicap_text:
+        return str(outcome)
+    return f'{outcome}（让{handicap_text}）'
+
+
+def _build_jingcai_simulation_ticket_label(issue_no: str, metric: str, outcome: str, meta_payload: dict) -> str:
+    return f'{issue_no or "--"} {_format_jingcai_simulation_outcome(metric, outcome, meta_payload)}'
+
+
+def _resolve_simulation_next_step(bet_mode: str, max_steps: int, current_step: int, result_type: str) -> int:
+    if bet_mode == 'flat':
+        return 1
+    if result_type == 'hit':
+        return 1
+    if result_type == 'refund':
+        return current_step
+    if current_step >= max_steps:
+        return 1
+    return current_step + 1
+
+
+def _apply_jingcai_simulation_sale_filter(predictor_id: int, simulation: dict) -> dict:
+    metric = str(simulation.get('metric') or '').strip().lower()
+    metric_mapping = {
+        'spf': 'spf',
+        'rqspf': 'rqspf',
+        'spf_parlay': 'spf',
+        'rqspf_parlay': 'rqspf'
+    }
+    base_metric = metric_mapping.get(metric)
+    if not base_metric:
+        return simulation
+
+    records = list(simulation.get('records') or [])
+    if not records:
+        payload = dict(simulation)
+        payload['sell_status_filter'] = {
+            'enabled': True,
+            'base_metric': base_metric,
+            'required_sell_status': '1',
+            'filtered_out_count': 0,
+            'kept_count': 0
+        }
+        return payload
+
+    items = db.get_recent_prediction_items(
+        predictor_id,
+        lottery_type='jingcai_football',
+        limit=4000
+    )
+    settled_items = [item for item in items if item.get('status') == 'settled' and item.get('event_key')]
+    event_map = db.get_lottery_event_map(
+        'jingcai_football',
+        [item.get('event_key') for item in settled_items]
+    ) if settled_items else {}
+
+    sellable_single_keys: set[tuple[str, str]] = set()
+    sellable_parlay_legs: set[tuple[str, str]] = set()
+    for item in settled_items:
+        event = event_map.get(item.get('event_key')) or {}
+        meta_payload = event.get('meta_payload') or {}
+        if football_utils.metric_sell_status(base_metric, meta_payload) != '1':
+            continue
+        prediction_payload = item.get('prediction_payload') or {}
+        actual_payload = item.get('actual_payload') or {}
+        predicted_value = prediction_payload.get(base_metric)
+        actual_value = actual_payload.get(base_metric)
+        odds = football_utils.resolve_snapshot_odds(meta_payload, base_metric, predicted_value)
+        if not predicted_value or not actual_value or odds is None or odds <= 0:
+            continue
+
+        issue_no = item.get('issue_no') or '--'
+        event_time = event.get('event_time') or '--'
+        ticket_label = _build_jingcai_simulation_ticket_label(issue_no, base_metric, predicted_value, meta_payload)
+        sellable_single_keys.add((ticket_label, event_time))
+        run_key = str(item.get('run_key') or '').strip()
+        if run_key:
+            sellable_parlay_legs.add((run_key, ticket_label))
+
+    filtered_records = []
+    for record in records:
+        ticket_label = str(record.get('ticket_label') or '').strip()
+        open_time = str(record.get('open_time') or '--').strip() or '--'
+        if metric in {'spf', 'rqspf'}:
+            if (ticket_label, open_time) in sellable_single_keys:
+                filtered_records.append(record)
+            continue
+
+        run_key = str(record.get('issue_no') or '').strip()
+        leg_labels = [item.strip() for item in ticket_label.split(' + ') if item.strip()]
+        if run_key and len(leg_labels) >= 2 and all((run_key, leg) in sellable_parlay_legs for leg in leg_labels):
+            filtered_records.append(record)
+
+    bet_mode = str(simulation.get('bet_mode') or 'flat').strip().lower()
+    bet_config = simulation.get('bet_config') or {}
+    try:
+        base_stake = float(bet_config.get('base_stake') or simulation.get('stake_amount') or 10.0)
+    except (TypeError, ValueError):
+        base_stake = 10.0
+    try:
+        multiplier = float(bet_config.get('multiplier') or 2.0)
+    except (TypeError, ValueError):
+        multiplier = 2.0
+    try:
+        max_steps = int(bet_config.get('max_steps') or 6)
+    except (TypeError, ValueError):
+        max_steps = 6
+    max_steps = max(1, max_steps)
+
+    recalculated_records = []
+    cumulative_profit = 0.0
+    total_stake = 0.0
+    total_payout = 0.0
+    hit_count = 0
+    refund_count = 0
+    miss_count = 0
+    current_step = 1
+    open_times: list[str] = []
+
+    for record in filtered_records:
+        if bet_mode == 'flat':
+            stake_amount = round(base_stake, 2)
+        else:
+            stake_amount = round(base_stake * (multiplier ** (current_step - 1)), 2)
+
+        try:
+            odds = float(record.get('odds') or 0.0)
+        except (TypeError, ValueError):
+            odds = 0.0
+        result_type = str(record.get('result_type') or 'miss').strip().lower() or 'miss'
+        if result_type == 'hit':
+            payout_amount = round(stake_amount * odds, 2)
+            hit_count += 1
+        elif result_type == 'refund':
+            payout_amount = round(stake_amount, 2)
+            refund_count += 1
+        else:
+            payout_amount = 0.0
+            miss_count += 1
+
+        net_profit = round(payout_amount - stake_amount, 2)
+        cumulative_profit = round(cumulative_profit + net_profit, 2)
+        total_stake = round(total_stake + stake_amount, 2)
+        total_payout = round(total_payout + payout_amount, 2)
+
+        updated_record = {
+            **record,
+            'bet_step': current_step,
+            'bet_step_label': '均注' if bet_mode == 'flat' else f'第 {current_step} 手',
+            'stake_amount': stake_amount,
+            'payout_amount': payout_amount,
+            'net_profit': net_profit,
+            'cumulative_profit': cumulative_profit
+        }
+        recalculated_records.append(updated_record)
+
+        current_step = _resolve_simulation_next_step(bet_mode, max_steps, current_step, result_type)
+        open_time = str(record.get('open_time') or '').strip()
+        if open_time and open_time != '--':
+            open_times.append(open_time)
+
+    filtered_out_count = len(records) - len(recalculated_records)
+    bet_count = hit_count + refund_count + miss_count
+    net_profit = round(total_payout - total_stake, 2)
+    roi_percentage = round(net_profit / total_stake * 100, 2) if total_stake else 0.0
+    average_profit = round(net_profit / bet_count, 2) if bet_count else 0.0
+
+    original_summary = simulation.get('summary') or {}
+    try:
+        original_skipped_count = int(original_summary.get('skipped_count') or 0)
+    except (TypeError, ValueError):
+        original_skipped_count = 0
+
+    period = dict(simulation.get('period') or {})
+    if open_times:
+        period['start_time'] = open_times[0]
+        period['end_time'] = open_times[-1]
+    else:
+        period['start_time'] = '--'
+        period['end_time'] = '--'
+
+    payload = dict(simulation)
+    payload['records'] = recalculated_records
+    payload['period'] = period
+    payload['summary'] = {
+        'bet_count': bet_count,
+        'hit_count': hit_count,
+        'refund_count': refund_count,
+        'miss_count': miss_count,
+        'skipped_count': original_skipped_count + filtered_out_count,
+        'total_stake': round(total_stake, 2),
+        'total_payout': round(total_payout, 2),
+        'net_profit': net_profit,
+        'roi_percentage': roi_percentage,
+        'average_profit': average_profit
+    }
+    payload['sell_status_filter'] = {
+        'enabled': True,
+        'base_metric': base_metric,
+        'required_sell_status': '1',
+        'filtered_out_count': filtered_out_count,
+        'kept_count': len(recalculated_records)
+    }
     return payload
 
 
@@ -1088,39 +1301,58 @@ def get_lottery_overview(lottery_type: str):
 
     limit = request.args.get('limit', 20, type=int)
     if normalized_lottery_type == 'jingcai_football':
-        try:
-            overview = jingcai_football_service.build_overview(db, limit=max(5, min(limit, 50)))
-            return jsonify({
-                **overview,
-                'recent_events': [_serialize_lottery_event(item) for item in overview.get('recent_events', [])]
-            })
-        except Exception as exc:
-            cached_events = db.get_recent_lottery_events('jingcai_football', limit=max(5, min(limit, 50)))
-            if not cached_events:
-                return jsonify({
-                    'lottery_type': 'jingcai_football',
-                    'batch_key': None,
-                    'match_count': 0,
-                    'open_match_count': 0,
-                    'settled_match_count': 0,
-                    'next_match_time': None,
-                    'next_match_name': None,
-                    'recent_events': [],
-                    'warning': f'新浪接口不可用，且本地暂无竞彩足球缓存：{exc}'
-                })
-            return jsonify({
-                'lottery_type': 'jingcai_football',
-                'batch_key': None,
-                'match_count': len(cached_events),
-                'open_match_count': len([item for item in cached_events if not (item.get('meta_payload') or {}).get('settled')]),
-                'settled_match_count': len([item for item in cached_events if (item.get('meta_payload') or {}).get('settled')]),
-                'next_match_time': None,
-                'next_match_name': None,
-                'recent_events': [_serialize_lottery_event(item) for item in cached_events],
-                'warning': f'新浪接口不可用，已回退本地缓存：{exc}'
-            })
+        overview = jingcai_football_service.build_overview_with_fallback(db, limit=max(5, min(limit, 50)))
+        return jsonify({
+            **overview,
+            'recent_events': [_serialize_lottery_event(item) for item in overview.get('recent_events', [])]
+        })
 
     return jsonify({'error': '暂不支持的彩种'}), 404
+
+
+@app.route('/api/lotteries/jingcai_football/sync-matches', methods=['POST'])
+@login_required
+def sync_jingcai_matches():
+    data = request.get_json() or {}
+    date = str(data.get('date') or '').strip()
+    run_key = str(data.get('run_key') or '').strip()
+    if not date and not run_key:
+        return jsonify({'error': '请提供 date 或 run_key'}), 400
+
+    raw_limit = data.get('limit', 20)
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(5, min(limit, 50))
+
+    raw_is_prized = data.get('is_prized')
+    prefer_is_prized = None if raw_is_prized is None else str(raw_is_prized).strip()
+
+    try:
+        result = jingcai_football_service.sync_batch_overview(
+            db,
+            date=date,
+            run_key=run_key or None,
+            limit=limit,
+            prefer_is_prized=prefer_is_prized
+        )
+        overview = result.get('overview') or {}
+        return jsonify({
+            'message': 'sync_matches 执行完成',
+            'requested_date': date or None,
+            'requested_run_key': run_key or None,
+            'run_key': result.get('run_key'),
+            'used_is_prized': result.get('used_is_prized'),
+            'batch_overview': {
+                **overview,
+                'recent_events': [_serialize_lottery_event(item) for item in overview.get('recent_events', [])]
+            }
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/api/public/predictors', methods=['GET'])
@@ -1169,6 +1401,8 @@ def get_public_predictor_simulation(predictor_id: int):
     multiplier = request.args.get('multiplier', type=float)
     max_steps = request.args.get('max_steps', type=int)
     include_records = predictor.get('can_view_records', False)
+    lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
+    force_include_records = include_records or lottery_type == 'jingcai_football'
 
     try:
         simulation = profit_simulator.build_today_simulation(
@@ -1180,8 +1414,10 @@ def get_public_predictor_simulation(predictor_id: int):
             base_stake=base_stake,
             multiplier=multiplier,
             max_steps=max_steps,
-            include_records=include_records
+            include_records=force_include_records
         )
+        if lottery_type == 'jingcai_football':
+            simulation = _apply_jingcai_simulation_sale_filter(predictor_id, simulation)
         return jsonify({
             'predictor_id': predictor_id,
             'share_level': predictor.get('share_level'),
@@ -1551,6 +1787,7 @@ def get_predictor_simulation(predictor_id: int):
     predictor = db.get_predictor(predictor_id, include_secret=False)
     if predictor and not supports_profit_simulation(predictor.get('lottery_type')):
         return jsonify({'error': '当前彩种暂不支持收益模拟'}), 400
+    lottery_type = normalize_lottery_type(predictor.get('lottery_type') if predictor else 'pc28')
     requested_metric = request.args.get('metric') or (profit_simulator.get_default_metric(predictor) if predictor else None)
     profit_rule_id = request.args.get('profit_rule_id') or (predictor.get('profit_rule_id') if predictor else DEFAULT_PROFIT_RULE_ID)
     odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
@@ -1571,12 +1808,101 @@ def get_predictor_simulation(predictor_id: int):
             max_steps=max_steps,
             include_records=True
         )
+        if lottery_type == 'jingcai_football':
+            simulation = _apply_jingcai_simulation_sale_filter(predictor_id, simulation)
         return jsonify({
             'predictor_id': predictor_id,
             'simulation': _serialize_profit_simulation(simulation, include_records=True)
         })
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
+
+
+@app.route('/api/predictors/<int:predictor_id>/jingcai/replay', methods=['POST'])
+@login_required
+def replay_jingcai_batch(predictor_id: int):
+    user_id = get_current_user_id()
+    if not db.predictor_exists_for_user(predictor_id, user_id):
+        return jsonify({'error': '无权操作此预测方案'}), 403
+
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    if not predictor or normalize_lottery_type(predictor.get('lottery_type')) != 'jingcai_football':
+        return jsonify({'error': '当前方案不是竞彩足球方案'}), 400
+
+    data = request.get_json() or {}
+    replay_date = str(data.get('date') or '').strip()
+    limit = data.get('limit', 20)
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+
+    try:
+        result = jingcai_football_service.replay_batch(db, predictor_id, replay_date, limit=limit)
+        overview = result.get('overview') or {}
+        return jsonify({
+            'predictor_id': predictor_id,
+            'message': result.get('message') or '批次回放完成',
+            'run_key': result.get('run_key'),
+            'used_is_prized': result.get('used_is_prized'),
+            'warning': result.get('warning'),
+            'overview': {
+                **overview,
+                'recent_events': [_serialize_lottery_event(item) for item in overview.get('recent_events', [])]
+            },
+            'run': _serialize_prediction_run(result.get('run')) if result.get('run') else None
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/predictors/<int:predictor_id>/jingcai/settle', methods=['POST'])
+@login_required
+def settle_jingcai_predictions(predictor_id: int):
+    return _handle_settle_jingcai_predictions(predictor_id)
+
+
+@app.route('/api/predictors/<int:predictor_id>/settle-now', methods=['POST'])
+@login_required
+def settle_jingcai_predictions_now(predictor_id: int):
+    return _handle_settle_jingcai_predictions(predictor_id)
+
+
+def _handle_settle_jingcai_predictions(predictor_id: int):
+    user_id = get_current_user_id()
+    if not db.predictor_exists_for_user(predictor_id, user_id):
+        return jsonify({'error': '无权操作此预测方案'}), 403
+
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    if not predictor or normalize_lottery_type(predictor.get('lottery_type')) != 'jingcai_football':
+        return jsonify({'error': '当前方案不是竞彩足球方案'}), 400
+
+    data = request.get_json() or {}
+    run_key = str(data.get('run_key') or '').strip() or None
+
+    try:
+        result = jingcai_football_service.settle_predictor_runs(db, predictor_id, run_key=run_key)
+        return jsonify({
+            'predictor_id': predictor_id,
+            'message': result.get('message') or '结算完成',
+            'run_keys': result.get('run_keys') or [],
+            'settled_items_count': int(result.get('settled_items_count') or 0),
+            'settled_runs_count': int(result.get('settled_runs_count') or 0),
+            'pending_runs_count': int(result.get('pending_runs_count') or 0),
+            'runs': [
+                {
+                    **item,
+                    'run': _serialize_prediction_run(item.get('run')) if item.get('run') else None
+                }
+                for item in (result.get('runs') or [])
+            ]
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/api/predictors/<int:predictor_id>/predict-now', methods=['POST'])
