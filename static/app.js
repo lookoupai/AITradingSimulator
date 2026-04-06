@@ -457,11 +457,11 @@ class PredictionApp {
     }
 
     async refresh(forceReloadPredictorList = false) {
-        await this.loadOverview();
         await this.loadPredictors(forceReloadPredictorList);
         if (this.currentPredictorId) {
             await this.loadPredictorDashboard(this.currentPredictorId);
         } else {
+            await this.loadOverview();
             this.renderEmptyPredictorState();
         }
     }
