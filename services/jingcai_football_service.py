@@ -61,9 +61,11 @@ class JingcaiFootballService:
             raise ValueError(f'新浪竞彩接口返回失败: {payload}')
         return result
 
-    def _request_detail_payload(self, cat1: str, params: dict) -> dict:
+    def _request_detail_payload(self, cat1: str, params: dict, host: str = 'mix') -> dict:
+        base_url = SINA_JINGCAI_DETAIL_URL if host == 'mix' else SINA_JINGCAI_URL
+        headers = DETAIL_HEADERS if host == 'mix' else DEFAULT_HEADERS
         response = requests.get(
-            SINA_JINGCAI_DETAIL_URL,
+            base_url,
             params={
                 'format': 'json',
                 '__caller__': 'wap',
@@ -73,7 +75,7 @@ class JingcaiFootballService:
                 'dpc': 1,
                 **params
             },
-            headers=DETAIL_HEADERS,
+            headers=headers,
             timeout=self.timeout
         )
         response.raise_for_status()
@@ -119,6 +121,9 @@ class JingcaiFootballService:
             'footballMatchTeamBattleHistory',
             {'matchId': match_id, 'limit': 10, 'isSameHostAway': 0, 'isSameLeague': 0}
         )
+        bundle['odds_euro'] = self._safe_detail_request('footballMatchOddsEuro', {'matchId': match_id})
+        bundle['odds_asia'] = self._safe_detail_request('footballMatchOddsAsia', {'matchId': match_id})
+        bundle['odds_totals'] = self._safe_detail_request('footballMatchOddsTotals', {'matchId': match_id})
         bundle['team_table'] = self._safe_detail_request('footballMatchTeamTable', {'matchId': match_id})
         if team1_id:
             bundle['recent_form_team1'] = self._safe_detail_request(
@@ -132,13 +137,14 @@ class JingcaiFootballService:
             )
         bundle['recent_matches'] = self._safe_detail_request('footballMatchTeamRecentMatches', {'matchId': match_id})
         bundle['injury'] = self._safe_detail_request('footballMatchTeamInjury', {'matchId': match_id})
+        bundle['intelligence'] = self._safe_detail_request('FootballMatchIntelligence', {'matchId': match_id, 't': int(datetime.utcnow().timestamp() * 1000)}, host='alpha')
         return bundle
 
-    def _safe_detail_request(self, cat1: str, params: dict):
+    def _safe_detail_request(self, cat1: str, params: dict, host: str = 'mix'):
         try:
-            return self._request_detail_payload(cat1, params)
+            return self._request_detail_payload(cat1, params, host=host)
         except Exception:
-            return {} if cat1 not in {'footballMatchTeamBattleHistory', 'footballMatchTeamRecentZhanJi'} else []
+            return {} if cat1 not in {'footballMatchTeamBattleHistory', 'footballMatchTeamRecentZhanJi', 'footballMatchOddsEuro', 'footballMatchOddsAsia', 'footballMatchOddsTotals'} else []
 
     def get_or_fetch_match_detail_bundle(self, db, match: dict, force_refresh: bool = False) -> dict:
         event_key = match['event_key']
@@ -737,19 +743,25 @@ class JingcaiFootballService:
     def _build_match_detail_summary(self, match: dict, detail_bundle: dict) -> str:
         detail = detail_bundle.get('detail') or {}
         battle_history = detail_bundle.get('battle_history') or []
+        odds_euro = detail_bundle.get('odds_euro') or []
+        odds_asia = detail_bundle.get('odds_asia') or []
+        odds_totals = detail_bundle.get('odds_totals') or []
         team_table = detail_bundle.get('team_table') or {}
         recent_team1 = detail_bundle.get('recent_form_team1') or []
         recent_team2 = detail_bundle.get('recent_form_team2') or []
         injury = detail_bundle.get('injury') or {}
+        intelligence = detail_bundle.get('intelligence') or {}
         recent_matches = detail_bundle.get('recent_matches') or {}
 
         lines = [
             f"- {match['event_key']} / {match['match_no']} / {match['home_team']} vs {match['away_team']}",
             f"  比赛详情：{self._build_detail_line(detail)}",
+            f"  市场赔率：{self._build_market_odds_line(odds_euro, odds_asia, odds_totals)}",
             f"  积分排名：{self._build_table_line(team_table)}",
             f"  历史交锋：{self._build_battle_history_line(battle_history, match['home_team'], match['away_team'])}",
             f"  近期战绩：{self._build_recent_form_line(recent_team1, match['home_team'], match.get('team1_id'))}；{self._build_recent_form_line(recent_team2, match['away_team'], match.get('team2_id'))}",
             f"  伤停情况：{self._build_injury_line(injury)}",
+            f"  情报摘要：{self._build_intelligence_line(intelligence)}",
             f"  后续赛程：{self._build_recent_matches_line(recent_matches)}"
         ]
         return '\n'.join(lines)
@@ -767,10 +779,14 @@ class JingcaiFootballService:
             'rqspf': match.get('rqspf'),
             'detail': detail_bundle.get('detail') or {},
             'battle_history': (detail_bundle.get('battle_history') or [])[:5],
+            'odds_euro': (detail_bundle.get('odds_euro') or [])[:6],
+            'odds_asia': (detail_bundle.get('odds_asia') or [])[:6],
+            'odds_totals': (detail_bundle.get('odds_totals') or [])[:6],
             'team_table': detail_bundle.get('team_table') or {},
             'recent_form_team1': (detail_bundle.get('recent_form_team1') or [])[:5],
             'recent_form_team2': (detail_bundle.get('recent_form_team2') or [])[:5],
-            'injury': detail_bundle.get('injury') or {}
+            'injury': detail_bundle.get('injury') or {},
+            'intelligence': detail_bundle.get('intelligence') or {}
         }
 
     def _build_detail_line(self, detail: dict) -> str:
@@ -797,6 +813,42 @@ class JingcaiFootballService:
             f"主场{self._record_text((team1.get('home') or [{}])[0])}；"
             f"客队总排名{team2_all.get('position') or '--'} 积分{team2_all.get('points') or '--'} "
             f"客场{self._record_text((team2.get('away') or [{}])[0])}"
+        )
+
+    def _build_market_odds_line(self, odds_euro: list[dict], odds_asia: list[dict], odds_totals: list[dict]) -> str:
+        euro_line = self._build_odds_euro_line(odds_euro)
+        asia_line = self._build_odds_asia_line(odds_asia)
+        totals_line = self._build_odds_totals_line(odds_totals)
+        return f"{euro_line}；{asia_line}；{totals_line}"
+
+    def _build_odds_euro_line(self, items: list[dict]) -> str:
+        if not items:
+            return '欧赔暂无'
+        official = next((item for item in items if str(item.get('companyName') or '') == '竞彩官方'), items[0])
+        return (
+            f"欧赔 {official.get('companyName') or '--'} 初赔"
+            f"{official.get('o1Ini') or '--'}/{official.get('o2Ini') or '--'}/{official.get('o3Ini') or '--'} -> 即赔"
+            f"{official.get('o1New') or '--'}/{official.get('o2New') or '--'}/{official.get('o3New') or '--'}"
+        )
+
+    def _build_odds_asia_line(self, items: list[dict]) -> str:
+        if not items:
+            return '亚盘暂无'
+        top = items[0]
+        return (
+            f"亚盘 {top.get('companyName') or '--'} 初盘{top.get('o3IniCn') or top.get('o3IniStr') or '--'} "
+            f"({top.get('o1Ini') or '--'}/{top.get('o2Ini') or '--'}) -> 即盘{top.get('o3NewCn') or top.get('o3NewStr') or '--'} "
+            f"({top.get('o1New') or '--'}/{top.get('o2New') or '--'})"
+        )
+
+    def _build_odds_totals_line(self, items: list[dict]) -> str:
+        if not items:
+            return '大小球暂无'
+        top = items[0]
+        return (
+            f"大小球 {top.get('companyName') or '--'} 初盘{top.get('o3IniCn') or top.get('o3IniStr') or '--'} "
+            f"({top.get('o1Ini') or '--'}/{top.get('o2Ini') or '--'}) -> 即盘{top.get('o3NewCn') or top.get('o3NewStr') or '--'} "
+            f"({top.get('o1New') or '--'}/{top.get('o2New') or '--'})"
         )
 
     def _build_battle_history_line(self, items: list[dict], home_team: str, away_team: str) -> str:
@@ -853,6 +905,20 @@ class JingcaiFootballService:
             top = items[:3]
             return '、'.join(f"{item.get('playerShortName') or item.get('playerName')}({item.get('typeCn') or '--'})" for item in top)
         return f"主队={_format(team1)}；客队={_format(team2)}"
+
+    def _build_intelligence_line(self, intelligence: dict) -> str:
+        if not intelligence:
+            return '暂无'
+        def _top_text(section: dict, key: str):
+            values = (section.get(key) or [])[:2]
+            if not values:
+                return '无'
+            return ' | '.join(str(item.get('content') or '').strip() for item in values if str(item.get('content') or '').strip())
+        team1 = intelligence.get('team1') or {}
+        team2 = intelligence.get('team2') or {}
+        neutral = intelligence.get('neutral') or []
+        neutral_text = ' | '.join(str(item.get('content') or '').strip() for item in neutral[:2] if str(item.get('content') or '').strip()) or '无'
+        return f"主队利好={_top_text(team1, 'good')}；主队隐患={_top_text(team1, 'bad')}；客队利好={_top_text(team2, 'good')}；客队隐患={_top_text(team2, 'bad')}；中性={neutral_text}"
 
     def _build_recent_matches_line(self, recent_matches: dict) -> str:
         if not recent_matches:
