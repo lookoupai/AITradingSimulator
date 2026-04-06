@@ -463,10 +463,10 @@ class AIPredictor:
                 f'HTTP {response.status_code}：{self._extract_http_error_message(response)}'
             )
 
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise ValueError(f'API 返回了非 JSON 内容：{response.text[:500]}') from exc
+        payload = self._parse_compatible_http_response(
+            response=response,
+            resolved_api_mode=resolved_api_mode
+        )
 
         if resolved_api_mode == 'responses':
             raw_response = self._extract_response_output_text(payload)
@@ -501,7 +501,8 @@ class AIPredictor:
                 'instructions': system_prompt,
                 'input': prompt,
                 'temperature': self.temperature,
-                'max_output_tokens': max_output_tokens
+                'max_output_tokens': max_output_tokens,
+                'stream': False
             }
             if json_output:
                 payload['text'] = {
@@ -518,7 +519,8 @@ class AIPredictor:
                 {'role': 'user', 'content': prompt}
             ],
             'temperature': self.temperature,
-            'max_tokens': max_output_tokens
+            'max_tokens': max_output_tokens,
+            'stream': False
         }
 
     def _build_compatible_headers(self) -> dict:
@@ -551,6 +553,196 @@ class AIPredictor:
             if message:
                 return str(message)
         return body[:500]
+
+    def _parse_compatible_http_response(
+        self,
+        response: requests.Response,
+        resolved_api_mode: str
+    ) -> dict:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if isinstance(payload, dict):
+            return payload
+
+        body = response.text or ''
+        content_type = response.headers.get('Content-Type', '')
+        if self._looks_like_sse_response(body, content_type):
+            return self._parse_sse_payload(
+                raw_body=body,
+                resolved_api_mode=resolved_api_mode
+            )
+
+        try:
+            parsed_payload = json.loads(body)
+        except ValueError as exc:
+            raise ValueError(f'API 返回了非 JSON 内容：{body[:500]}') from exc
+
+        if not isinstance(parsed_payload, dict):
+            raise ValueError(f'API 返回的 JSON 不是对象：{body[:500]}')
+        return parsed_payload
+
+    def _looks_like_sse_response(self, body: str, content_type: str) -> bool:
+        lowered_content_type = (content_type or '').lower()
+        if 'text/event-stream' in lowered_content_type:
+            return True
+
+        stripped = (body or '').lstrip()
+        return stripped.startswith('data:') or '\ndata:' in stripped
+
+    def _parse_sse_payload(self, raw_body: str, resolved_api_mode: str) -> dict:
+        event_payloads = self._extract_sse_event_payloads(raw_body)
+        if not event_payloads:
+            raise ValueError(f'API 返回了 SSE 流，但没有有效 JSON 事件：{raw_body[:500]}')
+
+        if resolved_api_mode == 'responses':
+            return self._build_responses_payload_from_sse(event_payloads, raw_body)
+        return self._build_chat_payload_from_sse(event_payloads, raw_body)
+
+    def _extract_sse_event_payloads(self, raw_body: str) -> list[dict]:
+        payloads = []
+        current_data_lines: list[str] = []
+
+        def flush_current_event() -> None:
+            if not current_data_lines:
+                return
+
+            data_block = '\n'.join(current_data_lines).strip()
+            current_data_lines.clear()
+            if not data_block or data_block == '[DONE]':
+                return
+
+            try:
+                payload = json.loads(data_block)
+            except json.JSONDecodeError:
+                return
+
+            if isinstance(payload, dict):
+                payloads.append(payload)
+
+        for raw_line in (raw_body or '').splitlines():
+            line = raw_line.rstrip('\r')
+            if not line.strip():
+                flush_current_event()
+                continue
+            if line.startswith(':'):
+                continue
+            if line.startswith('data:'):
+                current_data_lines.append(line[5:].lstrip())
+
+        flush_current_event()
+        return payloads
+
+    def _build_chat_payload_from_sse(self, event_payloads: list[dict], raw_body: str) -> dict:
+        response_id = None
+        model = self.model_name
+        created = None
+        role = 'assistant'
+        finish_reason = 'unknown'
+        usage = None
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+
+        for event_payload in event_payloads:
+            response_id = event_payload.get('id') or response_id
+            model = event_payload.get('model') or model
+            created = event_payload.get('created') or created
+            if event_payload.get('usage') is not None:
+                usage = event_payload.get('usage')
+
+            choices = event_payload.get('choices') or []
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+
+                finish_reason = choice.get('finish_reason') or finish_reason
+                delta = choice.get('delta') or {}
+                if not isinstance(delta, dict):
+                    continue
+
+                role = delta.get('role') or role
+
+                content_text = self._collect_stream_text(delta.get('content'))
+                if content_text:
+                    content_parts.append(content_text)
+
+                reasoning_text = self._collect_stream_text(
+                    delta.get('reasoning_content')
+                    or delta.get('reasoning')
+                    or delta.get('output_text')
+                    or delta.get('text')
+                )
+                if reasoning_text:
+                    reasoning_parts.append(reasoning_text)
+
+        content = ''.join(content_parts)
+        reasoning_content = ''.join(reasoning_parts)
+        if not content and not reasoning_content:
+            raise ValueError(f'API 返回了 SSE 流，但没有可用内容：{raw_body[:500]}')
+
+        message = {
+            'role': role or 'assistant',
+            'content': content
+        }
+        if reasoning_content:
+            message['reasoning_content'] = reasoning_content
+
+        return {
+            'id': response_id,
+            'object': 'chat.completion',
+            'created': created,
+            'model': model,
+            'choices': [
+                {
+                    'index': 0,
+                    'message': message,
+                    'finish_reason': finish_reason
+                }
+            ],
+            'usage': usage
+        }
+
+    def _build_responses_payload_from_sse(self, event_payloads: list[dict], raw_body: str) -> dict:
+        response_id = None
+        model = self.model_name
+        status = 'unknown'
+        output_text_parts: list[str] = []
+
+        for event_payload in event_payloads:
+            response_id = event_payload.get('id') or response_id
+            model = event_payload.get('model') or model
+            status = event_payload.get('status') or status
+
+            response_payload = event_payload.get('response')
+            if isinstance(response_payload, dict):
+                response_id = response_payload.get('id') or response_id
+                model = response_payload.get('model') or model
+                status = response_payload.get('status') or status
+                if event_payload.get('type') == 'response.completed':
+                    return response_payload
+
+            if event_payload.get('type') == 'response.output_text.delta':
+                delta = event_payload.get('delta')
+                if isinstance(delta, str):
+                    output_text_parts.append(delta)
+                continue
+
+            output_text = self._collect_stream_text(event_payload.get('output_text'))
+            if output_text:
+                output_text_parts.append(output_text)
+
+        output_text = ''.join(output_text_parts)
+        if not output_text:
+            raise ValueError(f'API 返回了 SSE 流，但没有可用内容：{raw_body[:500]}')
+
+        return {
+            'id': response_id,
+            'model': model,
+            'status': status,
+            'output_text': output_text
+        }
 
     def _should_use_compatible_http_transport(self, base_url: str) -> bool:
         host = (urlparse(base_url).hostname or '').lower()
@@ -750,6 +942,30 @@ class AIPredictor:
             return self._collect_text_fragments(dumped.get('text') or dumped.get('content'))
 
         return str(value).strip()
+
+    def _collect_stream_text(self, value) -> str:
+        if value is None:
+            return ''
+
+        if isinstance(value, str):
+            return value
+
+        if isinstance(value, list):
+            return ''.join(self._collect_stream_text(item) for item in value)
+
+        if isinstance(value, dict):
+            if 'text' in value:
+                return self._collect_stream_text(value.get('text'))
+            if 'content' in value:
+                return self._collect_stream_text(value.get('content'))
+            if 'delta' in value:
+                return self._collect_stream_text(value.get('delta'))
+            return ''
+
+        if hasattr(value, 'model_dump'):
+            return self._collect_stream_text(value.model_dump())
+
+        return str(value)
 
     def _safe_model_dump(self, value) -> str:
         if hasattr(value, 'model_dump_json'):
