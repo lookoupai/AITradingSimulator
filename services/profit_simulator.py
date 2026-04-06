@@ -691,8 +691,8 @@ class ProfitSimulator:
     def _metric_label(self, metric: str, lottery_type: str) -> str:
         if lottery_type == 'jingcai_football':
             mapping = {
-                'spf': '胜平负单关',
-                'rqspf': '让球胜平负单关',
+                'spf': '胜平负单场',
+                'rqspf': '让球胜平负单场',
                 'spf_parlay': '胜平负二串一',
                 'rqspf_parlay': '让球胜平负二串一'
             }

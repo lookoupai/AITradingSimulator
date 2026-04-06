@@ -42,7 +42,7 @@ def normalize_primary_metric(value: Optional[str]) -> str:
 
 
 def normalize_profit_metric(value: Optional[str]) -> str:
-    """竞彩足球收益模拟默认只接受单关主玩法"""
+    """竞彩足球收益模拟默认只接受单场主玩法"""
     return normalize_primary_metric(value)
 
 
