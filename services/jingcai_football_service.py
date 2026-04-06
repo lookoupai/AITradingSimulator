@@ -129,6 +129,11 @@ class JingcaiFootballService:
         bundle['recent_matches'] = self._safe_detail_request('footballMatchTeamRecentMatches', {'matchId': match_id})
         bundle['injury'] = self._safe_detail_request('footballMatchTeamInjury', {'matchId': match_id})
         bundle['intelligence'] = self._safe_detail_request('FootballMatchIntelligence', {'matchId': match_id, 't': int(datetime.utcnow().timestamp() * 1000)}, host='alpha')
+        bundle['odds_snapshots'] = football_utils.extract_odds_snapshots(
+            bundle.get('odds_euro') or [],
+            bundle.get('odds_asia') or [],
+            bundle.get('odds_totals') or []
+        )
         return bundle
 
     def _safe_detail_request(self, cat1: str, params: dict, host: str = 'mix'):
@@ -842,6 +847,7 @@ class JingcaiFootballService:
         odds_euro = detail_bundle.get('odds_euro') or []
         odds_asia = detail_bundle.get('odds_asia') or []
         odds_totals = detail_bundle.get('odds_totals') or []
+        odds_snapshots = detail_bundle.get('odds_snapshots') or football_utils.extract_odds_snapshots(odds_euro, odds_asia, odds_totals)
         team_table = detail_bundle.get('team_table') or {}
         recent_team1 = detail_bundle.get('recent_form_team1') or []
         recent_team2 = detail_bundle.get('recent_form_team2') or []
@@ -853,6 +859,7 @@ class JingcaiFootballService:
             f"- {match['event_key']} / {match['match_no']} / {match['home_team']} vs {match['away_team']}",
             f"  比赛详情：{self._build_detail_line(detail)}",
             f"  市场赔率：{self._build_market_odds_line(odds_euro, odds_asia, odds_totals)}",
+            f"  快照摘要：{self._build_odds_snapshot_line(odds_snapshots)}",
             f"  积分排名：{self._build_table_line(team_table)}",
             f"  历史交锋：{self._build_battle_history_line(battle_history, match['home_team'], match['away_team'])}",
             f"  近期战绩：{self._build_recent_form_line(recent_team1, match['home_team'], match.get('team1_id'))}；{self._build_recent_form_line(recent_team2, match['away_team'], match.get('team2_id'))}",
@@ -864,6 +871,11 @@ class JingcaiFootballService:
 
     def _build_match_detail_json(self, match: dict) -> dict:
         detail_bundle = match.get('detail_bundle') or {}
+        odds_snapshots = detail_bundle.get('odds_snapshots') or football_utils.extract_odds_snapshots(
+            detail_bundle.get('odds_euro') or [],
+            detail_bundle.get('odds_asia') or [],
+            detail_bundle.get('odds_totals') or []
+        )
         return {
             'event_key': match.get('event_key'),
             'match_no': match.get('match_no'),
@@ -875,6 +887,7 @@ class JingcaiFootballService:
             'rqspf': match.get('rqspf'),
             'detail': detail_bundle.get('detail') or {},
             'battle_history': (detail_bundle.get('battle_history') or [])[:5],
+            'odds_snapshots': odds_snapshots,
             'odds_euro': (detail_bundle.get('odds_euro') or [])[:6],
             'odds_asia': (detail_bundle.get('odds_asia') or [])[:6],
             'odds_totals': (detail_bundle.get('odds_totals') or [])[:6],
@@ -916,6 +929,47 @@ class JingcaiFootballService:
         asia_line = self._build_odds_asia_line(odds_asia)
         totals_line = self._build_odds_totals_line(odds_totals)
         return f"{euro_line}；{asia_line}；{totals_line}"
+
+    def _build_odds_snapshot_line(self, snapshots: dict) -> str:
+        if not snapshots:
+            return '暂无'
+
+        euro = snapshots.get('euro') or {}
+        asia = snapshots.get('asia') or {}
+        totals = snapshots.get('totals') or {}
+
+        euro_line = '欧赔暂无'
+        if euro:
+            euro_line = (
+                f"欧赔 {euro.get('company') or '--'} 初赔"
+                f"{self._format_snapshot_triplet(euro.get('initial') or {})} -> 即赔"
+                f"{self._format_snapshot_triplet(euro.get('current') or {})}"
+            )
+            if euro.get('updated_at'):
+                euro_line += f" @{euro['updated_at']}"
+
+        asia_line = self._format_line_snapshot_text('亚盘', asia)
+        totals_line = self._format_line_snapshot_text('大小球', totals)
+        return f"{euro_line}；{asia_line}；{totals_line}"
+
+    def _format_snapshot_triplet(self, payload: dict) -> str:
+        return '/'.join(
+            str(payload.get(key) if payload.get(key) is not None else '--')
+            for key in ('win', 'draw', 'lose')
+        )
+
+    def _format_line_snapshot_text(self, label: str, payload: dict) -> str:
+        if not payload:
+            return f'{label}暂无'
+        text = (
+            f"{label} {payload.get('company') or '--'} 初盘{(payload.get('initial') or {}).get('line') or '--'} "
+            f"({(payload.get('initial') or {}).get('home') or '--'}/{(payload.get('initial') or {}).get('away') or '--'}) -> 即盘"
+            f"{(payload.get('current') or {}).get('line') or '--'} "
+            f"({(payload.get('current') or {}).get('home') or '--'}/{(payload.get('current') or {}).get('away') or '--'})"
+        )
+        if payload.get('updated_at'):
+            text += f" @{payload['updated_at']}"
+        return text
 
     def _build_odds_euro_line(self, items: list[dict]) -> str:
         if not items:

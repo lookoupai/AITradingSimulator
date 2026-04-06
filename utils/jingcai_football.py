@@ -309,5 +309,76 @@ def metric_availability_label(metric_key: str, meta_payload: dict, outcome: Opti
     return '无赔率快照'
 
 
+def extract_odds_snapshots(
+    odds_euro: list[dict] | None,
+    odds_asia: list[dict] | None,
+    odds_totals: list[dict] | None
+) -> dict:
+    """把原始赔率详情抽成结构化初赔/即赔快照，便于后续复盘复用"""
+    return {
+        'euro': _extract_euro_snapshot(odds_euro or []),
+        'asia': _extract_line_snapshot(odds_asia or [], snapshot_type='asia'),
+        'totals': _extract_line_snapshot(odds_totals or [], snapshot_type='totals')
+    }
+
+
+def _extract_euro_snapshot(items: list[dict]) -> dict:
+    if not items:
+        return {}
+    primary = next((item for item in items if str(item.get('companyName') or '') == '竞彩官方'), items[0])
+    return {
+        'company': str(primary.get('companyName') or '').strip() or '--',
+        'initial': {
+            'win': parse_float(primary.get('o1Ini')),
+            'draw': parse_float(primary.get('o2Ini')),
+            'lose': parse_float(primary.get('o3Ini'))
+        },
+        'current': {
+            'win': parse_float(primary.get('o1New')),
+            'draw': parse_float(primary.get('o2New')),
+            'lose': parse_float(primary.get('o3New'))
+        },
+        'updated_at': _extract_snapshot_time(primary)
+    }
+
+
+def _extract_line_snapshot(items: list[dict], snapshot_type: str) -> dict:
+    if not items:
+        return {}
+    primary = items[0]
+    return {
+        'company': str(primary.get('companyName') or '').strip() or '--',
+        'initial': {
+            'home': parse_float(primary.get('o1Ini')),
+            'away': parse_float(primary.get('o2Ini')),
+            'line': str(primary.get('o3IniCn') or primary.get('o3IniStr') or primary.get('o3Ini') or '').strip() or '--'
+        },
+        'current': {
+            'home': parse_float(primary.get('o1New')),
+            'away': parse_float(primary.get('o2New')),
+            'line': str(primary.get('o3NewCn') or primary.get('o3NewStr') or primary.get('o3New') or '').strip() or '--'
+        },
+        'updated_at': _extract_snapshot_time(primary),
+        'snapshot_type': snapshot_type
+    }
+
+
+def _extract_snapshot_time(item: dict) -> str:
+    candidates = (
+        'updateTime',
+        'modifyTime',
+        'newTime',
+        'timeNew',
+        'dtNew',
+        'time',
+        'datetime'
+    )
+    for key in candidates:
+        value = str(item.get(key) or '').strip()
+        if value:
+            return value
+    return ''
+
+
 def dump_json(value) -> str:
     return json.dumps(value, ensure_ascii=False)
