@@ -178,6 +178,7 @@ class PredictionApp {
         this.presetExpanded = false;
         this.predictionStatusFilter = 'all';
         this.predictionOutcomeFilter = 'all';
+        this.handleChartResizeBound = () => this.handleChartResize();
         this.init();
     }
 
@@ -278,6 +279,8 @@ class PredictionApp {
         document.querySelectorAll('.tab-btn').forEach((button) => {
             button.addEventListener('click', (event) => this.switchTab(event.currentTarget.dataset.tab));
         });
+        window.addEventListener('resize', this.handleChartResizeBound);
+        window.addEventListener('orientationchange', this.handleChartResizeBound);
 
         document.getElementById('predictorModal').addEventListener('click', (event) => {
             if (event.target.id === 'predictorModal') {
@@ -1116,6 +1119,35 @@ class PredictionApp {
                     </tr>
                 `;
             }).join('');
+            const previewCards = items.slice(0, 8).map((item) => {
+                const marketSnapshot = item.market_snapshot || {};
+                const spfOutcome = this.buildFootballOutcomeText('spf', (item.prediction_payload || {}).spf, marketSnapshot);
+                const rqspfOutcome = this.buildFootballOutcomeText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
+                const spfOdds = this.buildFootballOddsText('spf', (item.prediction_payload || {}).spf, marketSnapshot);
+                const rqspfOdds = this.buildFootballOddsText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot);
+                const spfHint = this.buildFootballAvailabilityHint('spf', marketSnapshot);
+                const rqspfHint = this.buildFootballAvailabilityHint('rqspf', marketSnapshot);
+                const snapshotSummary = this.buildFootballSnapshotSummary(marketSnapshot);
+                const statusLabel = this.footballMatchStatusLabel(marketSnapshot);
+                return this.renderMobileDataCard({
+                    title: `${this.escapeHtml(item.issue_no || '--')} · ${this.escapeHtml(item.title || '--')}`,
+                    badgeHtml: `<span class="tag">${this.escapeHtml(statusLabel)}</span>`,
+                    sections: [
+                        {
+                            label: '胜平负',
+                            content: `${this.escapeHtml(spfOutcome || '--')}${spfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(spfOdds)}</span>` : ''}${spfHint ? `<br><span class="hint-text">${this.escapeHtml(spfHint)}</span>` : ''}${snapshotSummary ? `<br><span class="hint-text">${this.escapeHtml(snapshotSummary)}</span>` : ''}`
+                        },
+                        {
+                            label: '让球胜平负',
+                            content: `${this.escapeHtml(rqspfOutcome || '--')}${rqspfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(rqspfOdds)}</span>` : ''}${rqspfHint ? `<br><span class="hint-text">${this.escapeHtml(rqspfHint)}</span>` : ''}`
+                        },
+                        {
+                            label: '置信度',
+                            content: this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)
+                        }
+                    ]
+                });
+            }).join('');
 
             const candidateCards = parlay.map((item, index) => {
                 const marketSnapshot = item.market_snapshot || {};
@@ -1181,7 +1213,7 @@ class PredictionApp {
                             <p class="section-hint">每场同时展示 SPF / RQSPF 预测及对应赔率快照，避免把“胜 / 胜”误读成两场组合。</p>
                         </div>
                     </div>
-                    <div class="table-wrap">
+                    <div class="table-wrap desktop-only">
                         <table class="data-table compact-table">
                             <thead>
                                 <tr>
@@ -1197,6 +1229,9 @@ class PredictionApp {
                                 ${previewRows || '<tr><td colspan="6" class="empty-cell">暂无预测明细</td></tr>'}
                             </tbody>
                         </table>
+                    </div>
+                    <div id="footballPreviewCards" class="mobile-only mobile-card-list">
+                        ${previewCards || '<div class="empty-panel">暂无预测明细</div>'}
                     </div>
                 </div>
                 <div class="summary-foot">
@@ -1597,8 +1632,12 @@ class PredictionApp {
 
     renderProfitTable(records) {
         const tbody = document.getElementById('profitSimulationBody');
+        const cardsContainer = document.getElementById('profitSimulationCards');
         if (!records.length) {
             tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前区间暂无收益模拟记录</td></tr>';
+            if (cardsContainer) {
+                cardsContainer.innerHTML = '<div class="empty-panel">当前区间暂无收益模拟记录</div>';
+            }
             return;
         }
 
@@ -1616,6 +1655,9 @@ class PredictionApp {
                 <td><strong class="${this.profitValueClass(item.cumulative_profit)}">${this.escapeHtml(this.formatSignedUsd(item.cumulative_profit))}</strong></td>
             </tr>
         `).join('');
+        if (cardsContainer) {
+            cardsContainer.innerHTML = this.renderProfitCards(records);
+        }
     }
 
     renderProfitResult(item) {
@@ -1633,6 +1675,10 @@ class PredictionApp {
         document.getElementById('profitSimulationHint').textContent = message || '暂无收益模拟数据';
         document.getElementById('profitSummaryGrid').innerHTML = '';
         document.getElementById('profitSimulationBody').innerHTML = '<tr><td colspan="10" class="empty-cell">暂无收益模拟数据</td></tr>';
+        const cardsContainer = document.getElementById('profitSimulationCards');
+        if (cardsContainer) {
+            cardsContainer.innerHTML = `<div class="empty-panel">${this.escapeHtml(message || '暂无收益模拟数据')}</div>`;
+        }
         this.renderProfitChart([]);
     }
 
@@ -1670,10 +1716,14 @@ class PredictionApp {
 
     renderPredictionsTable(predictions) {
         const tbody = document.getElementById('predictionsBody');
+        const cardsContainer = document.getElementById('predictionsCards');
         const filteredPredictions = this.filterPredictions(predictions);
 
         if (!filteredPredictions.length) {
             tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">当前筛选条件下暂无记录</td></tr>';
+            if (cardsContainer) {
+                cardsContainer.innerHTML = '<div class="empty-panel">当前筛选条件下暂无记录</div>';
+            }
             return;
         }
 
@@ -1689,6 +1739,9 @@ class PredictionApp {
                 <td>${this.escapeHtml(prediction.settled_at || '--')}</td>
             </tr>
         `).join('');
+        if (cardsContainer) {
+            cardsContainer.innerHTML = this.renderPredictionCards(filteredPredictions);
+        }
     }
 
     filterPredictions(predictions) {
@@ -1722,6 +1775,7 @@ class PredictionApp {
     renderDrawsTable(draws) {
         const tbody = document.getElementById('drawsBody');
         const headerRow = document.getElementById('drawTableHeadRow');
+        const cardsContainer = document.getElementById('drawsCards');
         if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
             headerRow.innerHTML = `
                 <th>场次</th>
@@ -1743,6 +1797,9 @@ class PredictionApp {
         }
         if (!draws.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无官方开奖数据</td></tr>';
+            if (cardsContainer) {
+                cardsContainer.innerHTML = '<div class="empty-panel">暂无官方开奖数据</div>';
+            }
             return;
         }
 
@@ -1780,6 +1837,9 @@ class PredictionApp {
                     </tr>
                 `;
             }).join('');
+            if (cardsContainer) {
+                cardsContainer.innerHTML = this.renderDrawCards(draws);
+            }
             return;
         }
 
@@ -1793,6 +1853,118 @@ class PredictionApp {
                 <td>${this.escapeHtml(draw.open_time || '')}</td>
             </tr>
         `).join('');
+        if (cardsContainer) {
+            cardsContainer.innerHTML = this.renderDrawCards(draws);
+        }
+    }
+
+    renderPredictionCards(predictions) {
+        return (predictions || []).map((prediction) => {
+            const statusText = this.predictionStatusLabel(prediction.status);
+            const metaText = [
+                `置信度 ${this.formatPercent(prediction.confidence !== null && prediction.confidence !== undefined ? prediction.confidence * 100 : null)}`,
+                `得分 ${this.formatPercent(prediction.score_percentage)}`,
+                `结算 ${this.escapeHtml(prediction.settled_at || '--')}`
+            ].join(' · ');
+
+            return this.renderMobileDataCard({
+                title: `期号 ${this.escapeHtml(prediction.issue_no || '--')}`,
+                badgeHtml: `<span class="status-chip ${prediction.status}">${statusText}</span>`,
+                sections: [
+                    { label: '预测明细', content: this.renderPredictionResult(prediction) },
+                    { label: '开奖明细', content: this.renderActualResult(prediction) },
+                    { label: '命中明细', content: this.renderHitSummary(prediction) }
+                ],
+                footer: metaText
+            });
+        }).join('');
+    }
+
+    renderDrawCards(draws) {
+        if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            return draws.map((draw) => {
+                const meta = draw.meta_payload || {
+                    match_no: draw.match_no,
+                    spf_odds: draw.spf_odds,
+                    rqspf: draw.rqspf,
+                    settled: draw.settled
+                };
+                const result = draw.result_payload || {
+                    score1: draw.score1,
+                    score2: draw.score2
+                };
+                const spfOdds = meta.spf_odds || {};
+                const rqspf = meta.rqspf || {};
+                const spfText = ['胜', '平', '负'].map((key) => `${key}:${spfOdds[key] ?? '--'}`).join(' / ');
+                const rqText = ['胜', '平', '负'].map((key) => `${key}:${(rqspf.odds || {})[key] ?? '--'}`).join(' / ');
+                const scoreText = result.score1 !== null && result.score1 !== undefined && result.score2 !== null && result.score2 !== undefined
+                    ? `${result.score1}:${result.score2}`
+                    : '--';
+                const statusLabel = this.footballMatchStatusLabel(draw);
+                const teams = draw.home_team && draw.away_team
+                    ? `${this.escapeHtml(draw.home_team)} vs ${this.escapeHtml(draw.away_team)}`
+                    : this.escapeHtml(draw.event_name || '--');
+
+                return this.renderMobileDataCard({
+                    title: `${this.escapeHtml(meta.match_no || draw.event_key || '--')} · ${teams}`,
+                    badgeHtml: `<span class="tag">${this.escapeHtml(statusLabel)}</span>`,
+                    sections: [
+                        { label: '联赛', content: this.escapeHtml(draw.league || '--') },
+                        { label: '胜平负赔率', content: this.escapeHtml(spfText) },
+                        { label: '让球胜平负赔率', content: this.escapeHtml((rqspf.handicap_text || '--') + ' [' + rqText + ']') },
+                        { label: '比赛时间 / 比分', content: `${this.escapeHtml(draw.event_time || '--')}<br><span class="hint-text">${this.escapeHtml(scoreText)}</span>` }
+                    ]
+                });
+            }).join('');
+        }
+
+        return draws.map((draw) => this.renderMobileDataCard({
+            title: `期号 ${this.escapeHtml(draw.issue_no || '--')}`,
+            sections: [
+                { label: '开奖号码', content: `<strong>${this.escapeHtml(draw.result_number_text || '--')}</strong>` },
+                { label: '大/小', content: this.escapeHtml(draw.big_small || '--') },
+                { label: '单/双', content: this.escapeHtml(draw.odd_even || '--') },
+                { label: '组合结果', content: this.escapeHtml(draw.combo || '--') },
+                { label: '开奖时间', content: this.escapeHtml(draw.open_time || '--') }
+            ]
+        })).join('');
+    }
+
+    renderProfitCards(records) {
+        return (records || []).map((item) => this.renderMobileDataCard({
+            title: `期号/批次 ${this.escapeHtml(item.issue_no || '--')}`,
+            sections: [
+                { label: '开奖 / 开赛时间', content: this.escapeHtml(item.open_time || '--') },
+                { label: '下注内容', content: this.escapeHtml(item.ticket_label || '--') },
+                { label: '下注额 / 手数', content: `${this.escapeHtml(this.formatUsd(item.stake_amount || 0))}<br><span class="hint-text">${this.escapeHtml(item.bet_step_label || '--')}</span>` },
+                { label: '预测值', content: this.escapeHtml(item.predicted_value || '--') },
+                { label: '实际值', content: this.escapeHtml(item.actual_value || '--') },
+                { label: '赔率', content: this.formatOdds(item.odds) },
+                { label: '结果', content: this.renderProfitResult(item) },
+                { label: '单期盈亏', content: `<strong class="${this.profitValueClass(item.net_profit)}">${this.escapeHtml(this.formatSignedUsd(item.net_profit))}</strong>` },
+                { label: '累计盈亏', content: `<strong class="${this.profitValueClass(item.cumulative_profit)}">${this.escapeHtml(this.formatSignedUsd(item.cumulative_profit))}</strong>` }
+            ]
+        })).join('');
+    }
+
+    renderMobileDataCard({ title, badgeHtml = '', sections = [], footer = '' }) {
+        return `
+            <article class="prediction-card mobile-data-card">
+                <div class="prediction-section-head">
+                    <strong>${title || '--'}</strong>
+                    ${badgeHtml || ''}
+                </div>
+                <div class="detail-list">
+                    ${sections.map((item) => `
+                        <div class="detail-row">
+                            <span class="detail-label">${this.escapeHtml(item.label || '--')}</span>
+                            <div>${item.content || '--'}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                ${footer ? `<span class="card-hint">${footer}</span>` : ''}
+            </article>
+        `;
     }
 
     renderAILogs(predictions) {
@@ -1917,6 +2089,15 @@ class PredictionApp {
         });
     }
 
+    handleChartResize() {
+        if (this.chart) {
+            this.chart.resize();
+        }
+        if (this.profitChart) {
+            this.profitChart.resize();
+        }
+    }
+
     renderEmptyPredictorState() {
         this.currentStats = null;
         this.currentLotteryType = 'pc28';
@@ -1961,7 +2142,9 @@ class PredictionApp {
         document.getElementById('profitSimulationHint').textContent = '请选择预测方案';
         document.getElementById('profitSummaryGrid').innerHTML = '';
         document.getElementById('profitSimulationBody').innerHTML = '<tr><td colspan="10" class="empty-cell">暂无收益模拟数据</td></tr>';
+        document.getElementById('profitSimulationCards').innerHTML = '<div class="empty-panel">暂无收益模拟数据</div>';
         document.getElementById('predictionsBody').innerHTML = '<tr><td colspan="8" class="empty-cell">暂无预测记录</td></tr>';
+        document.getElementById('predictionsCards').innerHTML = '<div class="empty-panel">暂无预测记录</div>';
         document.getElementById('aiLogs').innerHTML = '<div class="empty-panel">暂无 AI 输出记录</div>';
         if (this.chart) {
             this.chart.clear();
@@ -1978,6 +2161,7 @@ class PredictionApp {
         document.querySelectorAll('.tab-panel').forEach((panel) => {
             panel.classList.toggle('active', panel.id === `${tabName}Tab`);
         });
+        this.handleChartResize();
     }
 
     openCreateModal() {

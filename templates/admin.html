@@ -63,7 +63,7 @@
                         <p class="panel-subtitle">查看所有用户、管理员状态与关联方案数量。</p>
                     </div>
                 </div>
-                <div class="table-wrap">
+                <div class="table-wrap desktop-only">
                     <table class="data-table">
                         <thead>
                             <tr>
@@ -83,6 +83,9 @@
                         </tbody>
                     </table>
                 </div>
+                <div id="adminUsersCards" class="mobile-card-list mobile-only">
+                    <div class="empty-panel">暂无用户数据</div>
+                </div>
             </section>
 
             <section class="panel">
@@ -92,7 +95,7 @@
                         <p class="panel-subtitle">查看所有预测方案、主玩法、默认收益规则/玩法与运行状态。</p>
                     </div>
                 </div>
-                <div class="table-wrap">
+                <div class="table-wrap desktop-only">
                     <table class="data-table">
                         <thead>
                             <tr>
@@ -115,6 +118,9 @@
                         </tbody>
                     </table>
                 </div>
+                <div id="adminPredictorsCards" class="mobile-card-list mobile-only">
+                    <div class="empty-panel">暂无方案数据</div>
+                </div>
             </section>
 
             <section class="panel">
@@ -124,7 +130,7 @@
                         <p class="panel-subtitle">展示最近失败的预测记录，便于排查模型或接口问题。</p>
                     </div>
                 </div>
-                <div class="table-wrap">
+                <div class="table-wrap desktop-only">
                     <table class="data-table">
                         <thead>
                             <tr>
@@ -140,6 +146,9 @@
                             <tr><td colspan="6" class="empty-cell">加载中...</td></tr>
                         </tbody>
                     </table>
+                </div>
+                <div id="adminFailuresCards" class="mobile-card-list mobile-only">
+                    <div class="empty-panel">最近暂无失败记录</div>
                 </div>
             </section>
         </main>

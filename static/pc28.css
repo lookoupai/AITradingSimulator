@@ -1,5 +1,9 @@
 :root {
     color-scheme: light;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
     --bg: #f8fafc;
     --panel: #ffffff;
     --panel-soft: #f1f5f9;
@@ -57,6 +61,30 @@ body.pc28-auth {
 a {
     color: inherit;
     text-decoration: none;
+}
+
+.mobile-only {
+    display: none !important;
+}
+
+.desktop-only {
+    display: block !important;
+}
+
+.desktop-only.inline {
+    display: inline !important;
+}
+
+.desktop-only.inline-flex {
+    display: inline-flex !important;
+}
+
+.desktop-only.flex {
+    display: flex !important;
+}
+
+.desktop-only.grid {
+    display: grid !important;
 }
 
 .pc28-shell,
@@ -694,6 +722,81 @@ a {
 
 .table-wrap {
     overflow-x: auto;
+}
+
+.responsive-table-mobile {
+    display: none;
+}
+
+.mobile-card-list {
+    display: grid;
+    gap: 12px;
+}
+
+.mobile-card {
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--panel-soft);
+    padding: 14px;
+}
+
+.mobile-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.mobile-card-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.mobile-card-meta {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.mobile-card-body {
+    display: grid;
+    gap: 10px;
+}
+
+.mobile-card-row {
+    display: grid;
+    grid-template-columns: minmax(84px, 108px) minmax(0, 1fr);
+    gap: 10px;
+    align-items: flex-start;
+}
+
+.mobile-card-label {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.5;
+}
+
+.mobile-card-value {
+    min-width: 0;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.55;
+    word-break: break-word;
+}
+
+.mobile-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.mobile-card-actions .btn {
+    min-height: 36px;
 }
 
 .scroll-table-wrap {
@@ -1442,10 +1545,42 @@ a {
 }
 
 @media (max-width: 768px) {
+    .mobile-only {
+        display: block !important;
+    }
+
+    .mobile-only.inline {
+        display: inline !important;
+    }
+
+    .mobile-only.inline-flex {
+        display: inline-flex !important;
+    }
+
+    .mobile-only.flex {
+        display: flex !important;
+    }
+
+    .mobile-only.grid {
+        display: grid !important;
+    }
+
+    .desktop-only {
+        display: none !important;
+    }
+
+    .responsive-table-desktop {
+        display: none !important;
+    }
+
+    .responsive-table-mobile {
+        display: block;
+    }
+
     .pc28-shell,
     .home-shell {
         width: min(100vw, calc(100vw - 20px));
-        padding: 10px 0 24px;
+        padding: calc(10px + var(--safe-top)) max(0px, var(--safe-right)) calc(24px + var(--safe-bottom)) max(0px, var(--safe-left));
     }
 
     .pc28-header,
@@ -1458,6 +1593,21 @@ a {
     .hero-actions,
     .panel-actions {
         width: 100%;
+    }
+
+    .panel-actions.mobile-stack {
+        display: grid;
+        grid-template-columns: 1fr;
+        align-items: stretch;
+        gap: 10px;
+    }
+
+    .panel-actions.mobile-stack .btn,
+    .panel-actions.mobile-stack .home-select,
+    .panel-actions.mobile-stack input,
+    .panel-actions.mobile-stack select {
+        width: 100%;
+        min-width: 0;
     }
 
     .header-actions .btn,
@@ -1502,5 +1652,34 @@ a {
 
     .simulation-table-wrap {
         max-height: 420px;
+    }
+
+    .mobile-card {
+        border-radius: 14px;
+        padding: 12px;
+    }
+
+    .mobile-card-row {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+
+    .mobile-card-actions {
+        margin-top: 8px;
+    }
+
+    .mobile-card-actions .btn,
+    .mobile-card-actions .home-select,
+    .mobile-card-actions input,
+    .mobile-card-actions select {
+        width: 100%;
+    }
+
+    .modal {
+        padding: calc(12px + var(--safe-top)) max(12px, var(--safe-right)) calc(12px + var(--safe-bottom)) max(12px, var(--safe-left));
+    }
+
+    .modal-card {
+        max-height: calc(100vh - 24px - var(--safe-top) - var(--safe-bottom));
     }
 }

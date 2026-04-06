@@ -334,6 +334,7 @@ class PublicPredictorPage {
 
     renderPredictions(items) {
         const tbody = document.getElementById('publicPredictionBody');
+        const cards = document.getElementById('publicPredictionCards');
         const subtitle = document.getElementById('publicPredictionSubtitle');
         const predictor = this.currentPredictor || null;
 
@@ -347,6 +348,9 @@ class PublicPredictorPage {
 
         if (!items.length) {
             tbody.innerHTML = '<tr><td colspan="7" class="empty-cell">当前公开层级未开放预测记录</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">当前公开层级未开放预测记录</div>';
+            }
             return;
         }
 
@@ -362,6 +366,33 @@ class PublicPredictorPage {
                     <td>${this.escapeHtml(item.reasoning_summary || '无')}</td>
                 </tr>
             `).join('');
+            if (cards) {
+                cards.innerHTML = items.map((item) => {
+                    const marketSnapshot = item.market_snapshot || {};
+                    const euroSummary = this.buildFootballSnapshotSummary(marketSnapshot);
+                    return `
+                        <article class="prediction-card">
+                            <div class="detail-list">
+                                <div class="detail-row"><span class="detail-label">期号</span><strong>${this.escapeHtml(item.issue_no || '--')}</strong></div>
+                                <div class="detail-row"><span class="detail-label">状态</span><strong>${this.escapeHtml(this.statusLabel(item.status))}</strong></div>
+                                <div class="detail-row"><span class="detail-label">预测</span><div>${this.renderFootballResultStack(item)}</div></div>
+                                <div class="detail-row"><span class="detail-label">开奖</span><div>${this.renderFootballActualStack(item.actual_payload || {}, item.status)}</div></div>
+                                <div class="detail-row"><span class="detail-label">命中</span><div>${this.renderHitSummary(item)}</div></div>
+                                <div class="detail-row"><span class="detail-label">置信度</span><strong>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</strong></div>
+                                <div class="detail-row"><span class="detail-label">说明</span><strong>${this.escapeHtml(item.reasoning_summary || '无')}</strong></div>
+                            </div>
+                            <details class="ai-log-block">
+                                <summary>赔率快照与欧赔变化</summary>
+                                <div class="detail-list">
+                                    <div class="detail-row"><span class="detail-label">SPF赔率</span><strong>${this.escapeHtml(this.buildFootballOddsText('spf', (item.prediction_payload || {}).spf, marketSnapshot) || '--')}</strong></div>
+                                    <div class="detail-row"><span class="detail-label">RQSPF赔率</span><strong>${this.escapeHtml(this.buildFootballOddsText('rqspf', (item.prediction_payload || {}).rqspf, marketSnapshot) || '--')}</strong></div>
+                                    <div class="detail-row"><span class="detail-label">欧赔变化</span><strong>${this.escapeHtml(euroSummary || '--')}</strong></div>
+                                </div>
+                            </details>
+                        </article>
+                    `;
+                }).join('');
+            }
             return;
         }
 
@@ -376,6 +407,21 @@ class PublicPredictorPage {
                 <td>${this.escapeHtml(item.reasoning_summary || '无')}</td>
             </tr>
         `).join('');
+        if (cards) {
+            cards.innerHTML = items.map((item) => `
+                <article class="prediction-card">
+                    <div class="detail-list">
+                        <div class="detail-row"><span class="detail-label">期号</span><strong>${this.escapeHtml(item.issue_no || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">状态</span><strong>${this.escapeHtml(this.statusLabel(item.status))}</strong></div>
+                        <div class="detail-row"><span class="detail-label">预测</span><div>${this.renderResultStack(item.prediction_number, item.prediction_big_small, item.prediction_odd_even, item.prediction_combo)}</div></div>
+                        <div class="detail-row"><span class="detail-label">开奖</span><div>${this.renderResultStack(item.actual_number, item.actual_big_small, item.actual_odd_even, item.actual_combo, item.status)}</div></div>
+                        <div class="detail-row"><span class="detail-label">命中</span><div>${this.renderHitSummary(item)}</div></div>
+                        <div class="detail-row"><span class="detail-label">置信度</span><strong>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</strong></div>
+                        <div class="detail-row"><span class="detail-label">说明</span><strong>${this.escapeHtml(item.reasoning_summary || '无')}</strong></div>
+                    </div>
+                </article>
+            `).join('');
+        }
     }
 
     renderProfitControls(predictor, resetMetric = false) {
@@ -613,12 +659,19 @@ class PublicPredictorPage {
 
     renderProfitTable(records, canViewRecords) {
         const tbody = document.getElementById('publicProfitSimulationBody');
+        const cards = document.getElementById('publicProfitSimulationCards');
         if (!canViewRecords) {
             tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前公开层级仅展示收益汇总，不公开单期收益明细</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">当前公开层级仅展示收益汇总，不公开单期收益明细</div>';
+            }
             return;
         }
         if (!records.length) {
             tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前区间暂无收益模拟记录</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">当前区间暂无收益模拟记录</div>';
+            }
             return;
         }
 
@@ -636,6 +689,24 @@ class PublicPredictorPage {
                 <td><strong class="${this.profitValueClass(item.cumulative_profit)}">${this.escapeHtml(this.formatSignedUsd(item.cumulative_profit))}</strong></td>
             </tr>
         `).join('');
+        if (cards) {
+            cards.innerHTML = records.map((item) => `
+                <article class="prediction-card">
+                    <div class="detail-list">
+                        <div class="detail-row"><span class="detail-label">期号/批次</span><strong>${this.escapeHtml(item.issue_no || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">开奖/开赛时间</span><strong>${this.escapeHtml(item.open_time || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">下注内容</span><strong>${this.escapeHtml(item.ticket_label || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">下注额/手数</span><strong>${this.escapeHtml(this.formatUsd(item.stake_amount || 0))} / ${this.escapeHtml(item.bet_step_label || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">预测值</span><strong>${this.escapeHtml(item.predicted_value || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">实际值</span><strong>${this.escapeHtml(item.actual_value || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">赔率</span><strong>${this.formatOdds(item.odds)}</strong></div>
+                        <div class="detail-row"><span class="detail-label">结果</span><div>${this.renderProfitResult(item)}</div></div>
+                        <div class="detail-row"><span class="detail-label">单期盈亏</span><strong class="${this.profitValueClass(item.net_profit)}">${this.escapeHtml(this.formatSignedUsd(item.net_profit))}</strong></div>
+                        <div class="detail-row"><span class="detail-label">累计盈亏</span><strong class="${this.profitValueClass(item.cumulative_profit)}">${this.escapeHtml(this.formatSignedUsd(item.cumulative_profit))}</strong></div>
+                    </div>
+                </article>
+            `).join('');
+        }
     }
 
     renderProfitResult(item) {
@@ -653,6 +724,10 @@ class PublicPredictorPage {
         document.getElementById('publicProfitSimulationHint').textContent = message || '暂无收益模拟数据';
         document.getElementById('publicProfitSummaryGrid').innerHTML = '';
         document.getElementById('publicProfitSimulationBody').innerHTML = '<tr><td colspan="10" class="empty-cell">暂无收益模拟数据</td></tr>';
+        const cards = document.getElementById('publicProfitSimulationCards');
+        if (cards) {
+            cards.innerHTML = '<div class="empty-panel">暂无收益模拟数据</div>';
+        }
         this.renderProfitChart([]);
     }
 

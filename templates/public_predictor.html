@@ -82,7 +82,7 @@
                     <p class="panel-subtitle" id="publicPredictionSubtitle">仅展示用户已主动分享的预测内容。</p>
                 </div>
             </div>
-            <div class="table-wrap scroll-table-wrap predictions-table-wrap">
+            <div class="table-wrap scroll-table-wrap predictions-table-wrap desktop-only">
                 <table class="data-table">
                     <thead>
                         <tr>
@@ -99,6 +99,9 @@
                         <tr><td colspan="7" class="empty-cell">暂无公开预测记录</td></tr>
                     </tbody>
                 </table>
+            </div>
+            <div id="publicPredictionCards" class="mobile-card-list mobile-only">
+                <div class="empty-panel">暂无公开预测记录</div>
             </div>
         </section>
 
@@ -133,7 +136,7 @@
             </div>
             <div id="publicProfitSummaryGrid" class="stats-grid"></div>
             <div id="publicProfitSimulationChart" class="chart-box"></div>
-            <div class="table-wrap scroll-table-wrap simulation-table-wrap">
+            <div class="table-wrap scroll-table-wrap simulation-table-wrap desktop-only">
                 <table class="data-table">
                     <thead>
                         <tr>
@@ -153,6 +156,9 @@
                         <tr><td colspan="10" class="empty-cell">暂无收益模拟数据</td></tr>
                     </tbody>
                 </table>
+            </div>
+            <div id="publicProfitSimulationCards" class="mobile-card-list mobile-only">
+                <div class="empty-panel">暂无收益模拟数据</div>
             </div>
         </section>
         {% endif %}

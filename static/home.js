@@ -258,10 +258,14 @@ class HomePage {
 
     renderDraws(draws) {
         const tbody = document.getElementById('recentDrawsBody');
+        const cards = document.getElementById('recentDrawsCards');
         if (this.currentLotteryType === 'jingcai_football') {
             this.updateFootballDrawHeaders();
             if (!draws.length) {
                 tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无赛事数据</td></tr>';
+                if (cards) {
+                    cards.innerHTML = '<div class="empty-panel">暂无赛事数据</div>';
+                }
                 return;
             }
 
@@ -290,12 +294,18 @@ class HomePage {
                     </tr>
                 `;
             }).join('');
+            if (cards) {
+                cards.innerHTML = draws.map((draw) => this.renderDrawCard(draw)).join('');
+            }
             return;
         }
 
         this.updatePc28DrawHeaders();
         if (!draws.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无开奖数据</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">暂无开奖数据</div>';
+            }
             return;
         }
 
@@ -309,6 +319,9 @@ class HomePage {
                 <td>${this.escapeHtml(draw.open_time || '')}</td>
             </tr>
         `).join('');
+        if (cards) {
+            cards.innerHTML = draws.map((draw) => this.renderDrawCard(draw)).join('');
+        }
     }
 
     updatePc28DrawHeaders() {
@@ -318,6 +331,63 @@ class HomePage {
         document.getElementById('homeDrawHead4').textContent = '单/双';
         document.getElementById('homeDrawHead5').textContent = '组合结果';
         document.getElementById('homeDrawHead6').textContent = '开奖时间';
+    }
+
+    renderDrawCard(draw) {
+        if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
+            const meta = draw.meta_payload || {};
+            const result = draw.result_payload || {};
+            const teams = draw.home_team && draw.away_team
+                ? `${this.escapeHtml(draw.home_team)} vs ${this.escapeHtml(draw.away_team)}`
+                : this.escapeHtml(draw.event_name || '--');
+            const spfOdds = meta.spf_odds || {};
+            const rqspf = meta.rqspf || {};
+            const spfText = ['胜', '平', '负'].map((key) => `${key}:${spfOdds[key] ?? '--'}`).join(' / ');
+            const rqText = ['胜', '平', '负'].map((key) => `${key}:${(rqspf.odds || {})[key] ?? '--'}`).join(' / ');
+            const scoreText = result.score1 !== null && result.score1 !== undefined && result.score2 !== null && result.score2 !== undefined
+                ? `${result.score1}:${result.score2}`
+                : '--';
+            const statusLabel = this.footballMatchStatusLabel(draw);
+            return `
+                <article class="home-card">
+                    <div class="home-card-row">
+                        <div>
+                            <div class="home-card-label">${this.escapeHtml(meta.match_no || draw.event_key || '--')}</div>
+                            <strong>${this.escapeHtml(teams)}</strong>
+                        </div>
+                        <span class="tag home-card-badge">${this.escapeHtml(statusLabel)}</span>
+                    </div>
+                    <p class="home-card-meta">${this.escapeHtml(draw.league || '--')} · ${this.escapeHtml(draw.event_time || '')}</p>
+                    <div class="home-card-row">
+                        <span>胜平负：${this.escapeHtml(spfText)}</span>
+                        <span>让球：${this.escapeHtml((rqspf.handicap_text || '--') + ' [' + rqText + ']')}</span>
+                    </div>
+                    <p class="home-card-meta">${this.escapeHtml(scoreText)}</p>
+                </article>
+            `;
+        }
+        const number = draw.issue_no;
+        const openTime = draw.open_time || '--';
+        return `
+            <article class="home-card">
+                <div class="home-card-row">
+                    <div>
+                        <div class="home-card-label">期号</div>
+                        <strong>${this.escapeHtml(number)}</strong>
+                    </div>
+                    <div>
+                        <div class="home-card-label">开奖号码</div>
+                        <strong>${this.escapeHtml(draw.result_number_text)}</strong>
+                    </div>
+                </div>
+                <div class="home-card-row">
+                    <span>大/小：${this.escapeHtml(draw.big_small)}</span>
+                    <span>单/双：${this.escapeHtml(draw.odd_even)}</span>
+                    <span>组合：${this.escapeHtml(draw.combo)}</span>
+                </div>
+                <p class="home-card-meta">${this.escapeHtml(openTime)}</p>
+            </article>
+        `;
     }
 
     updateFootballDrawHeaders() {
@@ -331,8 +401,12 @@ class HomePage {
 
     renderPublicPredictors(items) {
         const tbody = document.getElementById('publicPredictorBody');
+        const cards = document.getElementById('publicPredictorCards');
         if (!items.length) {
             tbody.innerHTML = '<tr><td colspan="10" class="empty-cell">暂无公开方案数据</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">暂无公开方案数据</div>';
+            }
             return;
         }
 
@@ -353,6 +427,41 @@ class HomePage {
                 <td><a class="btn ghost compact" href="/public/predictors/${item.predictor_id}">${item.share_level === 'stats_only' ? '查看统计' : '查看方案'}</a></td>
             </tr>
         `).join('');
+        if (cards) {
+            cards.innerHTML = items.map((item, index) => this.renderPublicPredictorCard(item, index)).join('');
+        }
+    }
+
+    renderPublicPredictorCard(item, index) {
+        return `
+            <article class="home-card">
+                <div class="home-card-row">
+                    <div>
+                        <div class="home-card-label">排名</div>
+                        <strong>${index + 1}</strong>
+                    </div>
+                    <span class="home-card-badge">${this.escapeHtml(item.share_level_label || '--')}</span>
+                </div>
+                <p class="home-card-meta">${this.escapeHtml(item.username)} · ${this.escapeHtml(item.model_name || '--')}</p>
+                <strong>${this.escapeHtml(item.predictor_name)}</strong>
+                <div class="home-card-row">
+                    <span>${this.escapeHtml((item.lottery_label || '--') + ' / ' + (item.primary_metric_label || '--'))}</span>
+                    <span>${this.escapeHtml(item.metric_label || '--')}</span>
+                </div>
+                <div class="home-card-row">
+                    <span>20期 ${this.escapeHtml(item.recent_20 ? this.formatRatioRate(item.recent_20) : '--')}</span>
+                    <span>100期 ${this.escapeHtml(item.recent_100 ? this.formatRatioRate(item.recent_100) : '--')}</span>
+                </div>
+                <div class="home-card-row">
+                    <span>当前连中 ${this.escapeHtml(String(item.current_hit_streak || 0))}</span>
+                    <span>历史最高 ${this.escapeHtml(String(item.historical_max_hit_streak || 0))}</span>
+                </div>
+                <div class="home-card-row">
+                    <span>${this.escapeHtml(item.share_level_label || '--')}</span>
+                    <a class="btn ghost compact" href="/public/predictors/${item.predictor_id}">${item.share_level === 'stats_only' ? '查看统计' : '查看方案'}</a>
+                </div>
+            </article>
+        `;
     }
 
     renderTags(targetId, items, suffix) {

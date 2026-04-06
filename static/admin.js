@@ -25,6 +25,16 @@ class AdminPage {
             }
             this.toggleAdmin(button.dataset.userId);
         });
+        const usersCards = document.getElementById('adminUsersCards');
+        if (usersCards) {
+            usersCards.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-action="toggle-admin"]');
+                if (!button) {
+                    return;
+                }
+                this.toggleAdmin(button.dataset.userId);
+            });
+        }
         document.getElementById('adminPredictorsBody').addEventListener('click', (event) => {
             const button = event.target.closest('[data-action="toggle-predictor"]');
             if (!button) {
@@ -32,6 +42,16 @@ class AdminPage {
             }
             this.togglePredictor(button.dataset.predictorId);
         });
+        const predictorsCards = document.getElementById('adminPredictorsCards');
+        if (predictorsCards) {
+            predictorsCards.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-action="toggle-predictor"]');
+                if (!button) {
+                    return;
+                }
+                this.togglePredictor(button.dataset.predictorId);
+            });
+        }
     }
 
     async checkAuth() {
@@ -138,8 +158,12 @@ class AdminPage {
 
     renderUsers(users) {
         const tbody = document.getElementById('adminUsersBody');
+        const cards = document.getElementById('adminUsersCards');
         if (!users.length) {
             tbody.innerHTML = '<tr><td colspan="9" class="empty-cell">暂无用户数据</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">暂无用户数据</div>';
+            }
             return;
         }
 
@@ -160,12 +184,36 @@ class AdminPage {
                 </td>
             </tr>
         `).join('');
+        if (cards) {
+            cards.innerHTML = users.map((user) => `
+                <article class="prediction-card">
+                    <div class="detail-list">
+                        <div class="detail-row"><span class="detail-label">用户</span><strong>${this.escapeHtml(user.username)}</strong></div>
+                        <div class="detail-row"><span class="detail-label">ID</span><strong>${this.escapeHtml(String(user.id || '--'))}</strong></div>
+                        <div class="detail-row"><span class="detail-label">邮箱</span><strong>${this.escapeHtml(user.email || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">角色</span><strong>${user.is_admin ? '管理员' : '普通用户'}</strong></div>
+                        <div class="detail-row"><span class="detail-label">方案数/启用</span><strong>${this.escapeHtml(String(user.predictor_count || 0))} / ${this.escapeHtml(String(user.enabled_predictor_count || 0))}</strong></div>
+                        <div class="detail-row"><span class="detail-label">最近方案更新时间</span><strong>${this.escapeHtml(user.latest_predictor_update || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">注册时间</span><strong>${this.escapeHtml(user.created_at || '--')}</strong></div>
+                    </div>
+                    <div class="share-panel-actions">
+                        <button class="btn ghost compact" data-action="toggle-admin" data-user-id="${user.id}">
+                            ${user.is_admin ? '取消管理员' : '设为管理员'}
+                        </button>
+                    </div>
+                </article>
+            `).join('');
+        }
     }
 
     renderPredictors(predictors) {
         const tbody = document.getElementById('adminPredictorsBody');
+        const cards = document.getElementById('adminPredictorsCards');
         if (!predictors.length) {
             tbody.innerHTML = '<tr><td colspan="12" class="empty-cell">暂无方案数据</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">暂无方案数据</div>';
+            }
             return;
         }
 
@@ -195,12 +243,39 @@ class AdminPage {
                 </td>
             </tr>
         `).join('');
+        if (cards) {
+            cards.innerHTML = predictors.map((item) => `
+                <article class="prediction-card">
+                    <div class="detail-list">
+                        <div class="detail-row"><span class="detail-label">方案</span><strong>${this.escapeHtml(item.name || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">ID / 用户</span><strong>${this.escapeHtml(String(item.id || '--'))} / ${this.escapeHtml(item.username || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">模型</span><strong>${this.escapeHtml(item.model_name || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">主玩法</span><strong>${this.escapeHtml(item.primary_metric_label || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">默认收益规则/玩法</span><strong>${this.escapeHtml(item.profit_rule_label || '--')} / ${this.escapeHtml(item.profit_default_metric_label || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">公开层级</span><strong>${this.escapeHtml(item.share_level || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">预测/失败</span><strong>${this.escapeHtml(String(item.prediction_count || 0))} / ${this.escapeHtml(String(item.failed_prediction_count || 0))}</strong></div>
+                        <div class="detail-row"><span class="detail-label">最近期号</span><strong>${this.escapeHtml(item.latest_issue_no || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">最近更新时间</span><strong>${this.escapeHtml(item.latest_prediction_update || item.updated_at || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">状态</span><strong>${item.enabled ? '启用中' : '已停用'}</strong></div>
+                    </div>
+                    <div class="share-panel-actions">
+                        <button class="btn ghost compact" data-action="toggle-predictor" data-predictor-id="${item.id}">
+                            ${item.enabled ? '停用' : '启用'}
+                        </button>
+                    </div>
+                </article>
+            `).join('');
+        }
     }
 
     renderFailures(items) {
         const tbody = document.getElementById('adminFailuresBody');
+        const cards = document.getElementById('adminFailuresCards');
         if (!items.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">最近暂无失败记录</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">最近暂无失败记录</div>';
+            }
             return;
         }
 
@@ -214,6 +289,20 @@ class AdminPage {
                 <td>${this.escapeHtml(item.error_message || '--')}</td>
             </tr>
         `).join('');
+        if (cards) {
+            cards.innerHTML = items.map((item) => `
+                <article class="prediction-card">
+                    <div class="detail-list">
+                        <div class="detail-row"><span class="detail-label">更新时间</span><strong>${this.escapeHtml(item.updated_at || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">用户</span><strong>${this.escapeHtml(item.username || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">方案</span><strong>${this.escapeHtml(item.predictor_name || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">期号</span><strong>${this.escapeHtml(item.issue_no || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">状态</span><strong>${this.escapeHtml(item.status || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">错误</span><strong>${this.escapeHtml(item.error_message || '--')}</strong></div>
+                    </div>
+                </article>
+            `).join('');
+        }
     }
 
     async toggleAdmin(userId) {

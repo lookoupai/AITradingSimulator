@@ -10,6 +10,86 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v={{ app_version }}">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <link rel="stylesheet" href="/static/pc28.css?v={{ app_version }}">
+    <style>
+        .pc28-home .mobile-only {
+            display: none;
+        }
+
+        .pc28-home .home-card-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .pc28-home .home-card {
+            border: 1px solid color-mix(in srgb, var(--border) 75%, transparent 25%);
+            border-radius: 18px;
+            padding: 14px 16px;
+            background: var(--panel);
+            box-shadow: var(--shadow);
+        }
+
+        .pc28-home .home-card-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .pc28-home .home-card-row strong {
+            font-weight: 700;
+        }
+
+        .pc28-home .home-card-meta {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .pc28-home .home-card-label {
+            font-size: 12px;
+            color: var(--muted);
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .pc28-home .home-card-badge {
+            font-size: 12px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .pc28-home .home-card-footer {
+            margin-top: 12px;
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        @media (max-width: 768px) {
+            .pc28-home .desktop-only {
+                display: none !important;
+            }
+
+            .pc28-home .mobile-only {
+                display: block !important;
+            }
+
+            .pc28-home .home-card {
+                padding: 16px;
+            }
+
+            .pc28-home .home-card-row {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .pc28-home .home-card-footer {
+                justify-content: flex-start;
+                flex-wrap: wrap;
+            }
+        }
+    </style>
 </head>
 <body class="pc28-home">
     <div class="home-shell">
@@ -75,7 +155,7 @@
                     <p class="panel-subtitle" id="recentDrawsSubtitle">最新 20 期官方结果</p>
                 </div>
             </div>
-            <div class="table-wrap">
+            <div class="table-wrap desktop-only">
                 <table class="data-table">
                     <thead>
                         <tr>
@@ -92,6 +172,7 @@
                     </tbody>
                 </table>
             </div>
+            <div class="home-card-list mobile-only" id="recentDrawsCards"></div>
         </section>
 
         <section class="feature-grid">
@@ -136,7 +217,7 @@
                 </div>
             </div>
             <div id="publicMetricHint" class="public-metric-hint"></div>
-            <div class="table-wrap">
+            <div class="table-wrap desktop-only">
                 <table class="data-table">
                     <thead>
                         <tr>
@@ -157,6 +238,7 @@
                     </tbody>
                 </table>
             </div>
+            <div class="home-card-list mobile-only" id="publicPredictorCards"></div>
             <p class="field-hint" id="publicRankingHint">“方案主玩法”来自方案配置；“当前查看玩法”来自你上方筛选器选择的统计口径。只有用户主动开启“公开预测内容”后，访客才能查看该方案的预测详情。</p>
         </section>
 
