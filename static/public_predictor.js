@@ -771,14 +771,14 @@ class PublicPredictorPage {
         if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
             const footballMapping = {
                 spf: {
-                    label: '胜平负单场',
+                    label: '胜平负',
                     alias: '常规盘',
                     shortRule: '三分类',
                     description: '按 90 分钟含伤停补时赛果统计主胜、平局、客胜。',
                     formula: '预测胜平负 = 实际胜平负'
                 },
                 rqspf: {
-                    label: '让球胜平负单场',
+                    label: '让球胜平负',
                     alias: '让球盘',
                     shortRule: '三分类',
                     description: '按官方让球数修正主队比分后统计胜平负。',

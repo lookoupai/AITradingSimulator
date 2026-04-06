@@ -11,6 +11,8 @@ ALLOWED_TARGETS = ('spf', 'rqspf')
 ALLOWED_PRIMARY_METRICS = ('spf', 'rqspf')
 DEFAULT_PROFIT_RULE_ID = 'jingcai_snapshot'
 CLOSED_SELL_STATUSES = {'0', '3'}
+SINGLE_SELL_STATUSES = {'2'}
+PARLAY_SELL_STATUSES = {'1', '2'}
 TARGET_LABELS = {
     'spf': '胜平负',
     'rqspf': '让球胜平负',
@@ -43,7 +45,7 @@ def normalize_primary_metric(value: Optional[str]) -> str:
 
 
 def normalize_profit_metric(value: Optional[str]) -> str:
-    """竞彩足球收益模拟默认只接受单场主玩法"""
+    """竞彩足球收益模拟默认只接受单关主玩法"""
     return normalize_primary_metric(value)
 
 
@@ -256,28 +258,52 @@ def metric_has_sellable_odds(metric_key: str, meta_payload: dict, outcome: Optio
     return any((parse_float(value) or 0) > 0 for value in odds_map.values())
 
 
-def is_metric_sellable(metric_key: str, meta_payload: dict, outcome: Optional[str] = None) -> bool:
+def normalize_play_mode(play_mode: Optional[str]) -> str:
+    text = str(play_mode or '').strip().lower()
+    return 'single' if text == 'single' else 'parlay'
+
+
+def allowed_sell_statuses(play_mode: Optional[str] = None) -> set[str]:
+    return SINGLE_SELL_STATUSES if normalize_play_mode(play_mode) == 'single' else PARLAY_SELL_STATUSES
+
+
+def is_metric_sellable(
+    metric_key: str,
+    meta_payload: dict,
+    outcome: Optional[str] = None,
+    play_mode: Optional[str] = None,
+    allow_settled: bool = False
+) -> bool:
     """基于结算状态、销售状态与赔率快照，判断玩法是否可纳入推荐/模拟"""
-    if meta_payload.get('settled'):
+    if meta_payload.get('settled') and not allow_settled:
         return False
 
     status = metric_sell_status(metric_key, meta_payload)
     if status in CLOSED_SELL_STATUSES:
         return False
+    if status not in allowed_sell_statuses(play_mode):
+        return False
 
     return metric_has_sellable_odds(metric_key, meta_payload, outcome)
 
 
-def metric_availability_label(metric_key: str, meta_payload: dict, outcome: Optional[str] = None) -> str:
+def metric_availability_label(metric_key: str, meta_payload: dict, outcome: Optional[str] = None, play_mode: Optional[str] = None) -> str:
     """给页面展示玩法可用性说明"""
     if meta_payload.get('settled'):
         return '已开奖'
 
     status = metric_sell_status(metric_key, meta_payload)
+    normalized_play_mode = normalize_play_mode(play_mode)
     if status == '0':
-        return '停售'
+        return '未开'
     if status == '3':
         return '已开奖'
+    if status == '2':
+        return '单关可售' if metric_has_sellable_odds(metric_key, meta_payload, outcome) else '单关无赔率'
+    if status == '1':
+        if normalized_play_mode == 'single':
+            return '非单关场次'
+        return '串关可售' if metric_has_sellable_odds(metric_key, meta_payload, outcome) else '串关无赔率'
     if metric_has_sellable_odds(metric_key, meta_payload, outcome):
         return '赔率快照可用'
     return '无赔率快照'

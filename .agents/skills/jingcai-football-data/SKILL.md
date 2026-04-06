@@ -13,7 +13,7 @@ description: Chinese football lottery / 竞彩足球 / 足球彩票 data-source 
 - Default to Sina mobile JSON for MVP, daily sync, and historical backfill.
 - Treat Sporttery web APIs as a secondary or validation source because real requests are more sensitive to request environment.
 - Persist raw payloads before normalization. Keep the source name, request date, and probe notes.
-- Ignore 单关 detection unless an explicit field is found. Do not infer it from one anomalous status value alone.
+- Ignore 单关 detection unless explicit field-level evidence exists. In this repo, `spfSellStatus` / `rqspfSellStatus` are the current evidence source; do not infer 单关 only from unrelated status noise.
 - Use list endpoints for batch discovery and settlement polling.
 - Use match-detail endpoints only when you are actually about to build AI context or a match-detail page.
 
@@ -31,14 +31,15 @@ description: Chinese football lottery / 竞彩足球 / 足球彩票 data-source 
 
 ## Current Observations
 
-- Sale-status mapping must still be treated as observational, not absolute. Re-verify on new dates before hard-coding business rules.
-- In the Sina sample for `2026-04-06`, `spfSellStatus=2` matched the same-day matches that appeared to open `胜平负` 单关, including `周一002` and `周一012`.
+- The Sina sell-status fields appear to follow a parallel design across `spfSellStatus` and `rqspfSellStatus`, but fresh samples are still the source of truth when behavior looks inconsistent.
+- In the Sina sample for `2026-04-06`, `spfSellStatus=2` matched the same-day matches that opened `胜平负` 单关, including `周一002` and `周一012`.
 - In the same sample, `spfSellStatus=0` matched matches that did not open `胜平负`, including `周一016`.
-- `rqspfSellStatus` still has weaker evidence. Do not expand the above observation to `rqspf` unless a fresh sample confirms it.
-- Prefer a conservative implementation pattern in product code:
-  - Treat `0` and explicit settled states as unavailable.
-  - Allow recommendation/simulation only when odds are present and the event is not already settled.
-  - If later you need to explicitly label “单关”, surface it as a tentative UI/ops hint first, not as a hard-coded invariant.
+- For product code in this repository, the current working rule is:
+  - 单关池：sell status `2`
+  - 二串一池：sell status `1` 或 `2`
+  - `0` or explicit settled states: unavailable
+  - odds must still exist before recommendation/simulation can use the match
+- Apply the same field-family logic to `rqspfSellStatus` unless a fresher sample disproves it.
 
 ## Project Touchpoints
 

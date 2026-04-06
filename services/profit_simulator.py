@@ -691,8 +691,8 @@ class ProfitSimulator:
     def _metric_label(self, metric: str, lottery_type: str) -> str:
         if lottery_type == 'jingcai_football':
             mapping = {
-                'spf': '胜平负单场',
-                'rqspf': '让球胜平负单场',
+                'spf': '胜平负单关',
+                'rqspf': '让球胜平负单关',
                 'spf_parlay': '胜平负二串一',
                 'rqspf_parlay': '让球胜平负二串一'
             }
@@ -943,7 +943,7 @@ class ProfitSimulator:
         actual_payload = item.get('actual_payload') or {}
         predicted_value = prediction_payload.get(metric)
         actual_value = actual_payload.get(metric)
-        if not football_utils.is_metric_sellable(metric, meta_payload, predicted_value):
+        if not football_utils.is_metric_sellable(metric, meta_payload, predicted_value, play_mode='single', allow_settled=True):
             return None
         odds = football_utils.resolve_snapshot_odds(meta_payload, metric, predicted_value)
 
@@ -1003,7 +1003,7 @@ class ProfitSimulator:
             actual_payload = item.get('actual_payload') or {}
             predicted_value = prediction_payload.get(base_metric)
             actual_value = actual_payload.get(base_metric)
-            if not football_utils.is_metric_sellable(base_metric, meta_payload, predicted_value):
+            if not football_utils.is_metric_sellable(base_metric, meta_payload, predicted_value, play_mode='parlay', allow_settled=True):
                 continue
             odds = football_utils.resolve_snapshot_odds(meta_payload, base_metric, predicted_value)
             if not predicted_value or not actual_value or odds is None or odds <= 0:

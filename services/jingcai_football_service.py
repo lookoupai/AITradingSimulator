@@ -1149,8 +1149,8 @@ class JingcaiFootballService:
             market_snapshot = item.get('market_snapshot') or {}
             meta_payload = self._build_market_snapshot_payload(market_snapshot)
             prediction_payload = item.get('prediction_payload') or {}
-            can_use_spf = self._is_metric_on_sale('spf', meta_payload, prediction_payload.get('spf'))
-            can_use_rqspf = self._is_metric_on_sale('rqspf', meta_payload, prediction_payload.get('rqspf'))
+            can_use_spf = self._is_metric_on_sale('spf', meta_payload, prediction_payload.get('spf'), play_mode='parlay')
+            can_use_rqspf = self._is_metric_on_sale('rqspf', meta_payload, prediction_payload.get('rqspf'), play_mode='parlay')
             if not (can_use_spf or can_use_rqspf):
                 continue
             top_items.append(item)
@@ -1189,10 +1189,18 @@ class JingcaiFootballService:
                     'rqspf': meta_payload.get('rqspf') or {},
                     'spf_sell_status': meta_payload.get('spf_sell_status') or '',
                     'rqspf_sell_status': meta_payload.get('rqspf_sell_status') or '',
-                    'spf_sellable': self._is_metric_on_sale('spf', meta_payload),
-                    'rqspf_sellable': self._is_metric_on_sale('rqspf', meta_payload),
-                    'spf_availability_label': football_utils.metric_availability_label('spf', meta_payload),
-                    'rqspf_availability_label': football_utils.metric_availability_label('rqspf', meta_payload),
+                    'spf_single_sellable': self._is_metric_on_sale('spf', meta_payload, play_mode='single'),
+                    'rqspf_single_sellable': self._is_metric_on_sale('rqspf', meta_payload, play_mode='single'),
+                    'spf_parlay_sellable': self._is_metric_on_sale('spf', meta_payload, play_mode='parlay'),
+                    'rqspf_parlay_sellable': self._is_metric_on_sale('rqspf', meta_payload, play_mode='parlay'),
+                    'spf_sellable': self._is_metric_on_sale('spf', meta_payload, play_mode='parlay'),
+                    'rqspf_sellable': self._is_metric_on_sale('rqspf', meta_payload, play_mode='parlay'),
+                    'spf_single_availability_label': football_utils.metric_availability_label('spf', meta_payload, play_mode='single'),
+                    'rqspf_single_availability_label': football_utils.metric_availability_label('rqspf', meta_payload, play_mode='single'),
+                    'spf_parlay_availability_label': football_utils.metric_availability_label('spf', meta_payload, play_mode='parlay'),
+                    'rqspf_parlay_availability_label': football_utils.metric_availability_label('rqspf', meta_payload, play_mode='parlay'),
+                    'spf_availability_label': football_utils.metric_availability_label('spf', meta_payload, play_mode='parlay'),
+                    'rqspf_availability_label': football_utils.metric_availability_label('rqspf', meta_payload, play_mode='parlay'),
                     'odds_source_label': '预测批次赔率快照'
                 }
             })
@@ -1209,7 +1217,7 @@ class JingcaiFootballService:
                 meta_payload = self._build_market_snapshot_payload(market_snapshot)
                 prediction_payload = item.get('prediction_payload') or {}
                 outcome = prediction_payload.get(metric)
-                if not outcome or not self._is_metric_on_sale(metric, meta_payload, outcome):
+                if not outcome or not self._is_metric_on_sale(metric, meta_payload, outcome, play_mode='parlay'):
                     continue
                 odds = football_utils.resolve_snapshot_odds(meta_payload, metric, outcome)
                 if odds is None or odds <= 0:
@@ -1228,7 +1236,7 @@ class JingcaiFootballService:
                 warnings.append({
                     'metric': metric,
                     'metric_label': football_utils.TARGET_LABELS.get(f'{metric}_parlay', metric),
-                    'message': f'{football_utils.TARGET_LABELS.get(metric, metric)} 仅有 {len(legs)} 场可参与，未生成二串一'
+                    'message': f'{football_utils.TARGET_LABELS.get(metric, metric)} 仅有 {len(legs)} 场可参与二串一，未生成推荐票面'
                 })
                 continue
 
@@ -1255,15 +1263,8 @@ class JingcaiFootballService:
             'rqspf_sell_status': str(market_snapshot.get('rqspf_sell_status') or '').strip()
         }
 
-    def _is_metric_on_sale(self, metric_key: str, meta_payload: dict, outcome: str | None = None) -> bool:
-        if meta_payload.get('settled'):
-            return False
-        if football_utils.metric_sell_status(metric_key, meta_payload) != '1':
-            return False
-        if outcome is None:
-            return football_utils.metric_has_sellable_odds(metric_key, meta_payload)
-        odds = football_utils.resolve_snapshot_odds(meta_payload, metric_key, outcome)
-        return odds is not None and odds > 0
+    def _is_metric_on_sale(self, metric_key: str, meta_payload: dict, outcome: str | None = None, play_mode: str = 'parlay') -> bool:
+        return football_utils.is_metric_sellable(metric_key, meta_payload, outcome, play_mode=play_mode)
 
     def _format_ticket_outcome(self, metric: str, outcome: str, meta_payload: dict) -> str:
         if metric != 'rqspf':
