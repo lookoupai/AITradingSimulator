@@ -8,6 +8,42 @@ from tests.support import create_predictor, fresh_app_harness
 
 
 class JingcaiRouteTests(unittest.TestCase):
+    def _build_match(
+        self,
+        harness,
+        *,
+        ticai_id: str,
+        issue_no: str,
+        show_sell_status: str,
+        show_sell_status_cn: str,
+        match_time: str,
+        score1: str = '',
+        score2: str = '',
+        half_score1: str = '',
+        half_score2: str = ''
+    ) -> dict:
+        return harness.module.jingcai_football_service._normalize_match({
+            'matchId': f'match-{ticai_id}',
+            'tiCaiId': ticai_id,
+            'matchNo': issue_no,
+            'matchNoValue': issue_no[-3:],
+            'league': '测试联赛',
+            'leagueOfficial': '测试联赛',
+            'team1': f'{issue_no}主队',
+            'team2': f'{issue_no}客队',
+            'matchTimeFormat': match_time,
+            'showSellStatus': show_sell_status,
+            'showSellStatusCn': show_sell_status_cn,
+            'spfSellStatus': '1' if show_sell_status == '1' else '3',
+            'rqspfSellStatus': '1' if show_sell_status == '1' else '3',
+            'spf': '1.55,3.20,4.80',
+            'rqspf': '-1,3.80,3.20,1.80',
+            'score1': score1,
+            'score2': score2,
+            'halfScore1': half_score1,
+            'halfScore2': half_score2
+        }, '2026-04-06')
+
     def _seed_event(
         self,
         harness,
@@ -234,6 +270,73 @@ class JingcaiRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(data['match_count'], 1)
             self.assertIn('回退本地缓存', data['warning'])
+
+    def test_overview_tracks_sale_open_and_awaiting_result_statuses(self):
+        with fresh_app_harness() as harness:
+            service = harness.module.jingcai_football_service
+            matches = [
+                self._build_match(
+                    harness,
+                    ticai_id='2038862',
+                    issue_no='周一001',
+                    show_sell_status='2',
+                    show_sell_status_cn='待开奖',
+                    match_time='2026-04-06 18:15:00'
+                ),
+                self._build_match(
+                    harness,
+                    ticai_id='2038863',
+                    issue_no='周一002',
+                    show_sell_status='3',
+                    show_sell_status_cn='已开奖',
+                    match_time='2026-04-06 18:30:00',
+                    score1='0',
+                    score2='0',
+                    half_score1='0',
+                    half_score2='0'
+                ),
+                self._build_match(
+                    harness,
+                    ticai_id='2038869',
+                    issue_no='周一008',
+                    show_sell_status='1',
+                    show_sell_status_cn='已开售',
+                    match_time='2026-04-06 22:00:00'
+                )
+            ]
+
+            overview = service._build_overview_from_matches(matches, batch_key='2026-04-06', limit=10)
+
+            self.assertEqual(overview['open_match_count'], 1)
+            self.assertEqual(overview['sale_open_match_count'], 1)
+            self.assertEqual(overview['awaiting_result_match_count'], 1)
+            self.assertEqual(overview['settled_match_count'], 1)
+            self.assertEqual(overview['next_match_name'], '[测试联赛] 周一008主队 vs 周一008客队')
+
+    def test_generate_prediction_requires_sale_open_matches(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'jingcai_football')
+            predictor = harness.db.get_predictor(predictor_id, include_secret=True)
+            payload = {
+                'lottery_type': 'jingcai_football',
+                'batch_key': '2026-04-06',
+                'dates': ['2026-04-06'],
+                'matches': [
+                    self._build_match(
+                        harness,
+                        ticai_id='2038862',
+                        issue_no='周一001',
+                        show_sell_status='2',
+                        show_sell_status_cn='待开奖',
+                        match_time='2026-04-06 18:15:00'
+                    )
+                ]
+            }
+
+            with mock.patch.object(harness.module.jingcai_football_service, 'sync_matches', return_value=payload):
+                with self.assertRaisesRegex(ValueError, '已开售状态'):
+                    harness.module.jingcai_football_service.generate_prediction(harness.db, predictor)
 
 
 if __name__ == '__main__':

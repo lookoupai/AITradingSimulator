@@ -535,7 +535,7 @@ class PredictionApp {
     renderFootballOverview(overview) {
         const warning = overview.warning ? `<div class="warning-banner">${this.escapeHtml(overview.warning)}</div>` : '';
         const recentEvents = overview.recent_events || [];
-        const upcoming = recentEvents.filter((item) => !((item.meta_payload || {}).settled || item.settled)).slice(0, 4);
+        const upcoming = recentEvents.filter((item) => this.footballMatchStatusCode(item) === '1').slice(0, 4);
 
         document.getElementById('overviewPanel').innerHTML = `
             ${warning}
@@ -545,7 +545,7 @@ class PredictionApp {
                     <strong>${this.escapeHtml(overview.batch_key || '--')}</strong>
                 </div>
                 <div>
-                    <span class="mini-label">待赛场次</span>
+                    <span class="mini-label">已开售场次</span>
                     <strong>${this.escapeHtml(String(overview.open_match_count ?? 0))}</strong>
                 </div>
             </div>
@@ -555,13 +555,15 @@ class PredictionApp {
                 <div class="result-meta">${this.escapeHtml(overview.next_match_time || '')}</div>
             </div>
             <div class="overview-block">
-                <span class="mini-label">已结算 / 总场次</span>
+                <span class="mini-label">状态分布</span>
                 <div class="tag-list compact">
-                    <span class="tag">${this.escapeHtml(String(overview.settled_match_count ?? 0))} / ${this.escapeHtml(String(overview.match_count ?? 0))}</span>
+                    <span class="tag">已开售 ${this.escapeHtml(String(overview.open_match_count ?? 0))}</span>
+                    <span class="tag">待开奖 ${this.escapeHtml(String(overview.awaiting_result_match_count ?? 0))}</span>
+                    <span class="tag">已开奖 ${this.escapeHtml(String(overview.settled_match_count ?? 0))}</span>
                 </div>
             </div>
             <div class="overview-block">
-                <span class="mini-label">近期待赛</span>
+                <span class="mini-label">近期开售</span>
                 <div class="tag-list compact">
                     ${upcoming.length ? upcoming.map((item) => `<span class="tag">${this.escapeHtml(item.match_no || item.event_key || '--')} · ${this.escapeHtml(item.home_team || item.event_name || '--')}</span>`).join('') : '<span class="tag">暂无</span>'}
                 </div>
@@ -1724,7 +1726,7 @@ class PredictionApp {
                 <th>对阵</th>
                 <th>胜平负</th>
                 <th>让球胜平负</th>
-                <th>比赛时间 / 比分</th>
+                <th>状态 / 时间 / 比分</th>
             `;
         } else {
             headerRow.innerHTML = `
@@ -1763,6 +1765,7 @@ class PredictionApp {
                 const scoreText = result.score1 !== null && result.score1 !== undefined && result.score2 !== null && result.score2 !== undefined
                     ? `${result.score1}:${result.score2}`
                     : '--';
+                const statusLabel = this.footballMatchStatusLabel(draw);
                 return `
                     <tr>
                         <td>${this.escapeHtml(meta.match_no || draw.event_key || '--')}</td>
@@ -1770,7 +1773,7 @@ class PredictionApp {
                         <td>${teams}</td>
                         <td>${this.escapeHtml(spfText)}</td>
                         <td>${this.escapeHtml((rqspf.handicap_text || '--') + ' [' + rqText + ']')}</td>
-                        <td>${this.escapeHtml(draw.event_time || '')}<br><span class="hint-text">${this.escapeHtml(scoreText)}</span></td>
+                        <td><strong>${this.escapeHtml(statusLabel)}</strong><br><span class="hint-text">${this.escapeHtml(draw.event_time || '')}</span><br><span class="hint-text">${this.escapeHtml(scoreText)}</span></td>
                     </tr>
                 `;
             }).join('');
@@ -2838,6 +2841,22 @@ class PredictionApp {
             failed: '执行失败'
         };
         return mapping[status] || status;
+    }
+
+    footballMatchStatusCode(item) {
+        return String(item?.status || item?.show_sell_status || '').trim();
+    }
+
+    footballMatchStatusLabel(item) {
+        const code = this.footballMatchStatusCode(item);
+        const fallback = String(item?.status_label || item?.show_sell_status_label || '').trim();
+        const mapping = {
+            '0': '未开售',
+            '1': '已开售',
+            '2': '待开奖',
+            '3': '已开奖'
+        };
+        return mapping[code] || fallback || '--';
     }
 
     renderPredictionResult(prediction) {

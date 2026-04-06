@@ -255,9 +255,20 @@ def _serialize_overview(overview: dict) -> dict:
 
 def _serialize_lottery_event(event: dict) -> dict:
     meta_payload = event.get('meta_payload') or {}
+    status = football_utils.normalize_match_status_code(
+        event.get('status') or event.get('show_sell_status')
+    )
+    status_label = football_utils.normalize_match_status_label(
+        status,
+        event.get('status_label') or event.get('show_sell_status_label')
+    )
     return {
         **event,
         'issue_no': event.get('issue_no') or event.get('match_no') or meta_payload.get('match_no') or meta_payload.get('match_no_value') or '',
+        'status': status,
+        'status_label': status_label,
+        'show_sell_status': status,
+        'show_sell_status_label': status_label,
         'created_at': utc_to_beijing(event['created_at']) if event.get('created_at') else None,
         'updated_at': utc_to_beijing(event['updated_at']) if event.get('updated_at') else None
     }

@@ -27,7 +27,7 @@ const HOME_LOTTERY_CONFIG = {
             { value: 'spf', label: '胜平负' },
             { value: 'rqspf', label: '让球胜平负' }
         ],
-        summaryLabels: ['当前批次', '待赛场次', '下一场比赛', '已结算场次']
+        summaryLabels: ['当前批次', '已开售场次', '待开奖场次', '已开奖场次']
     }
 };
 
@@ -211,7 +211,7 @@ class HomePage {
                 <strong>${this.escapeHtml(overview.batch_key || '--')}</strong>
             </div>
             <div class="hero-metric">
-                <span class="mini-label">待赛场次</span>
+                <span class="mini-label">已开售场次</span>
                 <strong>${this.escapeHtml(String(overview.open_match_count ?? 0))}</strong>
             </div>
             <div class="hero-metric">
@@ -227,7 +227,7 @@ class HomePage {
             const values = [
                 overview.batch_key || '--',
                 String(overview.open_match_count ?? '--'),
-                overview.next_match_name || '--',
+                String(overview.awaiting_result_match_count ?? '--'),
                 String(overview.settled_match_count ?? '--')
             ];
             document.querySelectorAll('#summaryGrid .stat-label').forEach((element, index) => {
@@ -278,6 +278,7 @@ class HomePage {
                 const scoreText = result.score1 !== null && result.score1 !== undefined && result.score2 !== null && result.score2 !== undefined
                     ? `${result.score1}:${result.score2}`
                     : '--';
+                const statusLabel = this.footballMatchStatusLabel(draw);
                 return `
                     <tr>
                         <td>${this.escapeHtml(meta.match_no || draw.event_key || '--')}</td>
@@ -285,7 +286,7 @@ class HomePage {
                         <td>${teams}</td>
                         <td>${this.escapeHtml(spfText)}</td>
                         <td>${this.escapeHtml((rqspf.handicap_text || '--') + ' [' + rqText + ']')}</td>
-                        <td>${this.escapeHtml(draw.event_time || '')}<br><span class="hint-text">${this.escapeHtml(scoreText)}</span></td>
+                        <td><strong>${this.escapeHtml(statusLabel)}</strong><br><span class="hint-text">${this.escapeHtml(draw.event_time || '')}</span><br><span class="hint-text">${this.escapeHtml(scoreText)}</span></td>
                     </tr>
                 `;
             }).join('');
@@ -325,7 +326,7 @@ class HomePage {
         document.getElementById('homeDrawHead3').textContent = '对阵';
         document.getElementById('homeDrawHead4').textContent = '胜平负';
         document.getElementById('homeDrawHead5').textContent = '让球胜平负';
-        document.getElementById('homeDrawHead6').textContent = '比赛时间 / 比分';
+        document.getElementById('homeDrawHead6').textContent = '状态 / 时间 / 比分';
     }
 
     renderPublicPredictors(items) {
@@ -436,6 +437,22 @@ class HomePage {
             historical_streak: '当前按历史最大连中排序，适合看峰值表现。'
         };
         return mapping[sortBy] || '当前排序说明暂未定义。';
+    }
+
+    footballMatchStatusCode(item) {
+        return String(item?.status || item?.show_sell_status || '').trim();
+    }
+
+    footballMatchStatusLabel(item) {
+        const code = this.footballMatchStatusCode(item);
+        const fallback = String(item?.status_label || item?.show_sell_status_label || '').trim();
+        const mapping = {
+            '0': '未开售',
+            '1': '已开售',
+            '2': '待开奖',
+            '3': '已开奖'
+        };
+        return mapping[code] || fallback || '--';
     }
 
     escapeHtml(text) {

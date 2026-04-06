@@ -20,6 +20,12 @@ TARGET_LABELS = {
     'rqspf_parlay': '让球胜平负二串一'
 }
 RESULT_LABELS = ('胜', '平', '负')
+MATCH_STATUS_LABELS = {
+    '0': '未开售',
+    '1': '已开售',
+    '2': '待开奖',
+    '3': '已开奖'
+}
 
 
 def normalize_target_list(targets: Optional[Iterable[str]]) -> list[str]:
@@ -181,6 +187,46 @@ def derive_rqspf_result(score1, score2, handicap) -> Optional[str]:
     if adjusted_home == away_score:
         return '平'
     return '负'
+
+
+def normalize_match_status_code(value) -> str:
+    return str(value or '').strip()
+
+
+def normalize_match_status_label(code, value: Optional[str] = None) -> str:
+    status_code = normalize_match_status_code(code)
+    status_label = str(value or '').strip()
+    return MATCH_STATUS_LABELS.get(status_code) or status_label or '--'
+
+
+def match_status_code(item: dict) -> str:
+    return normalize_match_status_code(
+        item.get('showSellStatus')
+        or item.get('show_sell_status')
+        or item.get('status')
+    )
+
+
+def match_status_label(item: dict) -> str:
+    status_code = match_status_code(item)
+    return normalize_match_status_label(
+        status_code,
+        item.get('showSellStatusCn')
+        or item.get('show_sell_status_label')
+        or item.get('status_label')
+    )
+
+
+def is_match_sale_open(item: dict) -> bool:
+    return match_status_code(item) == '1'
+
+
+def is_match_awaiting_result(item: dict) -> bool:
+    return match_status_code(item) == '2'
+
+
+def is_match_prized(item: dict) -> bool:
+    return match_status_code(item) == '3'
 
 
 def is_match_settled(item: dict) -> bool:

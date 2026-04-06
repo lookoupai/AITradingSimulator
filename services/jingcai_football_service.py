@@ -208,6 +208,8 @@ class JingcaiFootballService:
                 'batch_key': None,
                 'match_count': 0,
                 'open_match_count': 0,
+                'sale_open_match_count': 0,
+                'awaiting_result_match_count': 0,
                 'settled_match_count': 0,
                 'next_match_time': None,
                 'next_match_name': None,
@@ -410,13 +412,13 @@ class JingcaiFootballService:
     def generate_prediction(self, db, predictor: dict, auto_mode: bool = False, batch_payload: dict | None = None) -> dict:
         batch_payload = batch_payload or self.sync_matches(db, is_prized='')
         run_key = batch_payload.get('batch_key') or datetime.now().strftime('%Y-%m-%d')
-        upcoming_matches = [item for item in batch_payload['matches'] if not item.get('settled')]
-        if not upcoming_matches:
-            raise ValueError('当前没有可预测的竞彩足球比赛')
-
         existing_run = db.get_prediction_run_by_key(predictor['id'], run_key)
         if existing_run and existing_run['status'] in {'pending', 'settled'}:
             return existing_run
+
+        upcoming_matches = [item for item in batch_payload['matches'] if football_utils.is_match_sale_open(item)]
+        if not upcoming_matches:
+            raise ValueError('当前没有处于已开售状态的竞彩足球比赛')
 
         history_matches = self._fetch_recent_history(
             db,
@@ -545,7 +547,7 @@ class JingcaiFootballService:
 
         try:
             batch_payload = self.sync_matches(db, is_prized='')
-            open_matches = [item for item in batch_payload['matches'] if not item.get('settled')]
+            open_matches = [item for item in batch_payload['matches'] if football_utils.is_match_sale_open(item)]
             next_match_time = open_matches[0].get('match_time') if open_matches else None
         except Exception as exc:
             interval = config.JINGCAI_SETTLEMENT_POLL_INTERVAL if pending_runs else config.JINGCAI_IDLE_POLL_INTERVAL
@@ -702,6 +704,8 @@ class JingcaiFootballService:
         rqspf = football_utils.parse_rqspf_odds(item.get('rqspf'))
         actual_spf = football_utils.derive_spf_result(score1, score2)
         actual_rqspf = football_utils.derive_rqspf_result(score1, score2, rqspf.get('handicap'))
+        show_sell_status = football_utils.match_status_code(item)
+        show_sell_status_label = football_utils.match_status_label(item)
 
         return {
             'lottery_type': self.lottery_type,
@@ -724,8 +728,8 @@ class JingcaiFootballService:
                 item.get('team2') or ''
             ),
             'match_time': str(item.get('matchTimeFormat') or '').strip(),
-            'show_sell_status': str(item.get('showSellStatus') or '').strip(),
-            'show_sell_status_label': str(item.get('showSellStatusCn') or '').strip(),
+            'show_sell_status': show_sell_status,
+            'show_sell_status_label': show_sell_status_label,
             'spf_sell_status': str(item.get('spfSellStatus') or '').strip(),
             'rqspf_sell_status': str(item.get('rqspfSellStatus') or '').strip(),
             'spf_odds': football_utils.parse_spf_odds(item.get('spf')),
@@ -1337,14 +1341,20 @@ class JingcaiFootballService:
 
     def _build_overview_from_matches(self, matches: list[dict], batch_key: str | None, limit: int = 20, warning: str | None = None) -> dict:
         sorted_matches = sorted(matches, key=lambda item: item.get('match_time') or '')
-        open_matches = [item for item in sorted_matches if not item.get('settled')]
-        settled_matches = [item for item in sorted_matches if item.get('settled')]
-        next_match = open_matches[0] if open_matches else None
+        sale_open_matches = [item for item in sorted_matches if football_utils.is_match_sale_open(item)]
+        awaiting_result_matches = [item for item in sorted_matches if football_utils.is_match_awaiting_result(item)]
+        settled_matches = [
+            item for item in sorted_matches
+            if football_utils.is_match_prized(item) or item.get('settled')
+        ]
+        next_match = sale_open_matches[0] if sale_open_matches else None
         payload = {
             'lottery_type': self.lottery_type,
             'batch_key': batch_key,
             'match_count': len(sorted_matches),
-            'open_match_count': len(open_matches),
+            'open_match_count': len(sale_open_matches),
+            'sale_open_match_count': len(sale_open_matches),
+            'awaiting_result_match_count': len(awaiting_result_matches),
             'settled_match_count': len(settled_matches),
             'next_match_time': next_match.get('match_time') if next_match else None,
             'next_match_name': next_match.get('event_name') if next_match else None,
@@ -1356,14 +1366,21 @@ class JingcaiFootballService:
 
     def _build_overview_from_events(self, events: list[dict], batch_key: str | None, limit: int = 20, warning: str | None = None) -> dict:
         sorted_events = sorted(events, key=lambda item: item.get('event_time') or '')
-        open_events = [item for item in sorted_events if not (item.get('meta_payload') or {}).get('settled')]
-        next_event = open_events[0] if open_events else None
+        sale_open_events = [item for item in sorted_events if football_utils.is_match_sale_open(item)]
+        awaiting_result_events = [item for item in sorted_events if football_utils.is_match_awaiting_result(item)]
+        settled_events = [
+            item for item in sorted_events
+            if football_utils.is_match_prized(item) or (item.get('meta_payload') or {}).get('settled')
+        ]
+        next_event = sale_open_events[0] if sale_open_events else None
         payload = {
             'lottery_type': self.lottery_type,
             'batch_key': batch_key,
             'match_count': len(sorted_events),
-            'open_match_count': len(open_events),
-            'settled_match_count': len([item for item in sorted_events if (item.get('meta_payload') or {}).get('settled')]),
+            'open_match_count': len(sale_open_events),
+            'sale_open_match_count': len(sale_open_events),
+            'awaiting_result_match_count': len(awaiting_result_events),
+            'settled_match_count': len(settled_events),
             'next_match_time': next_event.get('event_time') if next_event else None,
             'next_match_name': next_event.get('event_name') if next_event else None,
             'recent_events': sorted_events[:limit]
