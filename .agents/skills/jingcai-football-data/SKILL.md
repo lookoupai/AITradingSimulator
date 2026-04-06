@@ -9,6 +9,7 @@ description: Chinese football lottery / 竞彩足球 / 足球彩票 data-source 
 
 - Read `services/jingcai_football_service.py` before changing provider behavior, request strategy, or detail enrichment.
 - Read `utils/jingcai_football.py` before changing field parsing, normalization, or result derivation.
+- For live endpoint validation, run `scripts/probe_jingcai_source.py` from this skill directory before coding against assumptions.
 - Default to Sina mobile JSON for MVP, daily sync, and historical backfill.
 - Treat Sporttery web APIs as a secondary or validation source because real requests are more sensitive to request environment.
 - Persist raw payloads before normalization. Keep the source name, request date, and probe notes.
@@ -22,7 +23,7 @@ description: Chinese football lottery / 竞彩足球 / 足球彩票 data-source 
    - For fastest integration or historical backfill, read [references/sina-mobile.md](references/sina-mobile.md).
    - For official-ish endpoints or source comparison, read [references/sporttery-official.md](references/sporttery-official.md).
    - For storage, field mapping, and selection rules, read [references/provider-selection.md](references/provider-selection.md).
-2. Validate live behavior with a real request before coding against assumptions. These endpoints can change or block unattended clients.
+2. Validate live behavior with a real request before coding against assumptions. Prefer `scripts/probe_jingcai_source.py` for that first pass. These endpoints can change or block unattended clients.
 3. Normalize odds strings into structured fields, but store the raw strings too.
 4. Fetch detail endpoints on demand for the specific matches being predicted.
 5. Cache detail payloads by `event_key` and `detail_type`, then summarize them before sending them to the model.

@@ -10,21 +10,19 @@ import requests
 from ai_trader import AIPredictor
 import config
 from utils import jingcai_football as football_utils
+from utils.jingcai_sources import (
+    SINA_DETAIL_HEADERS,
+    SINA_JINGCAI_DETAIL_URL,
+    SINA_JINGCAI_URL,
+    SINA_LIST_HEADERS,
+    build_sina_detail_params,
+    build_sina_match_list_params
+)
 from utils.timezone import get_current_beijing_time, parse_beijing_time
 
 
-SINA_JINGCAI_URL = 'https://alpha.lottery.sina.com.cn/gateway/index/entry'
-SINA_JINGCAI_DETAIL_URL = 'https://mix.lottery.sina.com.cn/gateway/index/entry'
 DEFAULT_TIMEOUT = getattr(config, 'JINGCAI_REQUEST_TIMEOUT', 15)
 DETAIL_CACHE_SECONDS = getattr(config, 'JINGCAI_DETAIL_CACHE_SECONDS', 6 * 60 * 60)
-DEFAULT_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-    'Referer': 'https://alpha.lottery.sina.com.cn/lottery/jczq/'
-}
-DETAIL_HEADERS = {
-    'User-Agent': DEFAULT_HEADERS['User-Agent'],
-    'Referer': 'https://mix.lottery.sina.com.cn/'
-}
 
 
 class JingcaiFootballService:
@@ -38,19 +36,12 @@ class JingcaiFootballService:
     def _request_payload(self, date: str = '', is_prized: str = '', game_types: str = 'spf') -> dict:
         response = requests.get(
             SINA_JINGCAI_URL,
-            params={
-                'format': 'json',
-                '__caller__': 'wap',
-                '__version__': '1.0.0',
-                '__verno__': '10000',
-                'cat1': 'jczqMatches',
-                'gameTypes': game_types,
-                'date': date,
-                'isPrized': is_prized,
-                'isAll': 1,
-                'dpc': 1
-            },
-            headers=DEFAULT_HEADERS,
+            params=build_sina_match_list_params(
+                date=date,
+                is_prized=is_prized,
+                game_types=game_types
+            ),
+            headers=SINA_LIST_HEADERS,
             timeout=self.timeout
         )
         response.raise_for_status()
@@ -63,18 +54,10 @@ class JingcaiFootballService:
 
     def _request_detail_payload(self, cat1: str, params: dict, host: str = 'mix') -> dict:
         base_url = SINA_JINGCAI_DETAIL_URL if host == 'mix' else SINA_JINGCAI_URL
-        headers = DETAIL_HEADERS if host == 'mix' else DEFAULT_HEADERS
+        headers = SINA_DETAIL_HEADERS if host == 'mix' else SINA_LIST_HEADERS
         response = requests.get(
             base_url,
-            params={
-                'format': 'json',
-                '__caller__': 'wap',
-                '__version__': '1.0.0',
-                '__verno__': '10000',
-                'cat1': cat1,
-                'dpc': 1,
-                **params
-            },
+            params=build_sina_detail_params(cat1, params),
             headers=headers,
             timeout=self.timeout
         )
