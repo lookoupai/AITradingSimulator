@@ -110,6 +110,13 @@ class ProfitSimulatorTests(unittest.TestCase):
         closed_meta = {'spf_sell_status': '0', 'spf_odds': {'胜': 1.55}, 'settled': False}
         settled_status_meta = {'spf_sell_status': '3', 'spf_odds': {'胜': 1.55}, 'settled': False}
         settled_meta = {'spf_sell_status': '2', 'spf_odds': {'胜': 1.55}, 'settled': True}
+        settled_closed_meta = {'spf_sell_status': '3', 'spf_odds': {'胜': 1.55}, 'settled': True}
+        settled_closed_snapshot_meta = {
+            'spf_sell_status': '3',
+            'spf_sell_status_snapshot': '2',
+            'spf_odds': {'胜': 1.55},
+            'settled': True
+        }
 
         self.assertTrue(football.is_metric_sellable('spf', single_meta, '胜', play_mode='single'))
         self.assertFalse(football.is_metric_sellable('spf', non_single_meta, '胜', play_mode='single'))
@@ -120,6 +127,9 @@ class ProfitSimulatorTests(unittest.TestCase):
         self.assertFalse(football.is_metric_sellable('spf', settled_status_meta, '胜', play_mode='parlay'))
         self.assertFalse(football.is_metric_sellable('spf', settled_meta, '胜', play_mode='single'))
         self.assertTrue(football.is_metric_sellable('spf', settled_meta, '胜', play_mode='single', allow_settled=True))
+        self.assertFalse(football.is_metric_sellable('spf', settled_closed_meta, '胜', play_mode='single'))
+        self.assertFalse(football.is_metric_sellable('spf', settled_closed_meta, '胜', play_mode='single', allow_settled=True))
+        self.assertTrue(football.is_metric_sellable('spf', settled_closed_snapshot_meta, '胜', play_mode='single', allow_settled=True))
 
     def test_jingcai_profit_simulation_supports_settled_history_for_single_and_parlay(self):
         with fresh_app_harness() as harness:

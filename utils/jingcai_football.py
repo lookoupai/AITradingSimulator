@@ -290,6 +290,23 @@ def metric_sell_status(metric_key: str, meta_payload: dict) -> str:
     return ''
 
 
+def metric_sell_status_snapshot(metric_key: str, meta_payload: dict) -> str:
+    """读取玩法销售状态快照（用于回测/收益模拟）。仅保留 1/2 等可售态。"""
+    if metric_key == 'spf':
+        snapshot = str(meta_payload.get('spf_sell_status_snapshot') or '').strip()
+        if snapshot:
+            return snapshot
+    elif metric_key == 'rqspf':
+        snapshot = str(meta_payload.get('rqspf_sell_status_snapshot') or '').strip()
+        if snapshot:
+            return snapshot
+    else:
+        return ''
+
+    current = metric_sell_status(metric_key, meta_payload)
+    return current if current in {'1', '2'} else ''
+
+
 def metric_has_sellable_odds(metric_key: str, meta_payload: dict, outcome: Optional[str] = None) -> bool:
     """判断指定玩法是否存在可用于模拟的赔率快照"""
     if outcome:
@@ -321,8 +338,17 @@ def is_metric_sellable(
     allow_settled: bool = False
 ) -> bool:
     """基于结算状态、销售状态与赔率快照，判断玩法是否可纳入推荐/模拟"""
-    if meta_payload.get('settled') and not allow_settled:
-        return False
+    if meta_payload.get('settled'):
+        if not allow_settled:
+            return False
+        status = metric_sell_status_snapshot(metric_key, meta_payload)
+        if not status:
+            return False
+        if status in CLOSED_SELL_STATUSES:
+            return False
+        if status not in allowed_sell_statuses(play_mode):
+            return False
+        return metric_has_sellable_odds(metric_key, meta_payload, outcome)
 
     status = metric_sell_status(metric_key, meta_payload)
     if status in CLOSED_SELL_STATUSES:

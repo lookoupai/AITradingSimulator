@@ -749,13 +749,23 @@ class JingcaiFootballService:
         existing_meta = existing_meta or {}
         spf_sell_status = str(match.get('spf_sell_status') or '').strip()
         rqspf_sell_status = str(match.get('rqspf_sell_status') or '').strip()
-        if match.get('settled'):
-            previous_spf_status = str(existing_meta.get('spf_sell_status') or '').strip()
-            previous_rqspf_status = str(existing_meta.get('rqspf_sell_status') or '').strip()
-            if previous_spf_status and previous_spf_status != '3':
-                spf_sell_status = previous_spf_status
-            if previous_rqspf_status and previous_rqspf_status != '3':
-                rqspf_sell_status = previous_rqspf_status
+
+        def merge_sell_status_snapshot(metric_key: str, current_status: str) -> str:
+            existing_snapshot = str(existing_meta.get(f'{metric_key}_sell_status_snapshot') or '').strip()
+            existing_status = str(existing_meta.get(f'{metric_key}_sell_status') or '').strip()
+            candidates = [
+                status
+                for status in (existing_snapshot, existing_status, current_status)
+                if status in {'1', '2'}
+            ]
+            if '2' in candidates:
+                return '2'
+            if '1' in candidates:
+                return '1'
+            return ''
+
+        spf_sell_status_snapshot = merge_sell_status_snapshot('spf', spf_sell_status)
+        rqspf_sell_status_snapshot = merge_sell_status_snapshot('rqspf', rqspf_sell_status)
 
         result_payload = {
             'score1': match.get('score1'),
@@ -769,7 +779,9 @@ class JingcaiFootballService:
             'match_no': match.get('match_no'),
             'match_no_value': match.get('match_no_value'),
             'spf_sell_status': spf_sell_status,
+            'spf_sell_status_snapshot': spf_sell_status_snapshot,
             'rqspf_sell_status': rqspf_sell_status,
+            'rqspf_sell_status_snapshot': rqspf_sell_status_snapshot,
             'spf_odds': match.get('spf_odds'),
             'rqspf': match.get('rqspf'),
             'score_text': match.get('score_text'),

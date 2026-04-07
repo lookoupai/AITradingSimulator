@@ -398,13 +398,16 @@ def _apply_jingcai_simulation_sale_filter(predictor_id: int, simulation: dict) -
     if not base_metric:
         return simulation
 
+    play_mode = 'single' if metric in {'spf', 'rqspf'} else 'parlay'
+    required_sell_status = ','.join(sorted(football_utils.allowed_sell_statuses(play_mode)))
+
     records = list(simulation.get('records') or [])
     if not records:
         payload = dict(simulation)
         payload['sell_status_filter'] = {
             'enabled': True,
             'base_metric': base_metric,
-            'required_sell_status': '1',
+            'required_sell_status': required_sell_status,
             'filtered_out_count': 0,
             'kept_count': 0
         }
@@ -426,14 +429,22 @@ def _apply_jingcai_simulation_sale_filter(predictor_id: int, simulation: dict) -
     for item in settled_items:
         event = event_map.get(item.get('event_key')) or {}
         meta_payload = event.get('meta_payload') or {}
-        if football_utils.metric_sell_status(base_metric, meta_payload) != '1':
-            continue
         prediction_payload = item.get('prediction_payload') or {}
         actual_payload = item.get('actual_payload') or {}
         predicted_value = prediction_payload.get(base_metric)
         actual_value = actual_payload.get(base_metric)
+        if not predicted_value or not actual_value:
+            continue
+        if not football_utils.is_metric_sellable(
+            base_metric,
+            meta_payload,
+            predicted_value,
+            play_mode=play_mode,
+            allow_settled=True
+        ):
+            continue
         odds = football_utils.resolve_snapshot_odds(meta_payload, base_metric, predicted_value)
-        if not predicted_value or not actual_value or odds is None or odds <= 0:
+        if odds is None or odds <= 0:
             continue
 
         issue_no = item.get('issue_no') or '--'
@@ -564,7 +575,7 @@ def _apply_jingcai_simulation_sale_filter(predictor_id: int, simulation: dict) -
     payload['sell_status_filter'] = {
         'enabled': True,
         'base_metric': base_metric,
-        'required_sell_status': '1',
+        'required_sell_status': required_sell_status,
         'filtered_out_count': filtered_out_count,
         'kept_count': len(recalculated_records)
     }
