@@ -13,6 +13,7 @@ import requests
 from openai import APIConnectionError, APIError, OpenAI
 from requests import RequestException
 
+from services.prediction_guard import AIPredictionError
 from utils.pc28 import (
     build_combo,
     derive_pc28_attributes,
@@ -48,7 +49,7 @@ class AIPredictor:
     def predict_next_issue(self, context: dict, predictor_config: dict) -> tuple[dict, str, str]:
         """预测下一期开奖结果"""
         prompt = self._build_prompt(context, predictor_config)
-        last_error = 'AI 未返回有效预测'
+        last_error = AIPredictionError('AI 未返回有效预测')
         last_response = ''
 
         for _ in range(3):
@@ -62,13 +63,16 @@ class AIPredictor:
                 )
                 if self._has_effective_prediction(prediction, predictor_config.get('prediction_targets')):
                     return prediction, raw_response, prompt
-                last_error = 'AI 返回内容无法解析为有效预测'
+                last_error = AIPredictionError('AI 返回内容无法解析为有效预测', category='parse')
             except Exception as exc:
-                last_error = str(exc)
+                last_error = self._normalize_ai_exception(exc)
 
         if last_response:
-            raise Exception(f'{last_error}；原始响应：{last_response[:300]}')
-        raise Exception(last_error)
+            raise AIPredictionError(
+                f'{str(last_error)}；原始响应：{last_response[:300]}',
+                category=getattr(last_error, 'category', 'ai_error')
+            )
+        raise last_error
 
     def run_connectivity_test(self) -> dict:
         """测试模型连通性与基础输出能力"""
@@ -94,7 +98,10 @@ class AIPredictor:
             max_output_tokens=1800,
             json_output=True
         )
-        payload = self._extract_json_object(result['raw_response'])
+        try:
+            payload = self._extract_json_object(result['raw_response'])
+        except Exception as exc:
+            raise self._normalize_ai_exception(exc, default_category='parse') from exc
         return {
             'api_mode': result['api_mode'],
             'response_model': result['response_model'],
@@ -117,7 +124,10 @@ class AIPredictor:
             max_output_tokens=max_output_tokens,
             json_output=True
         )
-        payload = self._extract_json_payload(result['raw_response'])
+        try:
+            payload = self._extract_json_payload(result['raw_response'])
+        except Exception as exc:
+            raise self._normalize_ai_exception(exc, default_category='parse') from exc
         return {
             'api_mode': result['api_mode'],
             'response_model': result['response_model'],
@@ -368,11 +378,15 @@ class AIPredictor:
                 last_error = exc
                 continue
 
+        normalized_error = self._normalize_ai_exception(last_error)
+        message = str(normalized_error)
         if isinstance(last_error, (APIConnectionError, RequestException)):
-            raise Exception(f'API 连接失败：{last_error}')
-        if isinstance(last_error, APIError):
-            raise Exception(f'API 调用失败（模式={resolved_api_mode}）：{last_error}')
-        raise Exception(f'LLM 调用失败（模式={resolved_api_mode}）：{last_error}')
+            message = f'API 连接失败：{last_error}'
+        elif isinstance(last_error, APIError):
+            message = f'API 调用失败（模式={resolved_api_mode}）：{last_error}'
+        elif last_error is not None:
+            message = f'LLM 调用失败（模式={resolved_api_mode}）：{last_error}'
+        raise AIPredictionError(message, category=normalized_error.category)
 
     def _call_llm_via_openai_sdk(
         self,
@@ -792,6 +806,27 @@ class AIPredictor:
         if self._is_official_openai_host(host):
             return 'responses'
         return 'chat_completions'
+
+    def _normalize_ai_exception(self, exc: Exception | None, default_category: str = 'ai_error') -> AIPredictionError:
+        if isinstance(exc, AIPredictionError):
+            return exc
+
+        message = str(exc or '未知 AI 错误')
+        lowered_message = message.lower()
+        category = default_category
+
+        if any(keyword in lowered_message for keyword in ['quota', 'insufficient_quota', 'billing', '余额', '额度']):
+            category = 'quota'
+        elif any(keyword in lowered_message for keyword in ['invalid api key', 'incorrect api key', 'unauthorized', 'authentication', '401', 'key失效', '鉴权']):
+            category = 'auth'
+        elif any(keyword in lowered_message for keyword in ['rate limit', '429', 'too many requests']):
+            category = 'rate_limit'
+        elif any(keyword in lowered_message for keyword in ['无法解析', 'json', '格式', 'schema', 'parse', '字段缺失']):
+            category = 'parse'
+        elif any(keyword in lowered_message for keyword in ['timed out', 'timeout', '连接', 'connect', 'connection', 'network', 'dns']):
+            category = 'transport'
+
+        return AIPredictionError(message, category=category)
 
     def _extract_response_output_text(self, response) -> str:
         output_text = response.get('output_text') if isinstance(response, dict) else getattr(response, 'output_text', None)

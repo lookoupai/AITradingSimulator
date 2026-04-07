@@ -23,14 +23,14 @@ class LotteryRuntime:
 
         lottery_type = predictor.get('lottery_type', 'pc28')
         if lottery_type == 'pc28':
-            return self.pc28_engine.generate_prediction(predictor_id)
+            return self.pc28_engine.generate_prediction(predictor_id, auto_mode=False)
 
         handler = self.get_handler(lottery_type)
         if handler is None:
             raise ValueError(f'暂不支持的彩种: {lottery_type}')
 
         with self._lock:
-            return handler.generate_prediction(self.db, predictor)
+            return handler.generate_prediction(self.db, predictor, auto_mode=False)
 
     def run_auto_cycle(self) -> dict:
         with self._lock:
@@ -67,7 +67,11 @@ class LotteryRuntime:
 
         settled_items = handler.settle_pending_predictions(self.db)
         prediction_results = []
-        predictors = self.db.get_enabled_predictors(lottery_type=lottery_type, include_secret=True)
+        predictors = self.db.get_enabled_predictors(
+            lottery_type=lottery_type,
+            include_secret=True,
+            exclude_auto_paused=True
+        )
         for predictor in predictors:
             try:
                 result = handler.generate_prediction(self.db, predictor, auto_mode=True)

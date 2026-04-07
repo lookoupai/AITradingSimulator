@@ -365,6 +365,11 @@ a {
     background: rgba(148, 163, 184, 0.16);
 }
 
+.status-chip.paused {
+    background: rgba(245, 158, 11, 0.16);
+    color: #d97706;
+}
+
 .status-chip.settled {
     background: rgba(79, 70, 229, 0.12);
     color: var(--primary);

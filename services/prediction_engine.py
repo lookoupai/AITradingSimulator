@@ -8,17 +8,19 @@ from typing import Optional
 
 import config
 from ai_trader import AIPredictor
+from services.prediction_guard import AIPredictionError, PredictionGuardService
 from utils.pc28 import next_issue_no, normalize_target_list
 from utils.timezone import get_current_utc_time_str
 
 
 class PredictionEngine:
-    def __init__(self, db, pc28_service):
+    def __init__(self, db, pc28_service, prediction_guard: PredictionGuardService | None = None):
         self.db = db
         self.pc28_service = pc28_service
+        self.prediction_guard = prediction_guard or PredictionGuardService(db)
         self._lock = threading.RLock()
 
-    def generate_prediction(self, predictor_id: int) -> dict:
+    def generate_prediction(self, predictor_id: int, auto_mode: bool = False) -> dict:
         with self._lock:
             predictor = self.db.get_predictor(predictor_id, include_secret=True)
             if not predictor:
@@ -29,7 +31,7 @@ class PredictionEngine:
                 limit=max(config.PC28_SYNC_HISTORY, predictor['history_window'] + 5)
             )
             context = self._build_context(history_window=predictor['history_window'], draws=draws)
-            return self._generate_prediction_locked(predictor, context)
+            return self._generate_prediction_locked(predictor, context, auto_mode=auto_mode)
 
     def settle_pending_predictions(self) -> list[dict]:
         with self._lock:
@@ -97,7 +99,7 @@ class PredictionEngine:
     def run_auto_cycle(self) -> dict:
         with self._lock:
             settled = self.settle_pending_predictions()
-            predictors = self.db.get_enabled_predictors(include_secret=True)
+            predictors = self.db.get_enabled_predictors(include_secret=True, exclude_auto_paused=True)
             if not predictors:
                 return {
                     'settled_count': len(settled),
@@ -116,7 +118,8 @@ class PredictionEngine:
                 try:
                     result = self._generate_prediction_locked(
                         predictor,
-                        {**shared_context, 'recent_draws': shared_context['recent_draws'][:predictor['history_window']]}
+                        {**shared_context, 'recent_draws': shared_context['recent_draws'][:predictor['history_window']]},
+                        auto_mode=True
                     )
                     prediction_results.append({
                         'predictor_id': predictor['id'],
@@ -163,13 +166,15 @@ class PredictionEngine:
             'preview': preview
         }
 
-    def _generate_prediction_locked(self, predictor: dict, context: dict) -> dict:
+    def _generate_prediction_locked(self, predictor: dict, context: dict, auto_mode: bool = False) -> dict:
         issue_no = context.get('next_issue_no')
         if not issue_no:
             raise ValueError('无法确定下一期期号')
 
         existing_prediction = self.db.get_prediction_by_issue(predictor['id'], issue_no)
         if existing_prediction and existing_prediction['status'] in {'pending', 'settled'}:
+            return existing_prediction
+        if auto_mode and existing_prediction and existing_prediction['status'] == 'failed':
             return existing_prediction
 
         predictor_client = AIPredictor(
@@ -210,6 +215,40 @@ class PredictionEngine:
                 'hit_combo': None,
                 'settled_at': None
             }
+            self.db.upsert_prediction(payload)
+            if auto_mode:
+                self.prediction_guard.record_success(predictor['id'])
+            return self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
+        except AIPredictionError as exc:
+            payload = {
+                'predictor_id': predictor['id'],
+                'lottery_type': predictor.get('lottery_type', 'pc28'),
+                'issue_no': issue_no,
+                'requested_targets': normalized_targets,
+                'prediction_number': None,
+                'prediction_big_small': None,
+                'prediction_odd_even': None,
+                'prediction_combo': None,
+                'confidence': None,
+                'reasoning_summary': '',
+                'raw_response': raw_response,
+                'prompt_snapshot': prompt_snapshot,
+                'status': 'failed',
+                'error_message': str(exc),
+                'actual_number': None,
+                'actual_big_small': None,
+                'actual_odd_even': None,
+                'actual_combo': None,
+                'hit_number': None,
+                'hit_big_small': None,
+                'hit_odd_even': None,
+                'hit_combo': None,
+                'settled_at': None
+            }
+            self.db.upsert_prediction(payload)
+            if auto_mode:
+                self.prediction_guard.record_ai_failure(predictor['id'], exc)
+            return self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
         except Exception as exc:
             payload = {
                 'predictor_id': predictor['id'],
@@ -236,9 +275,8 @@ class PredictionEngine:
                 'hit_combo': None,
                 'settled_at': None
             }
-
-        self.db.upsert_prediction(payload)
-        return self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
+            self.db.upsert_prediction(payload)
+            return self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
 
     def _evaluate_hit(self, predicted_value, actual_value, targets: list[str], target_name: str):
         if target_name not in targets:

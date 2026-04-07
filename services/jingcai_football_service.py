@@ -9,6 +9,7 @@ import requests
 
 from ai_trader import AIPredictor
 import config
+from services.prediction_guard import AIPredictionError, PredictionGuardService
 from utils import jingcai_football as football_utils
 from utils.jingcai_sources import (
     SINA_DETAIL_HEADERS,
@@ -28,8 +29,9 @@ DETAIL_CACHE_SECONDS = getattr(config, 'JINGCAI_DETAIL_CACHE_SECONDS', 6 * 60 * 
 class JingcaiFootballService:
     lottery_type = 'jingcai_football'
 
-    def __init__(self, timeout: int = DEFAULT_TIMEOUT):
+    def __init__(self, timeout: int = DEFAULT_TIMEOUT, prediction_guard: PredictionGuardService | None = None):
         self.timeout = timeout
+        self.prediction_guard = prediction_guard
         self._next_auto_run_at = None
         self._last_auto_reason = ''
 
@@ -415,6 +417,8 @@ class JingcaiFootballService:
         existing_run = db.get_prediction_run_by_key(predictor['id'], run_key)
         if existing_run and existing_run['status'] in {'pending', 'settled'}:
             return existing_run
+        if auto_mode and existing_run and existing_run['status'] == 'failed':
+            return existing_run
 
         upcoming_matches = [item for item in batch_payload['matches'] if football_utils.is_match_sale_open(item)]
         if not upcoming_matches:
@@ -454,7 +458,7 @@ class JingcaiFootballService:
             payload = llm_result['payload']
             items_payload = payload.get('predictions') if isinstance(payload, dict) else None
             if not isinstance(items_payload, list):
-                raise ValueError('AI 返回 JSON 缺少 predictions 数组')
+                raise AIPredictionError('AI 返回 JSON 缺少 predictions 数组', category='parse')
             run_payload = {
                 'predictor_id': predictor['id'],
                 'lottery_type': self.lottery_type,
@@ -472,6 +476,28 @@ class JingcaiFootballService:
                 'error_message': None,
                 'settled_at': None
             }
+        except AIPredictionError as exc:
+            run_payload = {
+                'predictor_id': predictor['id'],
+                'lottery_type': self.lottery_type,
+                'run_key': run_key,
+                'title': f'{run_key} 竞彩足球批次预测',
+                'requested_targets': predictor.get('prediction_targets') or [],
+                'status': 'failed',
+                'total_items': 0,
+                'settled_items': 0,
+                'hit_items': 0,
+                'confidence': None,
+                'reasoning_summary': '',
+                'raw_response': raw_response,
+                'prompt_snapshot': prompt_snapshot,
+                'error_message': str(exc),
+                'settled_at': None
+            }
+            run_id = db.upsert_prediction_run(run_payload)
+            if auto_mode and self.prediction_guard:
+                self.prediction_guard.record_ai_failure(predictor['id'], exc)
+            return db.get_prediction_run(run_id) or run_payload
         except Exception as exc:
             run_payload = {
                 'predictor_id': predictor['id'],
@@ -502,8 +528,23 @@ class JingcaiFootballService:
             items_payload=items_payload,
             raw_response=raw_response
         )
+        if not any(item.get('status') == 'pending' for item in normalized_items):
+            failure = AIPredictionError('AI 未返回任何有效预测项', category='parse')
+            failed_run_payload = {
+                **run_payload,
+                'status': 'failed',
+                'total_items': 0,
+                'confidence': None,
+                'error_message': str(failure)
+            }
+            db.upsert_prediction_run(failed_run_payload)
+            if auto_mode and self.prediction_guard:
+                self.prediction_guard.record_ai_failure(predictor['id'], failure)
+            return db.get_prediction_run(run_id) or failed_run_payload
         db.upsert_prediction_items(normalized_items)
         self._refresh_run_summary(db, run_id)
+        if auto_mode and self.prediction_guard:
+            self.prediction_guard.record_success(predictor['id'])
         return db.get_prediction_run(run_id) or run_payload
 
     def settle_pending_predictions(self, db) -> list[dict]:
@@ -534,7 +575,11 @@ class JingcaiFootballService:
             }
 
         settled_items = self.settle_pending_predictions(db)
-        predictors = db.get_enabled_predictors(lottery_type=self.lottery_type, include_secret=True)
+        predictors = db.get_enabled_predictors(
+            lottery_type=self.lottery_type,
+            include_secret=True,
+            exclude_auto_paused=True
+        )
         pending_runs = db.get_pending_prediction_runs(self.lottery_type)
 
         if not predictors:

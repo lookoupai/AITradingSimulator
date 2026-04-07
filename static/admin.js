@@ -36,8 +36,12 @@ class AdminPage {
             });
         }
         document.getElementById('adminPredictorsBody').addEventListener('click', (event) => {
-            const button = event.target.closest('[data-action="toggle-predictor"]');
+            const button = event.target.closest('[data-action="toggle-predictor"], [data-action="resume-predictor"]');
             if (!button) {
+                return;
+            }
+            if (button.dataset.action === 'resume-predictor') {
+                this.resumePredictor(button.dataset.predictorId);
                 return;
             }
             this.togglePredictor(button.dataset.predictorId);
@@ -45,13 +49,24 @@ class AdminPage {
         const predictorsCards = document.getElementById('adminPredictorsCards');
         if (predictorsCards) {
             predictorsCards.addEventListener('click', (event) => {
-                const button = event.target.closest('[data-action="toggle-predictor"]');
+                const button = event.target.closest('[data-action="toggle-predictor"], [data-action="resume-predictor"]');
                 if (!button) {
+                    return;
+                }
+                if (button.dataset.action === 'resume-predictor') {
+                    this.resumePredictor(button.dataset.predictorId);
                     return;
                 }
                 this.togglePredictor(button.dataset.predictorId);
             });
         }
+        document.getElementById('adminPredictionGuardPanel').addEventListener('click', (event) => {
+            const button = event.target.closest('[data-action="save-guard-settings"]');
+            if (!button) {
+                return;
+            }
+            this.savePredictionGuardSettings();
+        });
     }
 
     async checkAuth() {
@@ -90,6 +105,7 @@ class AdminPage {
 
             this.renderSummary(data.summary || {});
             this.renderScheduler(data.scheduler || {});
+            this.renderPredictionGuard(data.prediction_guard || {});
             this.renderUsers(data.users || []);
             this.renderPredictors(data.predictors || []);
             this.renderFailures(data.recent_failures || []);
@@ -106,6 +122,7 @@ class AdminPage {
             ['管理员数', summary.admin_users || 0],
             ['总方案数', summary.total_predictors || 0],
             ['启用方案数', summary.enabled_predictors || 0],
+            ['自动暂停数', summary.auto_paused_predictors || 0],
             ['公开方案数', summary.shared_predictors || 0],
             ['待结算预测', summary.pending_predictions || 0],
             ['失败预测', summary.failed_predictions || 0],
@@ -118,6 +135,33 @@ class AdminPage {
                 <strong class="stat-value">${this.escapeHtml(String(value))}</strong>
             </article>
         `).join('');
+    }
+
+    renderPredictionGuard(settings) {
+        const container = document.getElementById('adminPredictionGuardPanel');
+        const enabled = Boolean(settings.enabled);
+        const threshold = Number(settings.threshold || 3);
+
+        container.className = 'prediction-summary';
+        container.innerHTML = `
+            <div class="form-grid">
+                <label class="toggle-row">
+                    <span>启用自动暂停</span>
+                    <input type="checkbox" id="adminPredictionGuardEnabled" ${enabled ? 'checked' : ''}>
+                </label>
+                <label class="form-field">
+                    <span>连续失败阈值</span>
+                    <input type="number" id="adminPredictionGuardThreshold" min="1" max="20" value="${this.escapeHtml(String(threshold))}">
+                    <small class="field-hint">按预测执行周期计数：PC28 按期号，竞彩足球按批次。</small>
+                </label>
+            </div>
+            <div class="panel-actions">
+                <button class="btn primary" data-action="save-guard-settings">
+                    <i class="bi bi-shield-check"></i>
+                    保存设置
+                </button>
+            </div>
+        `;
     }
 
     renderScheduler(scheduler) {
@@ -210,7 +254,7 @@ class AdminPage {
         const tbody = document.getElementById('adminPredictorsBody');
         const cards = document.getElementById('adminPredictorsCards');
         if (!predictors.length) {
-            tbody.innerHTML = '<tr><td colspan="12" class="empty-cell">暂无方案数据</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="13" class="empty-cell">暂无方案数据</td></tr>';
             if (cards) {
                 cards.innerHTML = '<div class="empty-panel">暂无方案数据</div>';
             }
@@ -233,12 +277,13 @@ class AdminPage {
                 <td>${this.escapeHtml(item.share_level || '--')}</td>
                 <td>${item.prediction_count || 0}</td>
                 <td>${item.failed_prediction_count || 0}</td>
+                <td>${this.escapeHtml(String(item.consecutive_ai_failures || 0))}</td>
                 <td>${this.escapeHtml(item.latest_issue_no || '--')}</td>
                 <td>${this.escapeHtml(item.latest_prediction_update || item.updated_at || '--')}</td>
-                <td>${item.enabled ? '<span class="tag">启用中</span>' : '<span class="hint-text">已停用</span>'}</td>
+                <td>${this.renderPredictorStatus(item)}</td>
                 <td>
-                    <button class="btn ghost compact" data-action="toggle-predictor" data-predictor-id="${item.id}">
-                        ${item.enabled ? '停用' : '启用'}
+                    <button class="btn ghost compact" data-action="${item.auto_paused ? 'resume-predictor' : 'toggle-predictor'}" data-predictor-id="${item.id}">
+                        ${item.auto_paused ? '恢复运行' : (item.enabled ? '停用' : '启用')}
                     </button>
                 </td>
             </tr>
@@ -254,13 +299,15 @@ class AdminPage {
                         <div class="detail-row"><span class="detail-label">默认收益规则/玩法</span><strong>${this.escapeHtml(item.profit_rule_label || '--')} / ${this.escapeHtml(item.profit_default_metric_label || '--')}</strong></div>
                         <div class="detail-row"><span class="detail-label">公开层级</span><strong>${this.escapeHtml(item.share_level || '--')}</strong></div>
                         <div class="detail-row"><span class="detail-label">预测/失败</span><strong>${this.escapeHtml(String(item.prediction_count || 0))} / ${this.escapeHtml(String(item.failed_prediction_count || 0))}</strong></div>
+                        <div class="detail-row"><span class="detail-label">连续失败</span><strong>${this.escapeHtml(String(item.consecutive_ai_failures || 0))}</strong></div>
                         <div class="detail-row"><span class="detail-label">最近期号</span><strong>${this.escapeHtml(item.latest_issue_no || '--')}</strong></div>
                         <div class="detail-row"><span class="detail-label">最近更新时间</span><strong>${this.escapeHtml(item.latest_prediction_update || item.updated_at || '--')}</strong></div>
-                        <div class="detail-row"><span class="detail-label">状态</span><strong>${item.enabled ? '启用中' : '已停用'}</strong></div>
+                        <div class="detail-row"><span class="detail-label">状态</span><strong>${this.escapeHtml(item.runtime_status_label || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">最近错误</span><strong>${this.escapeHtml(item.last_ai_error_message || item.auto_pause_reason || '--')}</strong></div>
                     </div>
                     <div class="share-panel-actions">
-                        <button class="btn ghost compact" data-action="toggle-predictor" data-predictor-id="${item.id}">
-                            ${item.enabled ? '停用' : '启用'}
+                        <button class="btn ghost compact" data-action="${item.auto_paused ? 'resume-predictor' : 'toggle-predictor'}" data-predictor-id="${item.id}">
+                            ${item.auto_paused ? '恢复运行' : (item.enabled ? '停用' : '启用')}
                         </button>
                     </div>
                 </article>
@@ -272,7 +319,7 @@ class AdminPage {
         const tbody = document.getElementById('adminFailuresBody');
         const cards = document.getElementById('adminFailuresCards');
         if (!items.length) {
-            tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">最近暂无失败记录</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-cell">最近暂无失败记录</td></tr>';
             if (cards) {
                 cards.innerHTML = '<div class="empty-panel">最近暂无失败记录</div>';
             }
@@ -282,6 +329,7 @@ class AdminPage {
         tbody.innerHTML = items.map((item) => `
             <tr>
                 <td>${this.escapeHtml(item.updated_at || '--')}</td>
+                <td>${this.escapeHtml(item.lottery_label || '--')}</td>
                 <td>${this.escapeHtml(item.username || '--')}</td>
                 <td>${this.escapeHtml(item.predictor_name || '--')}</td>
                 <td>${this.escapeHtml(item.issue_no || '--')}</td>
@@ -294,15 +342,30 @@ class AdminPage {
                 <article class="prediction-card">
                     <div class="detail-list">
                         <div class="detail-row"><span class="detail-label">更新时间</span><strong>${this.escapeHtml(item.updated_at || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">彩种</span><strong>${this.escapeHtml(item.lottery_label || '--')}</strong></div>
                         <div class="detail-row"><span class="detail-label">用户</span><strong>${this.escapeHtml(item.username || '--')}</strong></div>
                         <div class="detail-row"><span class="detail-label">方案</span><strong>${this.escapeHtml(item.predictor_name || '--')}</strong></div>
-                        <div class="detail-row"><span class="detail-label">期号</span><strong>${this.escapeHtml(item.issue_no || '--')}</strong></div>
+                        <div class="detail-row"><span class="detail-label">期号/批次</span><strong>${this.escapeHtml(item.issue_no || '--')}</strong></div>
                         <div class="detail-row"><span class="detail-label">状态</span><strong>${this.escapeHtml(item.status || '--')}</strong></div>
                         <div class="detail-row"><span class="detail-label">错误</span><strong>${this.escapeHtml(item.error_message || '--')}</strong></div>
                     </div>
                 </article>
             `).join('');
         }
+    }
+
+    renderPredictorStatus(item) {
+        if (!item.enabled) {
+            return '<span class="hint-text">手动停用</span>';
+        }
+        if (item.auto_paused) {
+            const reason = item.auto_pause_reason || item.last_ai_error_message || '--';
+            return `
+                <span class="status-chip paused">自动暂停</span><br>
+                <span class="hint-text" title="${this.escapeHtml(reason)}">连错 ${this.escapeHtml(String(item.consecutive_ai_failures || 0))} 次</span>
+            `;
+        }
+        return '<span class="tag">启用中</span>';
     }
 
     async toggleAdmin(userId) {
@@ -331,6 +394,46 @@ class AdminPage {
             if (!response.ok) {
                 throw new Error(data.error || '更新方案状态失败');
             }
+            await this.loadDashboard();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async resumePredictor(predictorId) {
+        try {
+            const response = await fetch(`/api/admin/predictors/${predictorId}/resume-auto-pause`, {
+                method: 'POST',
+                credentials: 'include'
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '恢复方案运行失败');
+            }
+            await this.loadDashboard();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async savePredictionGuardSettings() {
+        const enabled = document.getElementById('adminPredictionGuardEnabled')?.checked ?? true;
+        const thresholdValue = document.getElementById('adminPredictionGuardThreshold')?.value ?? '3';
+        try {
+            const response = await fetch('/api/admin/settings/prediction-guard', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    enabled,
+                    threshold: Number(thresholdValue)
+                })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '保存 AI 故障保护设置失败');
+            }
+            this.renderPredictionGuard(data.settings || {});
             await this.loadDashboard();
         } catch (error) {
             alert(error.message);

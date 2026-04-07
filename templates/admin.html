@@ -59,6 +59,16 @@
             <section class="panel">
                 <div class="panel-header">
                     <div>
+                        <h3>AI 故障保护</h3>
+                        <p class="panel-subtitle">控制 AI 连续失败自动暂停策略，避免持续写入失败垃圾记录。</p>
+                    </div>
+                </div>
+                <div id="adminPredictionGuardPanel" class="prediction-summary empty-panel">加载中...</div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
                         <h3>用户列表</h3>
                         <p class="panel-subtitle">查看所有用户、管理员状态与关联方案数量。</p>
                     </div>
@@ -107,6 +117,7 @@
                                 <th>公开层级</th>
                                 <th>预测数</th>
                                 <th>失败数</th>
+                                <th>连错</th>
                                 <th>最近期号</th>
                                 <th>最近更新时间</th>
                                 <th>状态</th>
@@ -114,7 +125,7 @@
                             </tr>
                         </thead>
                         <tbody id="adminPredictorsBody">
-                            <tr><td colspan="12" class="empty-cell">加载中...</td></tr>
+                            <tr><td colspan="13" class="empty-cell">加载中...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -135,15 +146,16 @@
                         <thead>
                             <tr>
                                 <th>更新时间</th>
+                                <th>彩种</th>
                                 <th>用户</th>
                                 <th>方案</th>
-                                <th>期号</th>
+                                <th>期号 / 批次</th>
                                 <th>状态</th>
                                 <th>错误</th>
                             </tr>
                         </thead>
                         <tbody id="adminFailuresBody">
-                            <tr><td colspan="6" class="empty-cell">加载中...</td></tr>
+                            <tr><td colspan="7" class="empty-cell">加载中...</td></tr>
                         </tbody>
                     </table>
                 </div>

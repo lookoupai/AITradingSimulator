@@ -31,6 +31,7 @@ from services.lottery_runtime import LotteryRuntime
 from services.pc28_service import PC28Service
 from services.profit_simulator import DEFAULT_ODDS_PROFILE, ProfitSimulator
 from services.prediction_engine import PredictionEngine
+from services.prediction_guard import PredictionGuardService
 from utils import jingcai_football as football_utils
 from utils.prompt_assistant import analyze_prompt, build_external_prompt_template, build_optimizer_prompt, get_prompt_placeholder_catalog
 from utils.auth import (
@@ -54,9 +55,10 @@ CORS(app, supports_credentials=True)
 APP_VERSION = str(int(time.time()))
 
 db = Database(config.DATABASE_PATH)
+prediction_guard = PredictionGuardService(db)
 pc28_service = PC28Service()
-jingcai_football_service = JingcaiFootballService()
-prediction_engine = PredictionEngine(db, pc28_service)
+jingcai_football_service = JingcaiFootballService(prediction_guard=prediction_guard)
+prediction_engine = PredictionEngine(db, pc28_service, prediction_guard=prediction_guard)
 lottery_runtime = LotteryRuntime(
     db,
     prediction_engine,
@@ -160,6 +162,16 @@ def prediction_loop():
             time.sleep(10)
 
 
+def _resolve_predictor_runtime_status(predictor: dict) -> tuple[str, str]:
+    enabled = bool(predictor.get('enabled'))
+    auto_paused = bool(predictor.get('auto_paused'))
+    if not enabled:
+        return 'manual_disabled', '手动停用'
+    if auto_paused:
+        return 'auto_paused', '自动暂停'
+    return 'enabled', '启用中'
+
+
 def _serialize_predictor(predictor: dict) -> dict:
     lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
     lottery_definition = get_lottery_definition(lottery_type)
@@ -168,6 +180,7 @@ def _serialize_predictor(predictor: dict) -> dict:
     simulation_metrics = profit_simulator.get_metric_options(predictor) if supports_profit_simulation(lottery_type) else []
     default_simulation_metric = profit_simulator.get_default_metric(predictor) if supports_profit_simulation(lottery_type) else None
     default_profit_rule_id = profit_simulator.get_default_rule_id(predictor) if supports_profit_simulation(lottery_type) else ''
+    runtime_status, runtime_status_label = _resolve_predictor_runtime_status(predictor)
     data = {
         'id': predictor['id'],
         'user_id': predictor['user_id'],
@@ -199,6 +212,16 @@ def _serialize_predictor(predictor: dict) -> dict:
         'history_window': predictor.get('history_window'),
         'temperature': predictor.get('temperature'),
         'enabled': bool(predictor.get('enabled')),
+        'auto_paused': bool(predictor.get('auto_paused')),
+        'runtime_status': runtime_status,
+        'runtime_status_label': runtime_status_label,
+        'can_auto_run': bool(predictor.get('enabled')) and not bool(predictor.get('auto_paused')),
+        'consecutive_ai_failures': int(predictor.get('consecutive_ai_failures') or 0),
+        'auto_paused_at': utc_to_beijing(predictor['auto_paused_at']) if predictor.get('auto_paused_at') else None,
+        'auto_pause_reason': predictor.get('auto_pause_reason'),
+        'last_ai_error_category': predictor.get('last_ai_error_category'),
+        'last_ai_error_message': predictor.get('last_ai_error_message'),
+        'last_ai_error_at': utc_to_beijing(predictor['last_ai_error_at']) if predictor.get('last_ai_error_at') else None,
         'created_at': utc_to_beijing(predictor['created_at']) if predictor.get('created_at') else None,
         'updated_at': utc_to_beijing(predictor['updated_at']) if predictor.get('updated_at') else None,
         'masked_api_key': mask_api_key(predictor.get('api_key')),
@@ -598,6 +621,7 @@ def _serialize_admin_user(item: dict) -> dict:
 def _serialize_admin_predictor(item: dict) -> dict:
     lottery_type = normalize_lottery_type(item.get('lottery_type'))
     default_profit_rule_id = profit_simulator.get_default_rule_id(lottery_type=lottery_type) if supports_profit_simulation(lottery_type) else ''
+    runtime_status, runtime_status_label = _resolve_predictor_runtime_status(item)
     return {
         'id': item['id'],
         'user_id': item['user_id'],
@@ -614,6 +638,14 @@ def _serialize_admin_predictor(item: dict) -> dict:
         'lottery_label': get_lottery_definition(lottery_type).label,
         'share_level': item.get('share_level'),
         'enabled': bool(item.get('enabled')),
+        'auto_paused': bool(item.get('auto_paused')),
+        'runtime_status': runtime_status,
+        'runtime_status_label': runtime_status_label,
+        'consecutive_ai_failures': int(item.get('consecutive_ai_failures') or 0),
+        'auto_paused_at': utc_to_beijing(item['auto_paused_at']) if item.get('auto_paused_at') else None,
+        'auto_pause_reason': item.get('auto_pause_reason'),
+        'last_ai_error_message': item.get('last_ai_error_message'),
+        'last_ai_error_at': utc_to_beijing(item['last_ai_error_at']) if item.get('last_ai_error_at') else None,
         'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
         'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None,
         'prediction_count': int(item.get('prediction_count') or 0),
@@ -624,6 +656,7 @@ def _serialize_admin_predictor(item: dict) -> dict:
 
 
 def _serialize_admin_failure(item: dict) -> dict:
+    lottery_type = normalize_lottery_type(item.get('lottery_type'))
     return {
         'issue_no': item.get('issue_no'),
         'status': item.get('status'),
@@ -631,7 +664,9 @@ def _serialize_admin_failure(item: dict) -> dict:
         'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None,
         'predictor_id': item.get('predictor_id'),
         'predictor_name': item.get('predictor_name'),
-        'username': item.get('username')
+        'username': item.get('username'),
+        'lottery_type': lottery_type,
+        'lottery_label': get_lottery_definition(lottery_type).label
     }
 
 
@@ -641,6 +676,7 @@ def _build_admin_dashboard_data() -> dict:
     predictors = db.get_admin_predictors_overview()
     failed_predictions = db.get_recent_failed_predictions(limit=20)
     scheduler = db.get_scheduler_snapshot(AUTO_PREDICTION_SCHEDULER)
+    guard_settings = prediction_guard.get_settings()
 
     scheduler_data = {
         'name': AUTO_PREDICTION_SCHEDULER,
@@ -664,6 +700,7 @@ def _build_admin_dashboard_data() -> dict:
             'admin_users': int(summary.get('admin_users') or 0),
             'total_predictors': int(summary.get('total_predictors') or 0),
             'enabled_predictors': int(summary.get('enabled_predictors') or 0),
+            'auto_paused_predictors': int(summary.get('auto_paused_predictors') or 0),
             'shared_predictors': int(summary.get('shared_predictors') or 0),
             'total_predictions': int(summary.get('total_predictions') or 0),
             'pending_predictions': int(summary.get('pending_predictions') or 0),
@@ -672,6 +709,7 @@ def _build_admin_dashboard_data() -> dict:
             'total_draws': int(summary.get('total_draws') or 0)
         },
         'scheduler': scheduler_data,
+        'prediction_guard': guard_settings,
         'users': [_serialize_admin_user(item) for item in users],
         'predictors': [_serialize_admin_predictor(item) for item in predictors],
         'recent_failures': [_serialize_admin_failure(item) for item in failed_predictions]
@@ -1459,6 +1497,24 @@ def get_admin_dashboard():
     return jsonify(_build_admin_dashboard_data())
 
 
+@app.route('/api/admin/settings/prediction-guard', methods=['POST'])
+@admin_required
+def update_admin_prediction_guard_settings():
+    data = request.get_json() or {}
+    enabled = _parse_bool(data.get('enabled'), True)
+    threshold = data.get('threshold', 3)
+    try:
+        threshold = int(threshold)
+    except (TypeError, ValueError):
+        threshold = 3
+    threshold = max(1, min(threshold, 20))
+    settings = prediction_guard.update_settings(enabled=enabled, threshold=threshold)
+    return jsonify({
+        'message': 'AI 故障保护设置已更新',
+        'settings': settings
+    })
+
+
 @app.route('/api/admin/users/<int:user_id>/toggle-admin', methods=['POST'])
 @admin_required
 def toggle_admin_user(user_id: int):
@@ -1502,6 +1558,21 @@ def toggle_admin_predictor_enabled(predictor_id: int):
             'id': updated['id'],
             'enabled': bool(updated.get('enabled'))
         }
+    })
+
+
+@app.route('/api/admin/predictors/<int:predictor_id>/resume-auto-pause', methods=['POST'])
+@admin_required
+def resume_admin_predictor_auto_pause(predictor_id: int):
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    if not predictor:
+        return jsonify({'error': '预测方案不存在'}), 404
+
+    prediction_guard.resume_predictor(predictor_id)
+    updated = db.get_predictor(predictor_id, include_secret=False)
+    return jsonify({
+        'message': '方案已解除自动暂停',
+        'predictor': _serialize_admin_predictor(updated)
     })
 
 
@@ -1944,6 +2015,25 @@ def predict_now(predictor_id: int):
         })
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/predictors/<int:predictor_id>/resume-auto-pause', methods=['POST'])
+@login_required
+def resume_predictor_auto_pause(predictor_id: int):
+    user_id = get_current_user_id()
+    if not db.predictor_exists_for_user(predictor_id, user_id):
+        return jsonify({'error': '无权操作此预测方案'}), 403
+
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    if not predictor:
+        return jsonify({'error': '预测方案不存在'}), 404
+
+    prediction_guard.resume_predictor(predictor_id)
+    updated = db.get_predictor(predictor_id, include_secret=True)
+    return jsonify({
+        'message': '方案已解除自动暂停',
+        'predictor': _serialize_predictor(updated)
+    })
 
 
 initialize_application()

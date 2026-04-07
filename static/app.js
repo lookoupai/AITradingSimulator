@@ -613,27 +613,31 @@ class PredictionApp {
             return;
         }
 
-        container.innerHTML = predictors.map((predictor) => `
-            <div class="predictor-item ${predictor.id === this.currentPredictorId ? 'active' : ''}" data-id="${predictor.id}">
-                <div class="predictor-head">
-                    <div>
-                        <div class="predictor-name">${this.escapeHtml(predictor.name)}</div>
-                        <div class="predictor-meta">${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</div>
+        container.innerHTML = predictors.map((predictor) => {
+            const status = this.predictorStatusMeta(predictor);
+            return `
+                <div class="predictor-item ${predictor.id === this.currentPredictorId ? 'active' : ''}" data-id="${predictor.id}">
+                    <div class="predictor-head">
+                        <div>
+                            <div class="predictor-name">${this.escapeHtml(predictor.name)}</div>
+                            <div class="predictor-meta">${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</div>
+                        </div>
+                        <span class="status-chip ${status.className}">${this.escapeHtml(status.label)}</span>
                     </div>
-                    <span class="status-chip ${predictor.enabled ? 'enabled' : 'disabled'}">${predictor.enabled ? '启用' : '停用'}</span>
+                    ${predictor.auto_paused ? `<div class="hint-text">${this.escapeHtml(`AI 连续失败 ${predictor.consecutive_ai_failures || 0} 次，已自动暂停`)}</div>` : ''}
+                    <div class="predictor-tags">
+                        ${(predictor.prediction_targets || []).map((target) => `<span class="tag">${this.escapeHtml(this.targetLabel(target, predictor.lottery_type || 'pc28'))}</span>`).join('')}
+                    </div>
+                    <div class="predictor-actions">
+                        <button class="icon-btn" data-action="toggle" data-id="${predictor.id}" title="${this.escapeHtml(status.actionTitle)}">
+                            <i class="bi ${status.iconClass}"></i>
+                        </button>
+                        <button class="icon-btn" data-action="edit" data-id="${predictor.id}" title="编辑方案"><i class="bi bi-pencil"></i></button>
+                        <button class="icon-btn danger" data-action="delete" data-id="${predictor.id}" title="删除方案"><i class="bi bi-trash"></i></button>
+                    </div>
                 </div>
-                <div class="predictor-tags">
-                    ${(predictor.prediction_targets || []).map((target) => `<span class="tag">${this.escapeHtml(this.targetLabel(target, predictor.lottery_type || 'pc28'))}</span>`).join('')}
-                </div>
-                <div class="predictor-actions">
-                    <button class="icon-btn" data-action="toggle" data-id="${predictor.id}" title="${predictor.enabled ? '暂停方案' : '恢复方案'}">
-                        <i class="bi ${predictor.enabled ? 'bi-pause-circle' : 'bi-play-circle'}"></i>
-                    </button>
-                    <button class="icon-btn" data-action="edit" data-id="${predictor.id}" title="编辑方案"><i class="bi bi-pencil"></i></button>
-                    <button class="icon-btn danger" data-action="delete" data-id="${predictor.id}" title="删除方案"><i class="bi bi-trash"></i></button>
-                </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
 
         container.querySelectorAll('.predictor-item').forEach((item) => {
             item.addEventListener('click', (event) => {
@@ -651,6 +655,10 @@ class PredictionApp {
                 const predictorId = Number(button.dataset.id);
                 const predictor = (this.predictors || []).find((item) => item.id === predictorId);
                 if (!predictor) {
+                    return;
+                }
+                if (predictor.auto_paused) {
+                    this.resumeAutoPausedPredictor(predictorId);
                     return;
                 }
                 this.togglePredictorStatus(predictorId, !predictor.enabled);
@@ -715,6 +723,7 @@ class PredictionApp {
             document.getElementById('statsMetricView').value = this.selectedStatsMetric;
             this.updatePredictorActionState(data.predictor);
             this.renderOverview(data.overview || this.overview || {});
+            this.renderPredictorGuardPanel(data.predictor);
             this.renderStats(this.currentStats);
             this.renderCurrentPrediction(data.current_prediction, data.latest_prediction, data.predictor);
             this.renderPublicSharePanel(data.predictor);
@@ -741,6 +750,50 @@ class PredictionApp {
             select.value = options.some((item) => item.key === selectedMetric) ? selectedMetric : fallback;
             this.selectedStatsMetric = select.value;
         }
+    }
+
+    renderPredictorGuardPanel(predictor) {
+        const container = document.getElementById('predictorGuardPanel');
+        if (!container) {
+            return;
+        }
+
+        if (!predictor) {
+            container.className = 'prediction-summary empty-panel';
+            container.textContent = '请选择预测方案';
+            return;
+        }
+
+        const runtimeStatus = predictor.runtime_status_label || '--';
+        const errorCategory = this.guardErrorCategoryLabel(predictor.last_ai_error_category);
+        const lastErrorMessage = predictor.last_ai_error_message || predictor.auto_pause_reason || '暂无';
+        const recoveryText = this.guardRecoveryHint(predictor);
+        const warning = predictor.auto_paused
+            ? `<div class="warning-banner">方案已自动暂停，请先确认 API Key、模型余额或返回格式，再点击“解除自动暂停”。</div>`
+            : '';
+
+        container.className = 'prediction-summary';
+        container.innerHTML = `
+            ${warning}
+            <div class="prediction-grid prediction-grid-compact">
+                ${this.renderCurrentPredictionCard('运行状态', runtimeStatus)}
+                ${this.renderCurrentPredictionCard('连续失败', String(predictor.consecutive_ai_failures || 0))}
+                ${this.renderCurrentPredictionCard('错误类型', errorCategory)}
+                ${this.renderCurrentPredictionCard('最近错误时间', predictor.last_ai_error_at || '--')}
+                ${this.renderCurrentPredictionCard('自动暂停时间', predictor.auto_paused_at || '--')}
+                ${this.renderCurrentPredictionCard('恢复方式', recoveryText)}
+            </div>
+            <div class="detail-list">
+                <div class="detail-row">
+                    <span class="detail-label">最近错误详情</span>
+                    <strong>${this.escapeHtml(lastErrorMessage)}</strong>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">当前方案</span>
+                    <strong>${this.escapeHtml(predictor.name || '--')} / ${this.escapeHtml(predictor.model_name || '--')}</strong>
+                </div>
+            </div>
+        `;
     }
 
     renderStats(stats) {
@@ -968,6 +1021,7 @@ class PredictionApp {
                     </div>
                     <div class="badge-row">${targetTags}</div>
                 </div>
+                ${this.renderPredictorGuardNotice(predictor)}
                 <p>当前尚无预测记录，点击“立即预测”或等待自动轮询。</p>
             `;
             return;
@@ -1005,6 +1059,7 @@ class PredictionApp {
                     <span class="status-chip ${prediction.status}">${statusText}</span>
                 </div>
             </div>
+            ${this.renderPredictorGuardNotice(predictor)}
             ${errorBlock}
             <div class="metric-hint prediction-note">
                 <div class="metric-hint-head">
@@ -1082,6 +1137,7 @@ class PredictionApp {
                     </div>
                     <div class="badge-row">${targetTags}</div>
                 </div>
+                ${this.renderPredictorGuardNotice(predictor)}
                 <p>当前尚无竞彩足球预测记录，点击“立即预测”后会按当前批次生成多场比赛预测。</p>
             `;
             return;
@@ -1185,6 +1241,7 @@ class PredictionApp {
                         <span class="status-chip ${prediction.status}">${this.predictionStatusLabel(prediction.status)}</span>
                     </div>
                 </div>
+                ${this.renderPredictorGuardNotice(predictor)}
                 ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
                 ${saleNoticeBlock}
                 <div class="prediction-grid prediction-grid-compact">
@@ -2111,6 +2168,7 @@ class PredictionApp {
         this.selectedProfitOrder = 'desc';
         this.currentPredictions = [];
         this.updatePredictorActionState(null);
+        this.renderPredictorGuardPanel(null);
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
         this.hideFootballActionResult();
@@ -2621,6 +2679,11 @@ class PredictionApp {
             return;
         }
 
+        if (this.currentPredictor.auto_paused) {
+            await this.resumeAutoPausedPredictor(this.currentPredictor.id);
+            return;
+        }
+
         await this.togglePredictorStatus(this.currentPredictor.id, !this.currentPredictor.enabled);
     }
 
@@ -2635,6 +2698,28 @@ class PredictionApp {
             const data = await response.json();
             if (!response.ok) {
                 throw new Error(data.error || '更新方案状态失败');
+            }
+
+            if (this.currentPredictorId === predictorId) {
+                this.currentPredictor = data.predictor;
+                this.updatePredictorActionState(data.predictor);
+            }
+
+            await this.refresh(true);
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async resumeAutoPausedPredictor(predictorId) {
+        try {
+            const response = await fetch(`/api/predictors/${predictorId}/resume-auto-pause`, {
+                method: 'POST',
+                credentials: 'include'
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '解除自动暂停失败');
             }
 
             if (this.currentPredictorId === predictorId) {
@@ -2828,10 +2913,82 @@ class PredictionApp {
         }
 
         toggleButton.disabled = false;
-        toggleButton.innerHTML = predictor.enabled
-            ? '<i class="bi bi-pause-circle"></i> 暂停方案'
-            : '<i class="bi bi-play-circle"></i> 恢复方案';
+        if (predictor.auto_paused) {
+            toggleButton.innerHTML = '<i class="bi bi-play-circle"></i> 解除自动暂停';
+        } else {
+            toggleButton.innerHTML = predictor.enabled
+                ? '<i class="bi bi-pause-circle"></i> 暂停方案'
+                : '<i class="bi bi-play-circle"></i> 恢复方案';
+        }
         predictNowButton.disabled = false;
+    }
+
+    predictorStatusMeta(predictor) {
+        if (!predictor) {
+            return {
+                className: 'disabled',
+                label: '停用',
+                actionTitle: '恢复方案',
+                iconClass: 'bi-play-circle'
+            };
+        }
+        if (!predictor.enabled) {
+            return {
+                className: 'disabled',
+                label: '停用',
+                actionTitle: '恢复方案',
+                iconClass: 'bi-play-circle'
+            };
+        }
+        if (predictor.auto_paused) {
+            return {
+                className: 'paused',
+                label: '自动暂停',
+                actionTitle: '解除自动暂停',
+                iconClass: 'bi-play-circle'
+            };
+        }
+        return {
+            className: 'enabled',
+            label: '启用',
+            actionTitle: '暂停方案',
+            iconClass: 'bi-pause-circle'
+        };
+    }
+
+    guardErrorCategoryLabel(category) {
+        const mapping = {
+            quota: '额度不足',
+            auth: '鉴权失败',
+            rate_limit: '限流',
+            parse: '响应解析失败',
+            transport: '网络连接失败',
+            ai_error: 'AI 调用失败'
+        };
+        return mapping[String(category || '').trim()] || '--';
+    }
+
+    guardRecoveryHint(predictor) {
+        if (!predictor) {
+            return '--';
+        }
+        if (predictor.auto_paused) {
+            return '修复后点击上方“解除自动暂停”';
+        }
+        if (!predictor.enabled) {
+            return '先启用方案，再执行预测';
+        }
+        return '当前无需处理';
+    }
+
+    renderPredictorGuardNotice(predictor) {
+        if (!predictor || !predictor.auto_paused) {
+            return '';
+        }
+        const errorType = this.guardErrorCategoryLabel(predictor.last_ai_error_category);
+        const errorTime = predictor.auto_paused_at || predictor.last_ai_error_at || '--';
+        const errorText = predictor.last_ai_error_message || predictor.auto_pause_reason || '最近一次 AI 调用失败';
+        return `<div class="warning-banner">方案已自动暂停：连续失败 ${this.escapeHtml(String(predictor.consecutive_ai_failures || 0))} 次，错误类型 ${this.escapeHtml(errorType)}，时间 ${this.escapeHtml(errorTime)}。${this.escapeHtml(errorText)}</div>`;
     }
 
     getTodayDateValue() {

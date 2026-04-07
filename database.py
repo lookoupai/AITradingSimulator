@@ -77,6 +77,33 @@ class Database:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS predictor_runtime_state (
+                predictor_id INTEGER PRIMARY KEY,
+                consecutive_ai_failures INTEGER NOT NULL DEFAULT 0,
+                auto_paused INTEGER NOT NULL DEFAULT 0,
+                auto_paused_at TIMESTAMP,
+                auto_pause_reason TEXT,
+                last_ai_error_category TEXT,
+                last_ai_error_message TEXT,
+                last_ai_error_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (predictor_id) REFERENCES predictors(id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS lottery_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lottery_type TEXT NOT NULL,
@@ -252,6 +279,7 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_prediction_items_run ON prediction_items(run_id, event_key)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_predictor ON predictions(predictor_id, issue_no)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status, issue_no)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictor_runtime_state_paused ON predictor_runtime_state(auto_paused, predictor_id)')
 
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
@@ -449,6 +477,7 @@ class Database:
     def delete_predictor(self, predictor_id: int):
         conn = self.get_connection()
         cursor = conn.cursor()
+        cursor.execute('DELETE FROM predictor_runtime_state WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM prediction_items WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM prediction_runs WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM predictions WHERE predictor_id = ?', (predictor_id,))
@@ -462,7 +491,8 @@ class Database:
         cursor.execute('SELECT * FROM predictors WHERE id = ?', (predictor_id,))
         row = cursor.fetchone()
         conn.close()
-        return self._prepare_predictor(row, include_secret=include_secret)
+        predictor = self._prepare_predictor(row, include_secret=include_secret)
+        return self._attach_predictor_runtime_state(predictor)
 
     def get_predictors_by_user(self, user_id: int, include_secret: bool = False) -> list[dict]:
         conn = self.get_connection()
@@ -477,7 +507,8 @@ class Database:
         )
         rows = cursor.fetchall()
         conn.close()
-        return [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
+        predictors = [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
+        return self._attach_predictor_runtime_state_batch(predictors)
 
     def get_all_predictors(self, include_secret: bool = False) -> list[dict]:
         conn = self.get_connection()
@@ -490,9 +521,15 @@ class Database:
         )
         rows = cursor.fetchall()
         conn.close()
-        return [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
+        predictors = [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
+        return self._attach_predictor_runtime_state_batch(predictors)
 
-    def get_enabled_predictors(self, lottery_type: str = 'pc28', include_secret: bool = True) -> list[dict]:
+    def get_enabled_predictors(
+        self,
+        lottery_type: str = 'pc28',
+        include_secret: bool = True,
+        exclude_auto_paused: bool = False
+    ) -> list[dict]:
         normalized_lottery_type = normalize_lottery_type(lottery_type)
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -506,7 +543,11 @@ class Database:
         )
         rows = cursor.fetchall()
         conn.close()
-        return [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
+        predictors = [item for item in (self._prepare_predictor(row, include_secret=include_secret) for row in rows) if item]
+        predictors = self._attach_predictor_runtime_state_batch(predictors)
+        if exclude_auto_paused:
+            predictors = [item for item in predictors if not item.get('auto_paused')]
+        return predictors
 
     def predictor_exists_for_user(self, predictor_id: int, user_id: int) -> bool:
         conn = self.get_connection()
@@ -518,6 +559,140 @@ class Database:
         row = cursor.fetchone()
         conn.close()
         return row is not None
+
+    def get_system_settings(self, keys: Optional[list[str]] = None) -> dict[str, str]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if keys:
+            unique_keys = list(dict.fromkeys([str(item) for item in keys if str(item).strip()]))
+            if not unique_keys:
+                conn.close()
+                return {}
+            placeholders = ','.join('?' for _ in unique_keys)
+            cursor.execute(
+                f'''
+                SELECT key, value FROM system_settings
+                WHERE key IN ({placeholders})
+                ''',
+                unique_keys
+            )
+        else:
+            cursor.execute('SELECT key, value FROM system_settings')
+        rows = cursor.fetchall()
+        conn.close()
+        return {str(row['key']): row['value'] for row in rows}
+
+    def set_system_settings(self, values: dict[str, Any]):
+        if not values:
+            return
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.executemany(
+            '''
+            INSERT INTO system_settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            [
+                (str(key), None if value is None else str(value))
+                for key, value in values.items()
+            ]
+        )
+        conn.commit()
+        conn.close()
+
+    def get_predictor_runtime_state(self, predictor_id: int) -> dict:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM predictor_runtime_state
+            WHERE predictor_id = ?
+            LIMIT 1
+            ''',
+            (predictor_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row is None:
+            return self._default_predictor_runtime_state(predictor_id)
+        return self._prepare_predictor_runtime_state(row)
+
+    def get_predictor_runtime_state_map(self, predictor_ids: list[int]) -> dict[int, dict]:
+        unique_ids = [int(item) for item in dict.fromkeys(predictor_ids or []) if item is not None]
+        if not unique_ids:
+            return {}
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        placeholders = ','.join('?' for _ in unique_ids)
+        cursor.execute(
+            f'''
+            SELECT * FROM predictor_runtime_state
+            WHERE predictor_id IN ({placeholders})
+            ''',
+            unique_ids
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        state_map = {
+            int(row['predictor_id']): self._prepare_predictor_runtime_state(row)
+            for row in rows
+        }
+        for predictor_id in unique_ids:
+            state_map.setdefault(int(predictor_id), self._default_predictor_runtime_state(int(predictor_id)))
+        return state_map
+
+    def update_predictor_runtime_state(self, predictor_id: int, fields: dict):
+        existing = self.get_predictor_runtime_state(predictor_id)
+        payload = {
+            **existing,
+            **(fields or {}),
+            'predictor_id': predictor_id
+        }
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO predictor_runtime_state (
+                predictor_id,
+                consecutive_ai_failures,
+                auto_paused,
+                auto_paused_at,
+                auto_pause_reason,
+                last_ai_error_category,
+                last_ai_error_message,
+                last_ai_error_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(predictor_id) DO UPDATE SET
+                consecutive_ai_failures = excluded.consecutive_ai_failures,
+                auto_paused = excluded.auto_paused,
+                auto_paused_at = excluded.auto_paused_at,
+                auto_pause_reason = excluded.auto_pause_reason,
+                last_ai_error_category = excluded.last_ai_error_category,
+                last_ai_error_message = excluded.last_ai_error_message,
+                last_ai_error_at = excluded.last_ai_error_at,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (
+                payload['predictor_id'],
+                int(payload.get('consecutive_ai_failures') or 0),
+                1 if payload.get('auto_paused') else 0,
+                payload.get('auto_paused_at'),
+                payload.get('auto_pause_reason'),
+                payload.get('last_ai_error_category'),
+                payload.get('last_ai_error_message'),
+                payload.get('last_ai_error_at')
+            )
+        )
+        conn.commit()
+        conn.close()
 
     # ============ Draw Sync ============
 
@@ -1487,20 +1662,46 @@ class Database:
                 p.created_at,
                 p.updated_at,
                 u.username,
-                COUNT(pr.id) AS prediction_count,
-                MAX(pr.issue_no) AS latest_issue_no,
-                MAX(pr.updated_at) AS latest_prediction_update,
-                SUM(CASE WHEN pr.status = 'failed' THEN 1 ELSE 0 END) AS failed_prediction_count
+                COALESCE(prediction_stats.prediction_count, 0) + COALESCE(run_stats.prediction_count, 0) AS prediction_count,
+                COALESCE(prediction_stats.failed_prediction_count, 0) + COALESCE(run_stats.failed_prediction_count, 0) AS failed_prediction_count,
+                CASE
+                    WHEN COALESCE(run_stats.latest_prediction_update, '') > COALESCE(prediction_stats.latest_prediction_update, '')
+                        THEN run_stats.latest_issue_no
+                    ELSE prediction_stats.latest_issue_no
+                END AS latest_issue_no,
+                CASE
+                    WHEN COALESCE(run_stats.latest_prediction_update, '') > COALESCE(prediction_stats.latest_prediction_update, '')
+                        THEN run_stats.latest_prediction_update
+                    ELSE prediction_stats.latest_prediction_update
+                END AS latest_prediction_update
             FROM predictors p
             JOIN users u ON u.id = p.user_id
-            LEFT JOIN predictions pr ON pr.predictor_id = p.id
-            GROUP BY p.id
+            LEFT JOIN (
+                SELECT
+                    predictor_id,
+                    COUNT(*) AS prediction_count,
+                    MAX(issue_no) AS latest_issue_no,
+                    MAX(updated_at) AS latest_prediction_update,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_prediction_count
+                FROM predictions
+                GROUP BY predictor_id
+            ) AS prediction_stats ON prediction_stats.predictor_id = p.id
+            LEFT JOIN (
+                SELECT
+                    predictor_id,
+                    COUNT(*) AS prediction_count,
+                    MAX(run_key) AS latest_issue_no,
+                    MAX(updated_at) AS latest_prediction_update,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_prediction_count
+                FROM prediction_runs
+                GROUP BY predictor_id
+            ) AS run_stats ON run_stats.predictor_id = p.id
             ORDER BY p.updated_at DESC, p.id DESC
             '''
         )
         rows = cursor.fetchall()
         conn.close()
-        return [dict(row) for row in rows]
+        return self._attach_predictor_runtime_state_batch([dict(row) for row in rows])
 
     def get_scheduler_snapshot(self, name: str) -> Optional[dict]:
         conn = self.get_connection()
@@ -1528,12 +1729,23 @@ class Database:
                 (SELECT COUNT(*) FROM users) AS total_users,
                 (SELECT COUNT(*) FROM users WHERE is_admin = 1) AS admin_users,
                 (SELECT COUNT(*) FROM predictors) AS total_predictors,
-                (SELECT COUNT(*) FROM predictors WHERE enabled = 1) AS enabled_predictors,
+                (
+                    SELECT COUNT(*)
+                    FROM predictors p
+                    LEFT JOIN predictor_runtime_state prs ON prs.predictor_id = p.id
+                    WHERE p.enabled = 1 AND COALESCE(prs.auto_paused, 0) = 0
+                ) AS enabled_predictors,
+                (
+                    SELECT COUNT(*)
+                    FROM predictors p
+                    LEFT JOIN predictor_runtime_state prs ON prs.predictor_id = p.id
+                    WHERE p.enabled = 1 AND COALESCE(prs.auto_paused, 0) = 1
+                ) AS auto_paused_predictors,
                 (SELECT COUNT(*) FROM predictors WHERE share_level != 'stats_only') AS shared_predictors,
-                (SELECT COUNT(*) FROM predictions) AS total_predictions,
-                (SELECT COUNT(*) FROM predictions WHERE status = 'pending') AS pending_predictions,
-                (SELECT COUNT(*) FROM predictions WHERE status = 'failed') AS failed_predictions,
-                (SELECT COUNT(*) FROM predictions WHERE status = 'settled') AS settled_predictions,
+                (SELECT COUNT(*) FROM predictions) + (SELECT COUNT(*) FROM prediction_runs) AS total_predictions,
+                (SELECT COUNT(*) FROM predictions WHERE status = 'pending') + (SELECT COUNT(*) FROM prediction_runs WHERE status = 'pending') AS pending_predictions,
+                (SELECT COUNT(*) FROM predictions WHERE status = 'failed') + (SELECT COUNT(*) FROM prediction_runs WHERE status = 'failed') AS failed_predictions,
+                (SELECT COUNT(*) FROM predictions WHERE status = 'settled') + (SELECT COUNT(*) FROM prediction_runs WHERE status = 'settled') AS settled_predictions,
                 (SELECT COUNT(*) FROM lottery_draws WHERE lottery_type = 'pc28') AS total_draws
             '''
         )
@@ -1547,18 +1759,46 @@ class Database:
         cursor.execute(
             '''
             SELECT
-                p.issue_no,
-                p.status,
-                p.error_message,
-                p.updated_at,
-                pr.id AS predictor_id,
-                pr.name AS predictor_name,
-                u.username
-            FROM predictions p
-            JOIN predictors pr ON pr.id = p.predictor_id
-            JOIN users u ON u.id = pr.user_id
-            WHERE p.status = 'failed'
-            ORDER BY p.updated_at DESC
+                failures.issue_no,
+                failures.status,
+                failures.error_message,
+                failures.updated_at,
+                failures.predictor_id,
+                failures.predictor_name,
+                failures.username,
+                failures.lottery_type
+            FROM (
+                SELECT
+                    p.issue_no AS issue_no,
+                    p.status AS status,
+                    p.error_message AS error_message,
+                    p.updated_at AS updated_at,
+                    pr.id AS predictor_id,
+                    pr.name AS predictor_name,
+                    u.username AS username,
+                    pr.lottery_type AS lottery_type
+                FROM predictions p
+                JOIN predictors pr ON pr.id = p.predictor_id
+                JOIN users u ON u.id = pr.user_id
+                WHERE p.status = 'failed'
+
+                UNION ALL
+
+                SELECT
+                    r.run_key AS issue_no,
+                    r.status AS status,
+                    r.error_message AS error_message,
+                    r.updated_at AS updated_at,
+                    pr.id AS predictor_id,
+                    pr.name AS predictor_name,
+                    u.username AS username,
+                    pr.lottery_type AS lottery_type
+                FROM prediction_runs r
+                JOIN predictors pr ON pr.id = r.predictor_id
+                JOIN users u ON u.id = pr.user_id
+                WHERE r.status = 'failed'
+            ) AS failures
+            ORDER BY failures.updated_at DESC
             LIMIT ?
             ''',
             (limit,)
@@ -1588,6 +1828,54 @@ class Database:
         if not include_secret:
             data.pop('api_key', None)
         return data
+
+    def _default_predictor_runtime_state(self, predictor_id: int | None = None) -> dict:
+        return {
+            'predictor_id': predictor_id,
+            'consecutive_ai_failures': 0,
+            'auto_paused': False,
+            'auto_paused_at': None,
+            'auto_pause_reason': None,
+            'last_ai_error_category': None,
+            'last_ai_error_message': None,
+            'last_ai_error_at': None
+        }
+
+    def _prepare_predictor_runtime_state(self, row) -> dict:
+        data = dict(row)
+        return {
+            'predictor_id': int(data.get('predictor_id')) if data.get('predictor_id') is not None else None,
+            'consecutive_ai_failures': int(data.get('consecutive_ai_failures') or 0),
+            'auto_paused': bool(data.get('auto_paused')),
+            'auto_paused_at': data.get('auto_paused_at'),
+            'auto_pause_reason': data.get('auto_pause_reason'),
+            'last_ai_error_category': data.get('last_ai_error_category'),
+            'last_ai_error_message': data.get('last_ai_error_message'),
+            'last_ai_error_at': data.get('last_ai_error_at')
+        }
+
+    def _attach_predictor_runtime_state(self, predictor: Optional[dict]) -> Optional[dict]:
+        if predictor is None:
+            return None
+        runtime_state = self.get_predictor_runtime_state(predictor['id'])
+        return {
+            **predictor,
+            **runtime_state
+        }
+
+    def _attach_predictor_runtime_state_batch(self, predictors: list[dict]) -> list[dict]:
+        if not predictors:
+            return []
+
+        state_map = self.get_predictor_runtime_state_map([item['id'] for item in predictors if item.get('id') is not None])
+        enriched = []
+        for predictor in predictors:
+            runtime_state = state_map.get(int(predictor['id']), self._default_predictor_runtime_state(predictor['id']))
+            enriched.append({
+                **predictor,
+                **runtime_state
+            })
+        return enriched
 
     def _prepare_lottery_event(self, row) -> dict:
         data = dict(row)
