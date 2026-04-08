@@ -279,13 +279,137 @@ class ProfitSimulatorTests(unittest.TestCase):
             )
 
             self.assertEqual(single_simulation['metric'], 'spf')
+            self.assertEqual(single_simulation['period_key'], '30d')
             self.assertEqual(len(single_simulation['records']), 2)
             self.assertEqual(single_simulation['summary']['bet_count'], 2)
             self.assertEqual(single_simulation['records'][0]['result_type'], 'hit')
             self.assertEqual(parlay_simulation['metric'], 'rqspf_parlay')
+            self.assertEqual(parlay_simulation['period_key'], '30d')
             self.assertEqual(len(parlay_simulation['records']), 1)
             self.assertEqual(parlay_simulation['summary']['bet_count'], 1)
             self.assertEqual(parlay_simulation['records'][0]['result_type'], 'hit')
+
+    def test_jingcai_profit_simulation_uses_recent_30_days_by_default(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(
+                harness,
+                user_id,
+                'jingcai_football',
+                primary_metric='spf',
+                profit_default_metric='spf',
+                prediction_targets=['spf']
+            )
+
+            timezone = importlib.import_module('utils.timezone')
+            recent_time = (timezone.get_current_beijing_time() - timedelta(days=5)).replace(hour=19, minute=0, second=0, microsecond=0)
+            old_time = (timezone.get_current_beijing_time() - timedelta(days=45)).replace(hour=19, minute=0, second=0, microsecond=0)
+
+            def build_event(event_key: str, issue_no: str, event_time, predicted_value: str, odds: float):
+                harness.db.upsert_lottery_events([{
+                    'lottery_type': 'jingcai_football',
+                    'event_key': event_key,
+                    'batch_key': event_time.strftime('%Y-%m-%d'),
+                    'event_date': event_time.strftime('%Y-%m-%d'),
+                    'event_time': event_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'event_name': f'[测试] {issue_no}',
+                    'league': '测试联赛',
+                    'home_team': f'{issue_no} 主队',
+                    'away_team': f'{issue_no} 客队',
+                    'status': '3',
+                    'status_label': '已开奖',
+                    'source_provider': 'sina',
+                    'result_payload': json.dumps({
+                        'score1': 1,
+                        'score2': 0,
+                        'actual_spf': predicted_value
+                    }, ensure_ascii=False),
+                    'meta_payload': json.dumps({
+                        'match_no': issue_no,
+                        'spf_sell_status': '2',
+                        'spf_odds': {'胜': odds, '平': 3.2, '负': 4.6},
+                        'settled': True
+                    }, ensure_ascii=False),
+                    'source_payload': '{}'
+                }])
+
+            build_event('recent-event', '周三001', recent_time, '胜', 1.72)
+            build_event('old-event', '周三002', old_time, '胜', 1.95)
+
+            run_id = harness.db.upsert_prediction_run({
+                'predictor_id': predictor_id,
+                'lottery_type': 'jingcai_football',
+                'run_key': recent_time.strftime('%Y-%m-%d'),
+                'requested_targets': ['spf'],
+                'status': 'settled',
+                'total_items': 2,
+                'settled_items': 2,
+                'hit_items': 2,
+                'confidence': 0.72,
+                'reasoning_summary': 'test'
+            })
+            harness.db.upsert_prediction_items([
+                {
+                    'run_id': run_id,
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'jingcai_football',
+                    'run_key': recent_time.strftime('%Y-%m-%d'),
+                    'event_key': 'recent-event',
+                    'item_order': 0,
+                    'issue_no': '周三001',
+                    'title': '[测试] recent',
+                    'requested_targets': ['spf'],
+                    'prediction_payload': {'spf': '胜'},
+                    'actual_payload': {'spf': '胜'},
+                    'hit_payload': {'spf': 1},
+                    'confidence': 0.74,
+                    'reasoning_summary': 'recent',
+                    'raw_response': '{}',
+                    'status': 'settled',
+                    'error_message': None,
+                    'settled_at': recent_time.strftime('%Y-%m-%d %H:%M:%S')
+                },
+                {
+                    'run_id': run_id,
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'jingcai_football',
+                    'run_key': old_time.strftime('%Y-%m-%d'),
+                    'event_key': 'old-event',
+                    'item_order': 1,
+                    'issue_no': '周三002',
+                    'title': '[测试] old',
+                    'requested_targets': ['spf'],
+                    'prediction_payload': {'spf': '胜'},
+                    'actual_payload': {'spf': '胜'},
+                    'hit_payload': {'spf': 1},
+                    'confidence': 0.63,
+                    'reasoning_summary': 'old',
+                    'raw_response': '{}',
+                    'status': 'settled',
+                    'error_message': None,
+                    'settled_at': old_time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+            ])
+
+            default_simulation = harness.module.profit_simulator.build_today_simulation(
+                predictor_id,
+                requested_metric='spf',
+                include_records=True
+            )
+            all_simulation = harness.module.profit_simulator.build_today_simulation(
+                predictor_id,
+                requested_metric='spf',
+                period_key='all',
+                include_records=True
+            )
+
+            self.assertEqual(default_simulation['period_key'], '30d')
+            self.assertEqual(default_simulation['period']['label'], '近30天已结算比赛')
+            self.assertEqual(default_simulation['summary']['bet_count'], 1)
+            self.assertEqual([item['issue_no'] for item in default_simulation['records']], ['周三001'])
+            self.assertEqual(all_simulation['period_key'], 'all')
+            self.assertEqual(all_simulation['summary']['bet_count'], 2)
+            self.assertEqual([item['issue_no'] for item in all_simulation['records']], ['周三002', '周三001'])
 
 
 if __name__ == '__main__':

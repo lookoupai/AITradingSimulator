@@ -180,6 +180,7 @@ def _serialize_predictor(predictor: dict) -> dict:
     simulation_metrics = profit_simulator.get_metric_options(predictor) if supports_profit_simulation(lottery_type) else []
     default_simulation_metric = profit_simulator.get_default_metric(predictor) if supports_profit_simulation(lottery_type) else None
     default_profit_rule_id = profit_simulator.get_default_rule_id(predictor) if supports_profit_simulation(lottery_type) else ''
+    default_profit_period_key = profit_simulator.get_default_period_key(predictor) if supports_profit_simulation(lottery_type) else ''
     runtime_status, runtime_status_label = _resolve_predictor_runtime_status(predictor)
     data = {
         'id': predictor['id'],
@@ -208,6 +209,8 @@ def _serialize_predictor(predictor: dict) -> dict:
         'simulation_metrics': simulation_metrics,
         'default_simulation_metric': default_simulation_metric,
         'profit_rule_options': profit_simulator.get_rule_options(predictor) if supports_profit_simulation(lottery_type) else [],
+        'profit_period_options': profit_simulator.get_period_options(predictor) if supports_profit_simulation(lottery_type) else [],
+        'default_profit_period_key': default_profit_period_key,
         'odds_profiles': profit_simulator.get_odds_profile_options(predictor) if supports_profit_simulation(lottery_type) else [],
         'history_window': predictor.get('history_window'),
         'temperature': predictor.get('temperature'),
@@ -980,6 +983,8 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'simulation_metrics': profit_simulator.get_metric_options(predictor) if supports_profit_simulation(lottery_type) else [],
             'default_simulation_metric': profit_simulator.get_default_metric(predictor) if supports_profit_simulation(lottery_type) else None,
             'profit_rule_options': profit_simulator.get_rule_options(predictor) if supports_profit_simulation(lottery_type) else [],
+            'profit_period_options': profit_simulator.get_period_options(predictor) if supports_profit_simulation(lottery_type) else [],
+            'default_profit_period_key': profit_simulator.get_default_period_key(predictor) if supports_profit_simulation(lottery_type) else '',
             'odds_profiles': profit_simulator.get_odds_profile_options(predictor) if supports_profit_simulation(lottery_type) else [],
             'capabilities': get_lottery_definition(lottery_type).to_catalog_item()['capabilities'],
             'history_window': predictor.get('history_window'),
@@ -1569,6 +1574,7 @@ def get_public_predictor_simulation(predictor_id: int):
     requested_metric = request.args.get('metric') or predictor.get('default_simulation_metric')
     profit_rule_id = request.args.get('profit_rule_id') or predictor.get('profit_rule_id')
     odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
+    period_key = request.args.get('period_key') or profit_simulator.get_default_period_key(predictor)
     bet_mode = request.args.get('bet_mode')
     base_stake = request.args.get('base_stake', type=float)
     multiplier = request.args.get('multiplier', type=float)
@@ -1583,6 +1589,7 @@ def get_public_predictor_simulation(predictor_id: int):
             requested_metric=requested_metric,
             profit_rule_id=profit_rule_id,
             odds_profile=odds_profile,
+            period_key=period_key,
             bet_mode=bet_mode,
             base_stake=base_stake,
             multiplier=multiplier,
@@ -1997,6 +2004,7 @@ def get_predictor_simulation(predictor_id: int):
     requested_metric = request.args.get('metric') or (profit_simulator.get_default_metric(predictor) if predictor else None)
     profit_rule_id = request.args.get('profit_rule_id') or (predictor.get('profit_rule_id') if predictor else DEFAULT_PROFIT_RULE_ID)
     odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
+    period_key = request.args.get('period_key') or profit_simulator.get_default_period_key(predictor)
     bet_mode = request.args.get('bet_mode')
     base_stake = request.args.get('base_stake', type=float)
     multiplier = request.args.get('multiplier', type=float)
@@ -2008,6 +2016,7 @@ def get_predictor_simulation(predictor_id: int):
             requested_metric=requested_metric,
             profit_rule_id=profit_rule_id,
             odds_profile=odds_profile,
+            period_key=period_key,
             bet_mode=bet_mode,
             base_stake=base_stake,
             multiplier=multiplier,

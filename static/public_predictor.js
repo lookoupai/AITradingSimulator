@@ -5,6 +5,7 @@ class PublicPredictorPage {
         this.currentLotteryType = this.currentPredictor?.lottery_type || 'pc28';
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
+        this.selectedProfitPeriodKey = 'day';
         this.selectedProfitBetMode = 'flat';
         this.selectedProfitBaseStake = 10;
         this.selectedProfitMultiplier = 2;
@@ -28,6 +29,7 @@ class PublicPredictorPage {
     initEventListeners() {
         const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
+        const periodSelect = document.getElementById('publicProfitPeriodView');
         const betModeSelect = document.getElementById('publicProfitBetModeView');
         const baseStakeInput = document.getElementById('publicProfitBaseStakeView');
         const multiplierInput = document.getElementById('publicProfitMultiplierView');
@@ -45,6 +47,13 @@ class PublicPredictorPage {
         if (metricSelect) {
             metricSelect.addEventListener('change', (event) => {
                 this.selectedProfitMetric = event.target.value;
+                this.loadProfitSimulation();
+            });
+        }
+
+        if (periodSelect) {
+            periodSelect.addEventListener('change', (event) => {
+                this.selectedProfitPeriodKey = event.target.value;
                 this.loadProfitSimulation();
             });
         }
@@ -427,6 +436,7 @@ class PublicPredictorPage {
     renderProfitControls(predictor, resetMetric = false) {
         const ruleSelect = document.getElementById('publicProfitRuleView');
         const metricSelect = document.getElementById('publicProfitMetricView');
+        const periodSelect = document.getElementById('publicProfitPeriodView');
         const betModeSelect = document.getElementById('publicProfitBetModeView');
         const baseStakeInput = document.getElementById('publicProfitBaseStakeView');
         const multiplierInput = document.getElementById('publicProfitMultiplierView');
@@ -435,6 +445,7 @@ class PublicPredictorPage {
         const oddsSelect = document.getElementById('publicProfitOddsProfileView');
         const rules = predictor?.profit_rule_options || [];
         const metrics = predictor?.simulation_metrics || [];
+        const periodOptions = predictor?.profit_period_options || [];
         const oddsProfiles = predictor?.odds_profiles || [];
 
         if (!metrics.length || !rules.length) {
@@ -442,6 +453,8 @@ class PublicPredictorPage {
             ruleSelect.disabled = true;
             metricSelect.innerHTML = '<option value="">暂无玩法</option>';
             metricSelect.disabled = true;
+            periodSelect.innerHTML = '<option value="">暂无区间</option>';
+            periodSelect.disabled = true;
             betModeSelect.disabled = true;
             baseStakeInput.disabled = true;
             multiplierInput.disabled = true;
@@ -465,6 +478,14 @@ class PublicPredictorPage {
             !metrics.some((item) => item.key === this.selectedProfitMetric)
         ) {
             this.selectedProfitMetric = predictor.default_simulation_metric || metrics[0].key;
+        }
+
+        if (
+            resetMetric ||
+            !this.selectedProfitPeriodKey ||
+            !periodOptions.some((item) => item.key === this.selectedProfitPeriodKey)
+        ) {
+            this.selectedProfitPeriodKey = predictor.default_profit_period_key || periodOptions[0]?.key || 'day';
         }
 
         if (
@@ -492,6 +513,11 @@ class PublicPredictorPage {
         `).join('');
         metricSelect.value = this.selectedProfitMetric;
         metricSelect.disabled = false;
+        periodSelect.innerHTML = periodOptions.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        periodSelect.value = this.selectedProfitPeriodKey;
+        periodSelect.disabled = periodOptions.length <= 1;
         betModeSelect.value = this.selectedProfitBetMode;
         betModeSelect.disabled = false;
         baseStakeInput.value = String(this.selectedProfitBaseStake);
@@ -530,10 +556,15 @@ class PublicPredictorPage {
             this.selectedProfitMetric = this.currentPredictor.default_simulation_metric || metrics[0].key;
             document.getElementById('publicProfitMetricView').value = this.selectedProfitMetric;
         }
+        const periodOptions = this.currentPredictor.profit_period_options || [];
+        if (!this.selectedProfitPeriodKey || !periodOptions.some((item) => item.key === this.selectedProfitPeriodKey)) {
+            this.selectedProfitPeriodKey = this.currentPredictor.default_profit_period_key || periodOptions[0]?.key || 'day';
+            document.getElementById('publicProfitPeriodView').value = this.selectedProfitPeriodKey;
+        }
 
         try {
             const response = await fetch(
-                `/api/public/predictors/${this.predictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`
+                `/api/public/predictors/${this.predictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&period_key=${encodeURIComponent(this.selectedProfitPeriodKey)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`
             );
             const data = await response.json();
             if (!response.ok) {

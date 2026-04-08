@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from datetime import timedelta
 from typing import Optional
 
 from lotteries.registry import normalize_lottery_type
@@ -214,6 +215,17 @@ FOOTBALL_PROFIT_RULES = {
     }
 }
 
+FOOTBALL_PERIOD_OPTIONS = {
+    '7d': {'label': '近7天已结算比赛', 'days': 7},
+    '30d': {'label': '近30天已结算比赛', 'days': 30},
+    '90d': {'label': '近90天已结算比赛', 'days': 90},
+    'all': {'label': '全部已结算比赛样本', 'days': None}
+}
+
+DEFAULT_FOOTBALL_PERIOD_KEY = '30d'
+PC28_PERIOD_KEY = 'day'
+PC28_PERIOD_LABEL = '按 PC28 盘日'
+
 
 class ProfitSimulator:
     def __init__(self, db):
@@ -279,6 +291,24 @@ class ProfitSimulator:
             return normalize_pc28_profit_rule(predictor.get('profit_rule_id'))
         return PC28_DEFAULT_PROFIT_RULE_ID
 
+    def get_period_options(self, predictor_or_lottery_type=None) -> list[dict]:
+        lottery_type = self._resolve_lottery_type(predictor_or_lottery_type)
+        if lottery_type == 'jingcai_football':
+            return [
+                {
+                    'key': key,
+                    'label': config['label']
+                }
+                for key, config in FOOTBALL_PERIOD_OPTIONS.items()
+            ]
+        return [{'key': PC28_PERIOD_KEY, 'label': PC28_PERIOD_LABEL}]
+
+    def get_default_period_key(self, predictor_or_lottery_type=None) -> str:
+        lottery_type = self._resolve_lottery_type(predictor_or_lottery_type)
+        if lottery_type == 'jingcai_football':
+            return DEFAULT_FOOTBALL_PERIOD_KEY
+        return PC28_PERIOD_KEY
+
     def get_odds_profile_options(self, predictor_or_lottery_type=None) -> list[dict]:
         lottery_type = self._resolve_lottery_type(predictor_or_lottery_type)
         return [
@@ -304,6 +334,7 @@ class ProfitSimulator:
         requested_metric: Optional[str] = None,
         profit_rule_id: Optional[str] = None,
         odds_profile: str = DEFAULT_ODDS_PROFILE,
+        period_key: Optional[str] = None,
         bet_mode: Optional[str] = None,
         base_stake: Optional[float] = None,
         multiplier: Optional[float] = None,
@@ -321,6 +352,7 @@ class ProfitSimulator:
                 requested_metric=requested_metric,
                 profit_rule_id=profit_rule_id,
                 odds_profile=odds_profile,
+                period_key=period_key,
                 bet_mode=bet_mode,
                 base_stake=base_stake,
                 multiplier=multiplier,
@@ -463,9 +495,12 @@ class ProfitSimulator:
             'available_metrics': self.get_metric_options(predictor),
             'default_metric': self.get_default_metric(predictor),
             'default_profit_rule_id': self.get_default_rule_id(predictor),
+            'period_key': PC28_PERIOD_KEY,
+            'period_options': self.get_period_options(predictor),
             'period': {
                 'mode': 'pc28_day',
-                'label': '按 PC28 盘日',
+                'key': PC28_PERIOD_KEY,
+                'label': PC28_PERIOD_LABEL,
                 'start_time': format_beijing_time(period['start']),
                 'end_time': format_beijing_time(period['end_exclusive']),
                 'timezone': 'Asia/Shanghai',
@@ -495,6 +530,7 @@ class ProfitSimulator:
         requested_metric: Optional[str],
         profit_rule_id: Optional[str],
         odds_profile: str,
+        period_key: Optional[str],
         bet_mode: Optional[str],
         base_stake: Optional[float],
         multiplier: Optional[float],
@@ -514,6 +550,7 @@ class ProfitSimulator:
             multiplier=multiplier,
             max_steps=max_steps
         )
+        period_config = self._resolve_football_period(period_key)
 
         items = self.db.get_recent_prediction_items(
             predictor['id'],
@@ -565,6 +602,12 @@ class ProfitSimulator:
                 if not record:
                     skipped_count += 1
                     continue
+                open_time = parse_beijing_time(record.get('open_time'))
+                if not open_time:
+                    skipped_count += 1
+                    continue
+                if not self._is_football_time_in_period(open_time, period_config):
+                    continue
 
                 total_stake += record['stake_amount']
                 total_payout += record['payout_amount']
@@ -609,6 +652,12 @@ class ProfitSimulator:
                 if not record:
                     skipped_count += 1
                     continue
+                open_time = parse_beijing_time(record.get('open_time'))
+                if not open_time:
+                    skipped_count += 1
+                    continue
+                if not self._is_football_time_in_period(open_time, period_config):
+                    continue
 
                 total_stake += record['stake_amount']
                 total_payout += record['payout_amount']
@@ -637,7 +686,7 @@ class ProfitSimulator:
         net_profit = round(total_payout - total_stake, 2)
         roi_percentage = round(net_profit / total_stake * 100, 2) if total_stake else 0.0
         average_profit = round(net_profit / bet_count, 2) if bet_count else 0.0
-        period = self._build_football_period(processed_open_times)
+        period = self._build_football_period(period_config, processed_open_times)
 
         return {
             'metric': effective_metric,
@@ -665,6 +714,8 @@ class ProfitSimulator:
             'available_metrics': self.get_metric_options(predictor),
             'default_metric': self.get_default_metric(predictor),
             'default_profit_rule_id': self.get_default_rule_id(predictor),
+            'period_key': period['key'],
+            'period_options': self.get_period_options(predictor),
             'period': period,
             'odds_source_label': self._odds_profile_labels('jingcai_football')[normalized_odds_profile],
             'odds_source_description': '使用生成该批预测时已落库的赔率快照，不回溯临场或封盘前盘口变化。',
@@ -1067,22 +1118,49 @@ class ProfitSimulator:
         times = [item for item in times if item]
         return max(times) if times else ''
 
-    def _build_football_period(self, open_times: list[str]) -> dict:
+    def _resolve_football_period(self, period_key: Optional[str]) -> dict:
+        normalized = str(period_key or DEFAULT_FOOTBALL_PERIOD_KEY).strip().lower()
+        if normalized not in FOOTBALL_PERIOD_OPTIONS:
+            normalized = DEFAULT_FOOTBALL_PERIOD_KEY
+
+        config = FOOTBALL_PERIOD_OPTIONS[normalized]
+        return {
+            'key': normalized,
+            'label': config['label'],
+            'days': config['days'],
+            'start': (
+                get_current_beijing_time() - timedelta(days=config['days'])
+                if isinstance(config['days'], int) and config['days'] > 0
+                else None
+            )
+        }
+
+    def _is_football_time_in_period(self, open_time, period_config: dict) -> bool:
+        start = period_config.get('start')
+        if start is None:
+            return True
+        return open_time >= start
+
+    def _build_football_period(self, period_config: dict, open_times: list[str]) -> dict:
         if not open_times:
             return {
                 'mode': 'football_history',
-                'label': '按已结算比赛样本',
+                'key': period_config['key'],
+                'label': period_config['label'],
                 'start_time': '--',
                 'end_time': '--',
-                'timezone': 'Asia/Shanghai'
+                'timezone': 'Asia/Shanghai',
+                'requested_days': period_config.get('days')
             }
 
         return {
             'mode': 'football_history',
-            'label': '按已结算比赛样本',
+            'key': period_config['key'],
+            'label': period_config['label'],
             'start_time': open_times[0] or '--',
             'end_time': open_times[-1] or '--',
-            'timezone': 'Asia/Shanghai'
+            'timezone': 'Asia/Shanghai',
+            'requested_days': period_config.get('days')
         }
 
     def _football_display_outcome(self, metric: str, outcome: str, meta_payload: dict) -> str:

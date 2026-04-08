@@ -106,6 +106,7 @@ const DEFAULT_PROFIT_BET_MODE = 'flat';
 const DEFAULT_PROFIT_BASE_STAKE = 10;
 const DEFAULT_PROFIT_MULTIPLIER = 2;
 const DEFAULT_PROFIT_MAX_STEPS = 6;
+const DEFAULT_PROFIT_PERIOD_KEY = 'day';
 const LOTTERY_UI_CONFIG = {
     pc28: {
         label: '加拿大28 / PC28',
@@ -164,6 +165,7 @@ class PredictionApp {
         this.selectedStatsMetric = null;
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
+        this.selectedProfitPeriodKey = DEFAULT_PROFIT_PERIOD_KEY;
         this.selectedProfitBetMode = DEFAULT_PROFIT_BET_MODE;
         this.selectedProfitBaseStake = DEFAULT_PROFIT_BASE_STAKE;
         this.selectedProfitMultiplier = DEFAULT_PROFIT_MULTIPLIER;
@@ -238,6 +240,10 @@ class PredictionApp {
         });
         document.getElementById('profitMetricView').addEventListener('change', (event) => {
             this.selectedProfitMetric = event.target.value;
+            this.loadProfitSimulation();
+        });
+        document.getElementById('profitPeriodView').addEventListener('change', (event) => {
+            this.selectedProfitPeriodKey = event.target.value;
             this.loadProfitSimulation();
         });
         document.getElementById('profitBetModeView').addEventListener('change', (event) => {
@@ -1449,6 +1455,7 @@ class PredictionApp {
     renderProfitControls(predictor, resetMetric = false) {
         const ruleSelect = document.getElementById('profitRuleView');
         const metricSelect = document.getElementById('profitMetricView');
+        const periodSelect = document.getElementById('profitPeriodView');
         const betModeSelect = document.getElementById('profitBetModeView');
         const baseStakeInput = document.getElementById('profitBaseStakeView');
         const multiplierInput = document.getElementById('profitMultiplierView');
@@ -1457,6 +1464,7 @@ class PredictionApp {
         const oddsSelect = document.getElementById('profitOddsProfileView');
         const rules = predictor?.profit_rule_options || [];
         const metrics = predictor?.simulation_metrics || [];
+        const periodOptions = predictor?.profit_period_options || [];
         const oddsProfiles = predictor?.odds_profiles || [];
 
         if (!metrics.length || !rules.length) {
@@ -1464,6 +1472,8 @@ class PredictionApp {
             ruleSelect.disabled = true;
             metricSelect.innerHTML = '<option value="">暂无玩法</option>';
             metricSelect.disabled = true;
+            periodSelect.innerHTML = '<option value="">暂无区间</option>';
+            periodSelect.disabled = true;
             betModeSelect.disabled = true;
             baseStakeInput.disabled = true;
             multiplierInput.disabled = true;
@@ -1487,6 +1497,14 @@ class PredictionApp {
             !metrics.some((item) => item.key === this.selectedProfitMetric)
         ) {
             this.selectedProfitMetric = predictor.default_simulation_metric || metrics[0].key;
+        }
+
+        if (
+            resetMetric ||
+            !this.selectedProfitPeriodKey ||
+            !periodOptions.some((item) => item.key === this.selectedProfitPeriodKey)
+        ) {
+            this.selectedProfitPeriodKey = predictor.default_profit_period_key || periodOptions[0]?.key || DEFAULT_PROFIT_PERIOD_KEY;
         }
 
         if (
@@ -1514,6 +1532,11 @@ class PredictionApp {
         `).join('');
         metricSelect.value = this.selectedProfitMetric;
         metricSelect.disabled = false;
+        periodSelect.innerHTML = periodOptions.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        periodSelect.value = this.selectedProfitPeriodKey;
+        periodSelect.disabled = periodOptions.length <= 1;
         betModeSelect.value = this.selectedProfitBetMode;
         betModeSelect.disabled = false;
         baseStakeInput.value = String(this.selectedProfitBaseStake);
@@ -1553,10 +1576,15 @@ class PredictionApp {
             this.selectedProfitMetric = predictor.default_simulation_metric || metrics[0].key;
             document.getElementById('profitMetricView').value = this.selectedProfitMetric;
         }
+        const periodOptions = predictor.profit_period_options || [];
+        if (!this.selectedProfitPeriodKey || !periodOptions.some((item) => item.key === this.selectedProfitPeriodKey)) {
+            this.selectedProfitPeriodKey = predictor.default_profit_period_key || periodOptions[0]?.key || DEFAULT_PROFIT_PERIOD_KEY;
+            document.getElementById('profitPeriodView').value = this.selectedProfitPeriodKey;
+        }
 
         try {
             const response = await fetch(
-                `/api/predictors/${this.currentPredictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`,
+                `/api/predictors/${this.currentPredictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&period_key=${encodeURIComponent(this.selectedProfitPeriodKey)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`,
                 { credentials: 'include' }
             );
             if (response.status === 401) {
@@ -2161,6 +2189,7 @@ class PredictionApp {
         this.selectedStatsMetric = null;
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
+        this.selectedProfitPeriodKey = DEFAULT_PROFIT_PERIOD_KEY;
         this.selectedProfitBetMode = DEFAULT_PROFIT_BET_MODE;
         this.selectedProfitBaseStake = DEFAULT_PROFIT_BASE_STAKE;
         this.selectedProfitMultiplier = DEFAULT_PROFIT_MULTIPLIER;
@@ -2184,6 +2213,8 @@ class PredictionApp {
         document.getElementById('profitRuleView').disabled = true;
         document.getElementById('profitMetricView').innerHTML = '<option value="">暂无玩法</option>';
         document.getElementById('profitMetricView').disabled = true;
+        document.getElementById('profitPeriodView').innerHTML = '<option value="">暂无区间</option>';
+        document.getElementById('profitPeriodView').disabled = true;
         document.getElementById('profitBetModeView').value = this.selectedProfitBetMode;
         document.getElementById('profitBetModeView').disabled = true;
         document.getElementById('profitBaseStakeView').value = String(this.selectedProfitBaseStake);
