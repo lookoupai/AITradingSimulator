@@ -1584,7 +1584,7 @@ def get_public_predictor_simulation(predictor_id: int):
     force_include_records = include_records or lottery_type == 'jingcai_football'
 
     try:
-        simulation = profit_simulator.build_today_simulation(
+        simulation = profit_simulator.build_profit_simulation(
             predictor_id,
             requested_metric=requested_metric,
             profit_rule_id=profit_rule_id,
@@ -2011,7 +2011,7 @@ def get_predictor_simulation(predictor_id: int):
     max_steps = request.args.get('max_steps', type=int)
 
     try:
-        simulation = profit_simulator.build_today_simulation(
+        simulation = profit_simulator.build_profit_simulation(
             predictor_id,
             requested_metric=requested_metric,
             profit_rule_id=profit_rule_id,

@@ -328,7 +328,7 @@ class ProfitSimulator:
             for key, label in BET_MODE_LABELS.items()
         ]
 
-    def build_today_simulation(
+    def build_profit_simulation(
         self,
         predictor_id: int,
         requested_metric: Optional[str] = None,
@@ -347,7 +347,7 @@ class ProfitSimulator:
 
         lottery_type = self._resolve_lottery_type(predictor)
         if lottery_type == 'jingcai_football':
-            return self._build_football_today_simulation(
+            return self._build_football_period_simulation(
                 predictor,
                 requested_metric=requested_metric,
                 profit_rule_id=profit_rule_id,
@@ -365,6 +365,32 @@ class ProfitSimulator:
             requested_metric=requested_metric,
             profit_rule_id=profit_rule_id,
             odds_profile=odds_profile,
+            bet_mode=bet_mode,
+            base_stake=base_stake,
+            multiplier=multiplier,
+            max_steps=max_steps,
+            include_records=include_records
+        )
+
+    def build_today_simulation(
+        self,
+        predictor_id: int,
+        requested_metric: Optional[str] = None,
+        profit_rule_id: Optional[str] = None,
+        odds_profile: str = DEFAULT_ODDS_PROFILE,
+        period_key: Optional[str] = None,
+        bet_mode: Optional[str] = None,
+        base_stake: Optional[float] = None,
+        multiplier: Optional[float] = None,
+        max_steps: Optional[int] = None,
+        include_records: bool = True
+    ) -> dict:
+        return self.build_profit_simulation(
+            predictor_id,
+            requested_metric=requested_metric,
+            profit_rule_id=profit_rule_id,
+            odds_profile=odds_profile,
+            period_key=period_key,
             bet_mode=bet_mode,
             base_stake=base_stake,
             multiplier=multiplier,
@@ -524,7 +550,7 @@ class ProfitSimulator:
             'records': records
         }
 
-    def _build_football_today_simulation(
+    def _build_football_period_simulation(
         self,
         predictor: dict,
         requested_metric: Optional[str],

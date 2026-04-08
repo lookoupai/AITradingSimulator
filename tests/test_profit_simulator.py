@@ -89,7 +89,16 @@ class ProfitSimulatorTests(unittest.TestCase):
                 'status': 'settled'
             })
 
-            simulation = harness.module.profit_simulator.build_today_simulation(
+            simulation = harness.module.profit_simulator.build_profit_simulation(
+                predictor_id,
+                requested_metric='big_small',
+                bet_mode='martingale',
+                base_stake=10,
+                multiplier=2,
+                max_steps=6,
+                include_records=True
+            )
+            compatibility_simulation = harness.module.profit_simulator.build_today_simulation(
                 predictor_id,
                 requested_metric='big_small',
                 bet_mode='martingale',
@@ -101,6 +110,7 @@ class ProfitSimulatorTests(unittest.TestCase):
 
             self.assertEqual([item['bet_step'] for item in simulation['records'][:3]], [1, 2, 3])
             self.assertEqual([item['stake_amount'] for item in simulation['records'][:3]], [10.0, 20.0, 40.0])
+            self.assertEqual(simulation['summary'], compatibility_simulation['summary'])
 
     def test_jingcai_sell_status_rules_for_single_and_parlay(self):
         football = importlib.import_module('utils.jingcai_football')
@@ -267,12 +277,12 @@ class ProfitSimulatorTests(unittest.TestCase):
                 }
             ])
 
-            single_simulation = harness.module.profit_simulator.build_today_simulation(
+            single_simulation = harness.module.profit_simulator.build_profit_simulation(
                 predictor_id,
                 requested_metric='spf',
                 include_records=True
             )
-            parlay_simulation = harness.module.profit_simulator.build_today_simulation(
+            parlay_simulation = harness.module.profit_simulator.build_profit_simulation(
                 predictor_id,
                 requested_metric='rqspf_parlay',
                 include_records=True
@@ -391,12 +401,12 @@ class ProfitSimulatorTests(unittest.TestCase):
                 }
             ])
 
-            default_simulation = harness.module.profit_simulator.build_today_simulation(
+            default_simulation = harness.module.profit_simulator.build_profit_simulation(
                 predictor_id,
                 requested_metric='spf',
                 include_records=True
             )
-            all_simulation = harness.module.profit_simulator.build_today_simulation(
+            all_simulation = harness.module.profit_simulator.build_profit_simulation(
                 predictor_id,
                 requested_metric='spf',
                 period_key='all',
