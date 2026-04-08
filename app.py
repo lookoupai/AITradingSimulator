@@ -375,6 +375,119 @@ def _serialize_public_prediction_with_level(prediction: dict, share_level: str) 
     return data
 
 
+def _build_pc28_execution_signal_view(predictor: dict, prediction: dict) -> dict | None:
+    if not predictor or not prediction:
+        return None
+    if normalize_lottery_type(prediction.get('lottery_type')) != 'pc28':
+        return None
+
+    published_at = prediction.get('updated_at') or prediction.get('created_at')
+    predictor_name = str(predictor.get('name') or '').strip() or f"predictor-{predictor.get('id')}"
+    share_level = predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')
+
+    signal_items = []
+    mappings = [
+        ('big_small', prediction.get('prediction_big_small')),
+        ('odd_even', prediction.get('prediction_odd_even')),
+        ('combo', prediction.get('prediction_combo')),
+    ]
+    if prediction.get('prediction_number') is not None:
+        mappings.insert(0, ('number', prediction.get('prediction_number')))
+
+    for bet_type, bet_value in mappings:
+        if bet_value in {None, ''}:
+            continue
+        item = {
+            'bet_type': bet_type,
+            'bet_value': bet_value,
+            'confidence': prediction.get('confidence'),
+            'normalized_payload': {
+                'requested_targets': prediction.get('requested_targets') or [],
+                'predictor_id': predictor.get('id'),
+                'primary_metric': predictor.get('primary_metric'),
+                'share_level': share_level
+            }
+        }
+        if bet_type != 'number':
+            item['message_text'] = f'{bet_value}10'
+        signal_items.append(item)
+
+    if not signal_items:
+        return None
+
+    issue_no = str(prediction.get('issue_no') or '').strip()
+    signal_id = f"pc28-predictor-{predictor.get('id')}-{issue_no}"
+    return {
+        'schema_version': '1.0',
+        'signal_id': signal_id,
+        'source_type': 'ai_trading_simulator',
+        'source_ref': {
+            'platform': 'AITradingSimulator',
+            'predictor_id': predictor.get('id'),
+            'predictor_name': predictor_name,
+            'share_level': share_level
+        },
+        'lottery_type': 'pc28',
+        'issue_no': issue_no,
+        'published_at': published_at,
+        'signals': signal_items
+    }
+
+
+def _build_pc28_analysis_signal_view(predictor: dict, prediction: dict) -> dict | None:
+    if not predictor or not prediction:
+        return None
+    if normalize_lottery_type(prediction.get('lottery_type')) != 'pc28':
+        return None
+
+    published_at = prediction.get('updated_at') or prediction.get('created_at')
+    predictor_name = str(predictor.get('name') or '').strip() or f"predictor-{predictor.get('id')}"
+    issue_no = str(prediction.get('issue_no') or '').strip()
+    signal_id = f"pc28-predictor-{predictor.get('id')}-{issue_no}"
+    stats = db.get_predictor_stats(predictor['id'])
+    metric_stats = (stats.get('metrics') or {}).get(predictor.get('primary_metric') or 'big_small', {})
+
+    return {
+        'schema_version': '1.0',
+        'signal_id': signal_id,
+        'lottery_type': 'pc28',
+        'issue_no': issue_no,
+        'published_at': published_at,
+        'predictor': {
+            'predictor_id': predictor.get('id'),
+            'predictor_name': predictor_name,
+            'prediction_method': predictor.get('prediction_method') or '自定义策略',
+            'prediction_targets': predictor.get('prediction_targets') or [],
+            'primary_metric': predictor.get('primary_metric'),
+            'history_window': predictor.get('history_window'),
+            'profit_rule_id': predictor.get('profit_rule_id')
+        },
+        'prediction': {
+            'prediction_number': prediction.get('prediction_number'),
+            'prediction_big_small': prediction.get('prediction_big_small'),
+            'prediction_odd_even': prediction.get('prediction_odd_even'),
+            'prediction_combo': prediction.get('prediction_combo'),
+            'confidence': prediction.get('confidence'),
+            'reasoning_summary': prediction.get('reasoning_summary') or ''
+        },
+        'performance': {
+            'recent_20_hit_rate': (metric_stats.get('recent20') or {}).get('hit_rate'),
+            'recent_100_hit_rate': (metric_stats.get('recent100') or {}).get('hit_rate'),
+            'overall_hit_rate': (metric_stats.get('overall') or {}).get('hit_rate'),
+            'settled_predictions': stats.get('settled_predictions')
+        },
+        'context': {
+            'history_window': predictor.get('history_window'),
+            'primary_metric': predictor.get('primary_metric'),
+            'profit_rule_id': predictor.get('profit_rule_id')
+        },
+        'raw': {
+            'prompt_snapshot': prediction.get('prompt_snapshot') or '',
+            'raw_response': prediction.get('raw_response') or ''
+        }
+    }
+
+
 def _serialize_profit_simulation(simulation: dict, include_records: bool = True) -> dict:
     payload = dict(simulation)
     if not include_records:
@@ -1949,6 +2062,42 @@ def replay_jingcai_batch(predictor_id: int):
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/export/predictors/<int:predictor_id>/signals', methods=['GET'])
+def export_predictor_signals(predictor_id: int):
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    if not predictor:
+        return jsonify({'error': '预测方案不存在'}), 404
+
+    lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
+    if lottery_type != 'pc28':
+        return jsonify({'error': '当前仅支持导出 PC28 信号'}), 400
+
+    view = str(request.args.get('view') or 'execution').strip().lower()
+    if view not in {'execution', 'analysis'}:
+        return jsonify({'error': 'view 仅支持 execution 或 analysis'}), 400
+
+    latest_prediction = db.get_latest_prediction(predictor_id)
+    if not latest_prediction:
+        return jsonify({
+            'predictor_id': predictor_id,
+            'lottery_type': lottery_type,
+            'view': view,
+            'items': []
+        })
+
+    item = (
+        _build_pc28_execution_signal_view(predictor, latest_prediction)
+        if view == 'execution'
+        else _build_pc28_analysis_signal_view(predictor, latest_prediction)
+    )
+    return jsonify({
+        'predictor_id': predictor_id,
+        'lottery_type': lottery_type,
+        'view': view,
+        'items': [item] if item else []
+    })
 
 
 @app.route('/api/predictors/<int:predictor_id>/jingcai/settle', methods=['POST'])

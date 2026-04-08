@@ -138,6 +138,11 @@ LINUXDO_REDIRECT_URI=
 - `GET /api/public/predictors/<id>`
 - `GET /api/public/predictors/<id>/simulation`
 
+### 信号导出接口
+
+- `GET /api/export/predictors/<id>/signals?view=execution`
+- `GET /api/export/predictors/<id>/signals?view=analysis`
+
 ## 预测流程
 
 1. 后台线程按彩种轮询各自数据源
