@@ -114,6 +114,9 @@ const LOTTERY_UI_CONFIG = {
         supportsPromptAssistant: true,
         supportsPresets: true,
         defaultHistoryWindow: 60,
+        defaultTargets: ['number', 'big_small', 'odd_even', 'combo'],
+        defaultProfitRuleId: 'pc28_netdisk',
+        defaultProfitMetric: 'big_small',
         historyWindowLabel: '历史窗口',
         historyWindowHint: 'PC28 按最近 N 期历史开奖构造上下文。',
         targetOptions: [
@@ -130,6 +133,10 @@ const LOTTERY_UI_CONFIG = {
             { key: 'double_group', label: '组合分组统计：大双/小单 vs 大单/小双' },
             { key: 'kill_group', label: '排除统计：按预测组合结果的对角组合做排除统计' }
         ],
+        profitRuleOptions: [
+            { key: 'pc28_netdisk', label: '加拿大28网盘：默认规则更直，13/14 正常赔付' },
+            { key: 'pc28_high', label: '加拿大28高倍：大小单双/组合命中且遇特殊号时退本金' }
+        ],
         defaultPrimaryMetric: 'big_small',
         targetHint: '单点固定开启，号码是主预测结果；大/小、单/双、组合投注围绕号码展开。'
     },
@@ -139,6 +146,9 @@ const LOTTERY_UI_CONFIG = {
         supportsPromptAssistant: true,
         supportsPresets: true,
         defaultHistoryWindow: 30,
+        defaultTargets: ['spf', 'rqspf'],
+        defaultProfitRuleId: 'jingcai_snapshot',
+        defaultProfitMetric: 'spf',
         historyWindowLabel: '历史窗口（场）',
         historyWindowHint: '竞彩足球按最近 N 场已结束比赛构造上下文，默认建议 30 场。',
         targetOptions: [
@@ -148,6 +158,9 @@ const LOTTERY_UI_CONFIG = {
         primaryMetricOptions: [
             { key: 'spf', label: '胜平负：按常规胜平负玩法统计命中' },
             { key: 'rqspf', label: '让球胜平负：按让球盘结果统计命中' }
+        ],
+        profitRuleOptions: [
+            { key: 'jingcai_snapshot', label: '竞彩足球赔率快照：按预测批次落库赔率做收益模拟' }
         ],
         defaultPrimaryMetric: 'spf',
         targetHint: '竞彩足球支持胜平负与让球胜平负预测；收益模拟会基于预测批次赔率快照计算单关与默认二串一。'
@@ -160,6 +173,8 @@ class PredictionApp {
         this.currentPredictorId = null;
         this.currentPredictor = null;
         this.currentLotteryType = 'pc28';
+        this.formLotteryType = 'pc28';
+        this.formStateByLottery = this.buildInitialFormStateByLottery();
         this.currentPredictions = [];
         this.currentStats = null;
         this.selectedStatsMetric = null;
@@ -219,13 +234,16 @@ class PredictionApp {
             }
         });
         document.getElementById('lotteryType').addEventListener('change', (event) => {
-            this.currentLotteryType = event.target.value || 'pc28';
+            this.saveCurrentFormState(this.formLotteryType);
+            this.formLotteryType = event.target.value || 'pc28';
             this.updateLotteryForm();
         });
         document.getElementById('primaryMetric').addEventListener('change', () => this.syncProfitMetricOptions());
         ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo'].forEach((id) => {
             document.getElementById(id).addEventListener('change', () => this.syncProfitMetricOptions());
         });
+        document.getElementById('profitRuleId').addEventListener('change', () => this.saveCurrentFormState());
+        document.getElementById('profitDefaultMetric').addEventListener('change', () => this.saveCurrentFormState());
         document.getElementById('predictionStatusFilter').addEventListener('change', (event) => {
             this.predictionStatusFilter = event.target.value;
             this.renderPredictionsTable(this.currentPredictions || []);
@@ -304,7 +322,7 @@ class PredictionApp {
     }
 
     enforceNumberTarget() {
-        if (this.currentLotteryType !== 'pc28') {
+        if (this.getFormLotteryType() !== 'pc28') {
             return;
         }
         const targetNumber = document.getElementById('targetNumber');
@@ -318,12 +336,146 @@ class PredictionApp {
         return LOTTERY_UI_CONFIG[lotteryType] || LOTTERY_UI_CONFIG.pc28;
     }
 
+    buildInitialFormStateByLottery() {
+        return {
+            pc28: this.buildDefaultFormState('pc28'),
+            jingcai_football: this.buildDefaultFormState('jingcai_football')
+        };
+    }
+
+    buildDefaultFormState(lotteryType) {
+        const config = this.getLotteryConfig(lotteryType);
+        return {
+            targets: [...(config.defaultTargets || config.targetOptions.map((item) => item.key))],
+            primaryMetric: config.defaultPrimaryMetric,
+            profitRuleId: config.defaultProfitRuleId || '',
+            profitDefaultMetric: config.defaultProfitMetric || config.defaultPrimaryMetric
+        };
+    }
+
+    getFormLotteryType() {
+        return document.getElementById('lotteryType')?.value || this.formLotteryType || 'pc28';
+    }
+
+    getSelectedFormTargets() {
+        return ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo']
+            .map((id) => document.getElementById(id))
+            .filter((input) => input && input.checked && input.dataset.targetKey)
+            .map((input) => input.dataset.targetKey);
+    }
+
+    getFormState(lotteryType = this.getFormLotteryType()) {
+        const defaults = this.buildDefaultFormState(lotteryType);
+        return {
+            ...defaults,
+            ...(this.formStateByLottery?.[lotteryType] || {})
+        };
+    }
+
+    saveCurrentFormState(lotteryType = this.formLotteryType) {
+        if (!lotteryType) {
+            return;
+        }
+
+        const defaults = this.buildDefaultFormState(lotteryType);
+        this.formStateByLottery[lotteryType] = {
+            ...defaults,
+            targets: this.getSelectedFormTargets(),
+            primaryMetric: document.getElementById('primaryMetric')?.value || defaults.primaryMetric,
+            profitRuleId: document.getElementById('profitRuleId')?.value || defaults.profitRuleId,
+            profitDefaultMetric: document.getElementById('profitDefaultMetric')?.value || defaults.profitDefaultMetric
+        };
+    }
+
+    getFormProfitMetricOptions(lotteryType, selectedTargets) {
+        if (lotteryType === 'jingcai_football') {
+            const options = [];
+            if (selectedTargets.includes('spf')) {
+                options.push({ key: 'spf', label: '胜平负：默认按单关胜平负看批次盈亏' });
+            }
+            if (selectedTargets.includes('rqspf')) {
+                options.push({ key: 'rqspf', label: '让球胜平负：默认按单关让球胜平负看批次盈亏' });
+            }
+            return options;
+        }
+
+        const options = [];
+        if (selectedTargets.includes('big_small')) {
+            options.push({ key: 'big_small', label: '大/小：默认按大小单双盘看当盘日盈亏' });
+        }
+        if (selectedTargets.includes('odd_even')) {
+            options.push({ key: 'odd_even', label: '单/双：默认按单双盘看当盘日盈亏' });
+        }
+        if (selectedTargets.includes('combo')) {
+            options.push({ key: 'combo', label: '组合投注：默认按组合票面看当盘日盈亏' });
+        }
+        if (selectedTargets.includes('number')) {
+            options.push({ key: 'number', label: '单点：默认按精确和值看当盘日盈亏' });
+        }
+        return options;
+    }
+
+    resolveFormProfitMetric(lotteryType, options, primaryMetric, preferredValue) {
+        if (options.some((item) => item.key === preferredValue)) {
+            return preferredValue;
+        }
+
+        const derivedMetric = lotteryType === 'pc28' && ['double_group', 'kill_group'].includes(primaryMetric)
+            ? 'combo'
+            : primaryMetric;
+        if (options.some((item) => item.key === derivedMetric)) {
+            return derivedMetric;
+        }
+
+        const defaultMetric = this.getLotteryConfig(lotteryType).defaultProfitMetric;
+        if (options.some((item) => item.key === defaultMetric)) {
+            return defaultMetric;
+        }
+
+        return options[0]?.key || '';
+    }
+
+    syncProfitRuleOptions(lotteryType = this.getFormLotteryType(), preferredValue = null) {
+        const select = document.getElementById('profitRuleId');
+        if (!select) {
+            return;
+        }
+
+        const config = this.getLotteryConfig(lotteryType);
+        const options = config.supportsProfitSimulation ? (config.profitRuleOptions || []) : [];
+        const fallbackValue = preferredValue || this.getFormState(lotteryType).profitRuleId || config.defaultProfitRuleId || '';
+
+        if (!options.length) {
+            select.innerHTML = '<option value="">当前彩种暂不支持收益模拟</option>';
+            select.disabled = true;
+            return;
+        }
+
+        select.innerHTML = options.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        select.disabled = false;
+        select.value = options.some((item) => item.key === fallbackValue)
+            ? fallbackValue
+            : (config.defaultProfitRuleId || options[0].key);
+    }
+
     updateLotteryForm(options = {}) {
-        const selectedTargets = options.selectedTargets || null;
-        const selectedPrimaryMetric = options.selectedPrimaryMetric || null;
-        const currentType = document.getElementById('lotteryType')?.value || this.currentLotteryType || 'pc28';
-        this.currentLotteryType = currentType;
+        const hasSelectedTargets = Object.prototype.hasOwnProperty.call(options, 'selectedTargets');
+        const hasSelectedPrimaryMetric = Object.prototype.hasOwnProperty.call(options, 'selectedPrimaryMetric');
+        const hasSelectedProfitRuleId = Object.prototype.hasOwnProperty.call(options, 'selectedProfitRuleId');
+        const hasSelectedProfitDefaultMetric = Object.prototype.hasOwnProperty.call(options, 'selectedProfitDefaultMetric');
+        const currentType = document.getElementById('lotteryType')?.value || this.formLotteryType || 'pc28';
+        this.formLotteryType = currentType;
         const config = this.getLotteryConfig(currentType);
+        const nextState = {
+            ...this.getFormState(currentType),
+            ...(hasSelectedTargets ? { targets: [...(options.selectedTargets || [])] } : {}),
+            ...(hasSelectedPrimaryMetric ? { primaryMetric: options.selectedPrimaryMetric } : {}),
+            ...(hasSelectedProfitRuleId ? { profitRuleId: options.selectedProfitRuleId } : {}),
+            ...(hasSelectedProfitDefaultMetric ? { profitDefaultMetric: options.selectedProfitDefaultMetric } : {})
+        };
+        this.formStateByLottery[currentType] = nextState;
         const targetSlots = [
             { wrapper: 'targetOptionNumber', input: 'targetNumber', label: 'targetLabelNumber' },
             { wrapper: 'targetOptionBigSmall', input: 'targetBigSmall', label: 'targetLabelBigSmall' },
@@ -353,18 +505,13 @@ class PredictionApp {
             label.textContent = option.label;
             input.disabled = Boolean(option.fixed);
             input.setAttribute('aria-disabled', option.fixed ? 'true' : 'false');
-
-            if (selectedTargets) {
-                input.checked = selectedTargets.includes(option.key);
-            } else if (option.fixed) {
-                input.checked = true;
-            }
+            input.checked = option.fixed ? true : nextState.targets.includes(option.key);
         });
 
         document.getElementById('targetHint').textContent = config.targetHint;
         document.getElementById('historyWindowLabel').textContent = config.historyWindowLabel || '历史窗口';
         document.getElementById('historyWindowHint').textContent = config.historyWindowHint || '';
-        this.renderPrimaryMetricOptions(currentType, selectedPrimaryMetric);
+        this.renderPrimaryMetricOptions(currentType, nextState.primaryMetric);
 
         const showProfit = config.supportsProfitSimulation;
         document.getElementById('profitRuleField').style.display = showProfit ? '' : 'none';
@@ -394,7 +541,8 @@ class PredictionApp {
         if (!options.selectedHistoryWindow) {
             document.getElementById('historyWindow').value = String(config.defaultHistoryWindow || 60);
         }
-        this.syncProfitMetricOptions();
+        this.syncProfitRuleOptions(currentType, nextState.profitRuleId);
+        this.syncProfitMetricOptions(currentType, nextState.profitDefaultMetric);
     }
 
     updatePromptVariableVisibility(lotteryType) {
@@ -2280,7 +2428,7 @@ class PredictionApp {
         document.getElementById('predictorId').value = data.id;
         document.getElementById('lotteryType').value = data.lottery_type || 'pc28';
         document.getElementById('lotteryType').disabled = true;
-        this.currentLotteryType = data.lottery_type || 'pc28';
+        this.formLotteryType = data.lottery_type || 'pc28';
         document.getElementById('predictorName').value = data.name || '';
         document.getElementById('predictionMethod').value = data.prediction_method || '';
         document.getElementById('apiUrl').value = data.api_url || '';
@@ -2289,14 +2437,14 @@ class PredictionApp {
         document.getElementById('apiKey').value = '';
         document.getElementById('temperature').value = data.temperature ?? 0.7;
         document.getElementById('dataInjectionMode').value = data.data_injection_mode || 'summary';
-        document.getElementById('profitRuleId').value = data.profit_rule_id || 'pc28_netdisk';
-        document.getElementById('profitDefaultMetric').value = data.profit_default_metric || data.default_simulation_metric || 'big_small';
         document.getElementById('systemPrompt').value = data.system_prompt || '';
         document.getElementById('predictorEnabled').checked = Boolean(data.enabled);
         document.getElementById('shareLevel').value = data.share_level || (data.share_predictions ? 'records' : 'stats_only');
         this.updateLotteryForm({
             selectedTargets: data.prediction_targets || [],
             selectedPrimaryMetric: data.primary_metric || null,
+            selectedProfitRuleId: data.profit_rule_id || this.getLotteryConfig(this.formLotteryType).defaultProfitRuleId,
+            selectedProfitDefaultMetric: data.profit_default_metric || data.default_simulation_metric || this.getLotteryConfig(this.formLotteryType).defaultProfitMetric,
             selectedHistoryWindow: data.history_window || 60
         });
         document.getElementById('historyWindow').value = data.history_window || 60;
@@ -2318,7 +2466,8 @@ class PredictionApp {
 
     resetForm() {
         document.getElementById('lotteryType').value = 'pc28';
-        this.currentLotteryType = 'pc28';
+        this.formLotteryType = 'pc28';
+        this.formStateByLottery = this.buildInitialFormStateByLottery();
         document.getElementById('predictorName').value = '';
         document.getElementById('predictionMethod').value = '';
         document.getElementById('apiUrl').value = '';
@@ -2328,14 +2477,14 @@ class PredictionApp {
         document.getElementById('historyWindow').value = '60';
         document.getElementById('temperature').value = '0.7';
         document.getElementById('dataInjectionMode').value = 'summary';
-        document.getElementById('profitRuleId').value = 'pc28_netdisk';
-        document.getElementById('profitDefaultMetric').value = 'big_small';
         document.getElementById('systemPrompt').value = '';
         document.getElementById('predictorEnabled').checked = true;
         document.getElementById('shareLevel').value = 'stats_only';
         this.updateLotteryForm({
             selectedTargets: ['number', 'big_small', 'odd_even', 'combo'],
             selectedPrimaryMetric: 'big_small',
+            selectedProfitRuleId: 'pc28_netdisk',
+            selectedProfitDefaultMetric: 'big_small',
             selectedHistoryWindow: 60
         });
         this.hideTestResult();
@@ -2347,7 +2496,8 @@ class PredictionApp {
         const container = document.getElementById('presetCards');
         const toggleButton = document.getElementById('togglePresetListBtn');
         const visibleCount = 3;
-        const presets = this.currentLotteryType === 'jingcai_football' ? FOOTBALL_PREDICTOR_PRESETS : PREDICTOR_PRESETS;
+        const lotteryType = this.getFormLotteryType();
+        const presets = lotteryType === 'jingcai_football' ? FOOTBALL_PREDICTOR_PRESETS : PREDICTOR_PRESETS;
 
         container.innerHTML = presets.map((preset, index) => `
             <article class="preset-card ${index >= visibleCount && !this.presetExpanded ? 'hidden' : ''}" data-preset-id="${preset.id}">
@@ -2359,7 +2509,7 @@ class PredictionApp {
                 </div>
                 <div class="preset-meta">
                     ${preset.tags.map((tag) => `<span class="tag">${this.escapeHtml(tag)}</span>`).join('')}
-                    <span class="tag">${this.currentLotteryType === 'jingcai_football' ? `历史 ${preset.historyWindow} 场` : `历史 ${preset.historyWindow} 期`}</span>
+                    <span class="tag">${lotteryType === 'jingcai_football' ? `历史 ${preset.historyWindow} 场` : `历史 ${preset.historyWindow} 期`}</span>
                     <span class="tag">${preset.injectionMode === 'raw' ? '原始模式' : '摘要模式'}</span>
                     <span class="tag">${preset.apiMode === 'responses' ? 'Responses' : preset.apiMode === 'chat_completions' ? 'Chat Completions' : '自动模式'}</span>
                 </div>
@@ -2388,7 +2538,9 @@ class PredictionApp {
     }
 
     applyPreset(presetId) {
-        const presetSource = this.currentLotteryType === 'jingcai_football' ? FOOTBALL_PREDICTOR_PRESETS : PREDICTOR_PRESETS;
+        const lotteryType = this.getFormLotteryType();
+        const config = this.getLotteryConfig(lotteryType);
+        const presetSource = lotteryType === 'jingcai_football' ? FOOTBALL_PREDICTOR_PRESETS : PREDICTOR_PRESETS;
         const preset = presetSource.find((item) => item.id === presetId);
         if (!preset) {
             return;
@@ -2402,14 +2554,17 @@ class PredictionApp {
         document.getElementById('historyWindow').value = String(preset.historyWindow);
         document.getElementById('temperature').value = String(preset.temperature);
         document.getElementById('dataInjectionMode').value = preset.injectionMode;
-        document.getElementById('profitRuleId').value = preset.profitRuleId || 'pc28_netdisk';
-        document.getElementById('profitDefaultMetric').value = preset.profitDefaultMetric || (['big_small', 'odd_even', 'combo', 'number'].includes(preset.primaryMetric) ? preset.primaryMetric : 'combo');
         document.getElementById('systemPrompt').value = preset.prompt;
         this.updateLotteryForm({
-            selectedTargets: this.currentLotteryType === 'pc28'
+            selectedTargets: lotteryType === 'pc28'
                 ? ['number', ...preset.targets.filter((item) => item !== 'number')]
                 : preset.targets,
-            selectedPrimaryMetric: preset.primaryMetric || 'combo',
+            selectedPrimaryMetric: preset.primaryMetric || config.defaultPrimaryMetric,
+            selectedProfitRuleId: preset.profitRuleId || config.defaultProfitRuleId,
+            selectedProfitDefaultMetric: preset.profitDefaultMetric
+                || (lotteryType === 'pc28'
+                    ? (['big_small', 'odd_even', 'combo', 'number'].includes(preset.primaryMetric) ? preset.primaryMetric : 'combo')
+                    : (['spf', 'rqspf'].includes(preset.primaryMetric) ? preset.primaryMetric : config.defaultProfitMetric)),
             selectedHistoryWindow: preset.historyWindow
         });
         document.getElementById('historyWindow').value = String(preset.historyWindow);
@@ -2444,36 +2599,27 @@ class PredictionApp {
         };
     }
 
-    syncProfitMetricOptions() {
+    syncProfitMetricOptions(lotteryType = this.getFormLotteryType(), preferredValue = null) {
         const select = document.getElementById('profitDefaultMetric');
         if (!select) {
             return;
         }
 
-        if (this.currentLotteryType !== 'pc28') {
+        const config = this.getLotteryConfig(lotteryType);
+        if (!config.supportsProfitSimulation) {
             select.innerHTML = '<option value="">当前彩种暂不支持收益模拟</option>';
             select.disabled = true;
             return;
         }
 
-        const options = [];
-        if (document.getElementById('targetBigSmall').checked) {
-            options.push({ key: 'big_small', label: '大/小：默认按大小单双盘看当盘日盈亏' });
-        }
-        if (document.getElementById('targetOddEven').checked) {
-            options.push({ key: 'odd_even', label: '单/双：默认按单双盘看当盘日盈亏' });
-        }
-        if (document.getElementById('targetCombo').checked) {
-            options.push({ key: 'combo', label: '组合投注：默认按组合票面看当盘日盈亏' });
-        }
-        if (document.getElementById('targetNumber').checked) {
-            options.push({ key: 'number', label: '单点：默认按精确和值看当盘日盈亏' });
-        }
-
-        const previousValue = select.value;
+        this.enforceNumberTarget();
+        const options = this.getFormProfitMetricOptions(lotteryType, this.getSelectedFormTargets());
+        const primaryMetric = document.getElementById('primaryMetric')?.value || this.getFormState(lotteryType).primaryMetric;
+        const previousValue = preferredValue || select.value || this.getFormState(lotteryType).profitDefaultMetric;
         if (!options.length) {
             select.innerHTML = '<option value="">暂无可用收益玩法</option>';
             select.disabled = true;
+            this.saveCurrentFormState(lotteryType);
             return;
         }
 
@@ -2481,7 +2627,8 @@ class PredictionApp {
             <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
         `).join('');
         select.disabled = false;
-        select.value = options.some((item) => item.key === previousValue) ? previousValue : options[0].key;
+        select.value = this.resolveFormProfitMetric(lotteryType, options, primaryMetric, previousValue);
+        this.saveCurrentFormState(lotteryType);
     }
 
     async submitPredictor() {
