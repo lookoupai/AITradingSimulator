@@ -220,6 +220,8 @@ class PredictionEngine:
                 self.prediction_guard.record_success(predictor['id'])
             return self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
         except AIPredictionError as exc:
+            raw_response = getattr(exc, 'raw_response', raw_response)
+            prompt_snapshot = getattr(exc, 'prompt_snapshot', prompt_snapshot)
             payload = {
                 'predictor_id': predictor['id'],
                 'lottery_type': predictor.get('lottery_type', 'pc28'),
@@ -250,6 +252,8 @@ class PredictionEngine:
                 self.prediction_guard.record_ai_failure(predictor['id'], exc)
             return self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
         except Exception as exc:
+            raw_response = getattr(exc, 'raw_response', raw_response)
+            prompt_snapshot = getattr(exc, 'prompt_snapshot', prompt_snapshot)
             payload = {
                 'predictor_id': predictor['id'],
                 'lottery_type': predictor.get('lottery_type', 'pc28'),

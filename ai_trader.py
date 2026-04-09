@@ -56,11 +56,18 @@ class AIPredictor:
         prompt = self._build_prompt(context, predictor_config)
         last_error = AIPredictionError('AI 未返回有效预测')
         last_response = ''
+        last_finish_reason = 'unknown'
 
         for _ in range(3):
             try:
-                raw_response = self._call_llm(prompt)
+                result = self._call_llm_with_metadata(
+                    prompt,
+                    max_output_tokens=1800,
+                    json_output=True
+                )
+                raw_response = result['raw_response']
                 last_response = raw_response
+                last_finish_reason = str(result.get('finish_reason') or 'unknown')
                 prediction = self._parse_response(
                     raw_response=raw_response,
                     expected_issue_no=context.get('next_issue_no'),
@@ -68,16 +75,30 @@ class AIPredictor:
                 )
                 if self._has_effective_prediction(prediction, predictor_config.get('prediction_targets')):
                     return prediction, raw_response, prompt
-                last_error = AIPredictionError('AI 返回内容无法解析为有效预测', category='parse')
+                last_error = AIPredictionError(
+                    f'AI 返回内容无法解析为有效预测，finish_reason={last_finish_reason}',
+                    category='parse'
+                )
             except Exception as exc:
                 last_error = self._normalize_ai_exception(exc)
 
         if last_response:
-            raise AIPredictionError(
+            failure = AIPredictionError(
                 f'{str(last_error)}；原始响应：{last_response[:300]}',
                 category=getattr(last_error, 'category', 'ai_error')
             )
-        raise last_error
+            raise self._attach_prediction_debug_context(
+                failure,
+                raw_response=last_response,
+                prompt_snapshot=prompt,
+                finish_reason=last_finish_reason
+            )
+        raise self._attach_prediction_debug_context(
+            last_error,
+            raw_response=last_response,
+            prompt_snapshot=prompt,
+            finish_reason=last_finish_reason
+        )
 
     def run_connectivity_test(self) -> dict:
         """测试模型连通性与基础输出能力"""
@@ -1054,6 +1075,18 @@ class AIPredictor:
             category = 'transport'
 
         return AIPredictionError(message, category=category)
+
+    def _attach_prediction_debug_context(
+        self,
+        error: Exception,
+        raw_response: str,
+        prompt_snapshot: str,
+        finish_reason: Optional[str]
+    ) -> Exception:
+        setattr(error, 'raw_response', raw_response or getattr(error, 'raw_response', ''))
+        setattr(error, 'prompt_snapshot', prompt_snapshot or getattr(error, 'prompt_snapshot', ''))
+        setattr(error, 'finish_reason', str(finish_reason or getattr(error, 'finish_reason', 'unknown')))
+        return error
 
     def _extract_response_output_text(self, response) -> str:
         output_text = response.get('output_text') if isinstance(response, dict) else getattr(response, 'output_text', None)
