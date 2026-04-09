@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from typing import Optional
 from urllib.parse import urlparse
@@ -31,6 +32,10 @@ from utils.timezone import get_current_beijing_time, get_current_beijing_time_st
 
 class AIPredictor:
     """基于 OpenAI 兼容接口的 PC28 预测器"""
+
+    _gateway_capability_cache: dict[tuple[str, str, str], dict] = {}
+    _gateway_capability_cache_lock = threading.Lock()
+    _gateway_capability_cache_ttl_seconds = 24 * 60 * 60
 
     def __init__(
         self,
@@ -401,6 +406,7 @@ class AIPredictor:
             api_key=self.api_key,
             base_url=base_url
         )
+        capability_cache_key = self._build_gateway_capability_cache_key(base_url, resolved_api_mode)
         if resolved_api_mode == 'responses':
             response_kwargs = {
                 'model': self.model_name,
@@ -416,6 +422,7 @@ class AIPredictor:
                 }
 
             response, latency_ms = self._call_with_token_limit_fallback(
+                capability_cache_key=capability_cache_key,
                 base_request_kwargs=response_kwargs,
                 resolved_api_mode=resolved_api_mode,
                 max_output_tokens=max_output_tokens,
@@ -443,6 +450,7 @@ class AIPredictor:
             response_kwargs['response_format'] = {'type': 'json_object'}
 
         response, latency_ms = self._call_with_token_limit_fallback(
+            capability_cache_key=capability_cache_key,
             base_request_kwargs=response_kwargs,
             resolved_api_mode=resolved_api_mode,
             max_output_tokens=max_output_tokens,
@@ -468,6 +476,7 @@ class AIPredictor:
         json_output: bool
     ) -> dict:
         endpoint = self._build_compatible_endpoint(base_url, resolved_api_mode)
+        capability_cache_key = self._build_gateway_capability_cache_key(base_url, resolved_api_mode)
         payload = self._build_compatible_payload(
             resolved_api_mode=resolved_api_mode,
             prompt=prompt,
@@ -476,6 +485,7 @@ class AIPredictor:
             json_output=json_output
         )
         response, latency_ms = self._call_with_token_limit_fallback(
+            capability_cache_key=capability_cache_key,
             base_request_kwargs=payload,
             resolved_api_mode=resolved_api_mode,
             max_output_tokens=max_output_tokens,
@@ -554,6 +564,7 @@ class AIPredictor:
 
     def _call_with_token_limit_fallback(
         self,
+        capability_cache_key: tuple[str, str, str],
         base_request_kwargs: dict,
         resolved_api_mode: str,
         max_output_tokens: int,
@@ -561,7 +572,7 @@ class AIPredictor:
         caller
     ) -> tuple[object, int]:
         last_error: Optional[Exception] = None
-        disabled_parameters: set[str] = set()
+        disabled_parameters = self._get_cached_disabled_parameters(capability_cache_key)
         attempted_request_keys: set[str] = set()
 
         while True:
@@ -595,9 +606,11 @@ class AIPredictor:
                         )
                         if unsupported_parameter not in disabled_parameters:
                             disabled_parameters.add(unsupported_parameter)
+                            self._store_cached_disabled_parameters(capability_cache_key, disabled_parameters)
                             should_restart_round = True
                             break
                         continue
+                    self._store_cached_disabled_parameters(capability_cache_key, disabled_parameters)
                     return response, int((time.perf_counter() - start_time) * 1000)
                 except Exception as exc:
                     unsupported_parameter = self._extract_unsupported_parameter_name(str(exc))
@@ -606,6 +619,7 @@ class AIPredictor:
                     last_error = exc
                     if unsupported_parameter not in disabled_parameters:
                         disabled_parameters.add(unsupported_parameter)
+                        self._store_cached_disabled_parameters(capability_cache_key, disabled_parameters)
                         should_restart_round = True
                         break
                     continue
@@ -615,9 +629,51 @@ class AIPredictor:
             if not attempted_in_round:
                 break
 
+        self._store_cached_disabled_parameters(capability_cache_key, disabled_parameters)
         if last_error is not None:
             raise last_error
         raise RuntimeError('未生成可用的 token 限制参数')
+
+    def _build_gateway_capability_cache_key(self, base_url: str, resolved_api_mode: str) -> tuple[str, str, str]:
+        return (
+            base_url.rstrip('/'),
+            str(self.model_name or '').strip(),
+            resolved_api_mode
+        )
+
+    def _get_cached_disabled_parameters(self, capability_cache_key: tuple[str, str, str]) -> set[str]:
+        now = time.time()
+        with self._gateway_capability_cache_lock:
+            entry = self._gateway_capability_cache.get(capability_cache_key)
+            if not entry:
+                return set()
+
+            expires_at = float(entry.get('expires_at') or 0)
+            if expires_at and expires_at <= now:
+                self._gateway_capability_cache.pop(capability_cache_key, None)
+                return set()
+
+            disabled_parameters = entry.get('disabled_parameters') or []
+            return {
+                str(parameter).strip()
+                for parameter in disabled_parameters
+                if str(parameter).strip()
+            }
+
+    def _store_cached_disabled_parameters(
+        self,
+        capability_cache_key: tuple[str, str, str],
+        disabled_parameters: set[str]
+    ) -> None:
+        with self._gateway_capability_cache_lock:
+            if not disabled_parameters:
+                self._gateway_capability_cache.pop(capability_cache_key, None)
+                return
+
+            self._gateway_capability_cache[capability_cache_key] = {
+                'disabled_parameters': sorted(disabled_parameters),
+                'expires_at': time.time() + self._gateway_capability_cache_ttl_seconds
+            }
 
     def _build_fallback_request_kwargs(
         self,

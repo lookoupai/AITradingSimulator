@@ -10,6 +10,7 @@ from ai_trader import AIPredictor
 
 class AIPredictorEncodingTests(unittest.TestCase):
     def setUp(self):
+        AIPredictor._gateway_capability_cache.clear()
         self.predictor = AIPredictor(
             api_key='test-key',
             api_url='https://example.com/v1',
@@ -142,6 +143,7 @@ class AIPredictorEncodingTests(unittest.TestCase):
             return {'status': 'ok', 'request_kwargs': request_kwargs}
 
         response, latency_ms = self.predictor._call_with_token_limit_fallback(
+            capability_cache_key=('https://example.com/v1', 'gpt-5.4', 'chat_completions'),
             base_request_kwargs={'model': 'gpt-5.4', 'temperature': 0.7},
             resolved_api_mode='chat_completions',
             max_output_tokens=300,
@@ -198,6 +200,7 @@ class AIPredictorEncodingTests(unittest.TestCase):
                 )
 
         response, latency_ms = self.predictor._call_with_token_limit_fallback(
+            capability_cache_key=('https://example.com/v1', 'gpt-5.4', 'chat_completions'),
             base_request_kwargs={'model': 'gpt-5.4', 'temperature': 0.7},
             resolved_api_mode='chat_completions',
             max_output_tokens=300,
@@ -250,6 +253,7 @@ class AIPredictorEncodingTests(unittest.TestCase):
             )
 
         response, latency_ms = self.predictor._call_with_token_limit_fallback(
+            capability_cache_key=('https://example.com/v1', 'gpt-5.4', 'chat_completions'),
             base_request_kwargs={'model': 'gpt-5.4', 'temperature': 0.7},
             resolved_api_mode='chat_completions',
             max_output_tokens=300,
@@ -266,6 +270,73 @@ class AIPredictorEncodingTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(latency_ms, 0)
+
+    def test_call_with_token_limit_fallback_reuses_cached_disabled_parameters(self):
+        cache_key = ('https://example.com/v1', 'gpt-5.4', 'chat_completions')
+        attempts = []
+
+        def caller(request_kwargs):
+            attempts.append(request_kwargs)
+            if 'temperature' in request_kwargs:
+                return self._build_response(
+                    json.dumps({
+                        'error': {
+                            'message': 'Unsupported parameter: temperature'
+                        }
+                    }, ensure_ascii=False),
+                    'application/json',
+                    status_code=400
+                )
+
+            return self._build_response(
+                json.dumps({
+                    'id': 'chatcmpl_1',
+                    'object': 'chat.completion',
+                    'choices': [
+                        {
+                            'index': 0,
+                            'message': {
+                                'role': 'assistant',
+                                'content': '{"status":"ok"}'
+                            },
+                            'finish_reason': 'stop'
+                        }
+                    ]
+                }, ensure_ascii=False),
+                'application/json'
+            )
+
+        self.predictor._call_with_token_limit_fallback(
+            capability_cache_key=cache_key,
+            base_request_kwargs={'model': 'gpt-5.4', 'temperature': 0.7},
+            resolved_api_mode='chat_completions',
+            max_output_tokens=300,
+            prefer_legacy_chat_token_param=True,
+            caller=caller
+        )
+        self.assertEqual(
+            attempts,
+            [
+                {'model': 'gpt-5.4', 'temperature': 0.7, 'max_tokens': 300},
+                {'model': 'gpt-5.4', 'max_tokens': 300},
+            ]
+        )
+
+        attempts.clear()
+        self.predictor._call_with_token_limit_fallback(
+            capability_cache_key=cache_key,
+            base_request_kwargs={'model': 'gpt-5.4', 'temperature': 0.7},
+            resolved_api_mode='chat_completions',
+            max_output_tokens=300,
+            prefer_legacy_chat_token_param=True,
+            caller=caller
+        )
+        self.assertEqual(
+            attempts,
+            [
+                {'model': 'gpt-5.4', 'max_tokens': 300},
+            ]
+        )
 
 
 if __name__ == '__main__':
