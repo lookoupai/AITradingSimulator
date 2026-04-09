@@ -57,12 +57,13 @@ class AIPredictor:
         last_error = AIPredictionError('AI 未返回有效预测')
         last_response = ''
         last_finish_reason = 'unknown'
+        max_output_tokens = self._prediction_max_output_tokens()
 
         for _ in range(3):
             try:
                 result = self._call_llm_with_metadata(
                     prompt,
-                    max_output_tokens=1800,
+                    max_output_tokens=max_output_tokens,
                     json_output=True
                 )
                 raw_response = result['raw_response']
@@ -162,6 +163,11 @@ class AIPredictor:
             'raw_response': result['raw_response'],
             'payload': payload
         }
+
+    def _prediction_max_output_tokens(self) -> int:
+        if self._is_minimax_reasoning_model():
+            return 3200
+        return 1800
 
     def _build_prompt(self, context: dict, predictor_config: dict) -> str:
         targets = normalize_target_list(predictor_config.get('prediction_targets'))
@@ -467,6 +473,9 @@ class AIPredictor:
             ],
             'temperature': self.temperature
         }
+        provider_extra_body = self._build_provider_extra_body(resolved_api_mode)
+        if provider_extra_body:
+            response_kwargs['extra_body'] = provider_extra_body
         if json_output:
             response_kwargs['response_format'] = {'type': 'json_object'}
 
@@ -573,7 +582,7 @@ class AIPredictor:
                 }
             return payload
 
-        return {
+        payload = {
             'model': self.model_name,
             'messages': [
                 {'role': 'system', 'content': system_prompt},
@@ -582,6 +591,8 @@ class AIPredictor:
             'temperature': self.temperature,
             'stream': False
         }
+        payload.update(self._build_provider_extra_body(resolved_api_mode))
+        return payload
 
     def _call_with_token_limit_fallback(
         self,
@@ -708,6 +719,18 @@ class AIPredictor:
         }
         for parameter in disabled_parameters:
             request_kwargs.pop(parameter, None)
+
+        extra_body = request_kwargs.get('extra_body')
+        if isinstance(extra_body, dict):
+            normalized_extra_body = {
+                key: value
+                for key, value in extra_body.items()
+                if key not in disabled_parameters
+            }
+            if normalized_extra_body:
+                request_kwargs['extra_body'] = normalized_extra_body
+            else:
+                request_kwargs.pop('extra_body', None)
         return request_kwargs
 
     def _iter_token_limit_kwargs(
@@ -747,6 +770,7 @@ class AIPredictor:
             'max_tokens',
             'temperature',
             'response_format',
+            'reasoning_split',
             'text.format',
             'text'
         ]
@@ -754,6 +778,17 @@ class AIPredictor:
             if parameter in message:
                 return parameter.split('.')[0]
         return None
+
+    def _build_provider_extra_body(self, resolved_api_mode: str) -> dict:
+        if resolved_api_mode != 'chat_completions':
+            return {}
+        if self._is_minimax_reasoning_model():
+            return {'reasoning_split': True}
+        return {}
+
+    def _is_minimax_reasoning_model(self) -> bool:
+        model_name = str(self.model_name or '').strip().lower()
+        return model_name.startswith('minimax-m2')
 
     def _extract_unsupported_parameter_from_response(self, response) -> Optional[str]:
         status_code = getattr(response, 'status_code', 200)

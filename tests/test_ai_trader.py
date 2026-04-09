@@ -340,6 +340,26 @@ class AIPredictorEncodingTests(unittest.TestCase):
             ]
         )
 
+    def test_build_fallback_request_kwargs_removes_disabled_reasoning_split_from_extra_body(self):
+        request_kwargs = self.predictor._build_fallback_request_kwargs(
+            base_request_kwargs={
+                'model': 'gpt-5.4',
+                'extra_body': {
+                    'reasoning_split': True
+                }
+            },
+            token_limit_kwargs={'max_tokens': 300},
+            disabled_parameters={'reasoning_split'}
+        )
+
+        self.assertEqual(
+            request_kwargs,
+            {
+                'model': 'gpt-5.4',
+                'max_tokens': 300
+            }
+        )
+
     def test_call_with_token_limit_fallback_drops_response_format_when_unsupported(self):
         attempts = []
 
@@ -406,6 +426,16 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(latency_ms, 0)
 
+    def test_prediction_max_output_tokens_uses_higher_budget_for_minimax_reasoning_model(self):
+        minimax_predictor = AIPredictor(
+            api_key='test-key',
+            api_url='https://api.minimaxi.com',
+            model_name='MiniMax-M2.7'
+        )
+
+        self.assertEqual(minimax_predictor._prediction_max_output_tokens(), 3200)
+        self.assertEqual(minimax_predictor._build_provider_extra_body('chat_completions'), {'reasoning_split': True})
+
     def test_predict_next_issue_requests_json_output(self):
         predictor_config = {
             'prediction_targets': ['number', 'big_small', 'odd_even', 'combo']
@@ -440,6 +470,42 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(raw_response, llm_result['raw_response'])
         self.assertEqual(prediction['prediction_number'], 12)
         self.assertEqual(prediction['prediction_combo'], '小双')
+
+    def test_predict_next_issue_uses_higher_budget_for_minimax_reasoning_model(self):
+        minimax_predictor = AIPredictor(
+            api_key='test-key',
+            api_url='https://api.minimaxi.com',
+            model_name='MiniMax-M2.7'
+        )
+        predictor_config = {
+            'prediction_targets': ['number', 'big_small', 'odd_even', 'combo']
+        }
+        llm_result = {
+            'raw_response': json.dumps({
+                'issue_no': '3418524',
+                'predicted_number': 18,
+                'predicted_big_small': '大',
+                'predicted_odd_even': '双',
+                'predicted_combo': '大双'
+            }, ensure_ascii=False),
+            'finish_reason': 'stop'
+        }
+
+        with patch.object(minimax_predictor, '_build_prompt', return_value='PROMPT'), patch.object(
+            minimax_predictor,
+            '_call_llm_with_metadata',
+            return_value=llm_result
+        ) as call_llm:
+            minimax_predictor.predict_next_issue(
+                context={'next_issue_no': '3418524'},
+                predictor_config=predictor_config
+            )
+
+        call_llm.assert_called_once_with(
+            'PROMPT',
+            max_output_tokens=3200,
+            json_output=True
+        )
 
     def test_predict_next_issue_failure_preserves_debug_context(self):
         predictor_config = {
