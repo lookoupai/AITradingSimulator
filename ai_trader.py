@@ -401,14 +401,12 @@ class AIPredictor:
             api_key=self.api_key,
             base_url=base_url
         )
-        start_time = time.perf_counter()
         if resolved_api_mode == 'responses':
             response_kwargs = {
                 'model': self.model_name,
                 'instructions': system_prompt,
                 'input': prompt,
-                'temperature': self.temperature,
-                'max_output_tokens': max_output_tokens
+                'temperature': self.temperature
             }
             if json_output:
                 response_kwargs['text'] = {
@@ -417,8 +415,14 @@ class AIPredictor:
                     }
                 }
 
-            response = client.responses.create(
-                **response_kwargs
+            response, latency_ms = self._call_with_token_limit_fallback(
+                resolved_api_mode=resolved_api_mode,
+                max_output_tokens=max_output_tokens,
+                prefer_legacy_chat_token_param=False,
+                caller=lambda token_limit_kwargs: client.responses.create(
+                    **response_kwargs,
+                    **token_limit_kwargs
+                )
             )
             raw_response = self._extract_response_output_text(response)
             return {
@@ -426,17 +430,28 @@ class AIPredictor:
                 'api_mode': resolved_api_mode,
                 'response_model': getattr(response, 'model', self.model_name),
                 'finish_reason': self._extract_responses_finish_reason(response),
-                'latency_ms': int((time.perf_counter() - start_time) * 1000)
+                'latency_ms': latency_ms
             }
 
-        response = client.chat.completions.create(
-            model=self.model_name,
-            messages=[
+        response_kwargs = {
+            'model': self.model_name,
+            'messages': [
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': prompt}
             ],
-            temperature=self.temperature,
-            max_tokens=max_output_tokens
+            'temperature': self.temperature
+        }
+        if json_output:
+            response_kwargs['response_format'] = {'type': 'json_object'}
+
+        response, latency_ms = self._call_with_token_limit_fallback(
+            resolved_api_mode=resolved_api_mode,
+            max_output_tokens=max_output_tokens,
+            prefer_legacy_chat_token_param=False,
+            caller=lambda token_limit_kwargs: client.chat.completions.create(
+                **response_kwargs,
+                **token_limit_kwargs
+            )
         )
         raw_response = self._extract_message_text(response)
         return {
@@ -444,7 +459,7 @@ class AIPredictor:
             'api_mode': resolved_api_mode,
             'response_model': getattr(response, 'model', self.model_name),
             'finish_reason': self._extract_chat_finish_reason(response),
-            'latency_ms': int((time.perf_counter() - start_time) * 1000)
+            'latency_ms': latency_ms
         }
 
     def _call_llm_via_compatible_http(
@@ -461,17 +476,23 @@ class AIPredictor:
             resolved_api_mode=resolved_api_mode,
             prompt=prompt,
             system_prompt=system_prompt,
-            max_output_tokens=max_output_tokens,
+            max_output_tokens=None,
             json_output=json_output
         )
-        start_time = time.perf_counter()
-        response = requests.post(
-            endpoint,
-            headers=self._build_compatible_headers(),
-            json=payload,
-            timeout=60
+        response, latency_ms = self._call_with_token_limit_fallback(
+            resolved_api_mode=resolved_api_mode,
+            max_output_tokens=max_output_tokens,
+            prefer_legacy_chat_token_param=True,
+            caller=lambda token_limit_kwargs: requests.post(
+                endpoint,
+                headers=self._build_compatible_headers(),
+                json={
+                    **payload,
+                    **token_limit_kwargs,
+                },
+                timeout=60
+            )
         )
-        latency_ms = int((time.perf_counter() - start_time) * 1000)
         if response.status_code >= 400:
             raise Exception(
                 f'HTTP {response.status_code}：{self._extract_http_error_message(response)}'
@@ -506,7 +527,7 @@ class AIPredictor:
         resolved_api_mode: str,
         prompt: str,
         system_prompt: str,
-        max_output_tokens: int,
+        max_output_tokens: Optional[int],
         json_output: bool
     ) -> dict:
         if resolved_api_mode == 'responses':
@@ -515,9 +536,10 @@ class AIPredictor:
                 'instructions': system_prompt,
                 'input': prompt,
                 'temperature': self.temperature,
-                'max_output_tokens': max_output_tokens,
                 'stream': False
             }
+            if max_output_tokens is not None:
+                payload['max_output_tokens'] = max_output_tokens
             if json_output:
                 payload['text'] = {
                     'format': {
@@ -533,9 +555,71 @@ class AIPredictor:
                 {'role': 'user', 'content': prompt}
             ],
             'temperature': self.temperature,
-            'max_tokens': max_output_tokens,
             'stream': False
         }
+
+    def _call_with_token_limit_fallback(
+        self,
+        resolved_api_mode: str,
+        max_output_tokens: int,
+        prefer_legacy_chat_token_param: bool,
+        caller
+    ) -> tuple[object, int]:
+        last_error: Optional[Exception] = None
+        for token_limit_kwargs in self._iter_token_limit_kwargs(
+            resolved_api_mode=resolved_api_mode,
+            max_output_tokens=max_output_tokens,
+            prefer_legacy_chat_token_param=prefer_legacy_chat_token_param
+        ):
+            start_time = time.perf_counter()
+            try:
+                response = caller(token_limit_kwargs)
+                return response, int((time.perf_counter() - start_time) * 1000)
+            except Exception as exc:
+                if not self._is_unsupported_token_parameter_error(exc):
+                    raise
+                last_error = exc
+                continue
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError('未生成可用的 token 限制参数')
+
+    def _iter_token_limit_kwargs(
+        self,
+        resolved_api_mode: str,
+        max_output_tokens: int,
+        prefer_legacy_chat_token_param: bool
+    ) -> list[dict]:
+        if max_output_tokens <= 0:
+            return [{}]
+
+        if resolved_api_mode == 'responses':
+            return [
+                {'max_output_tokens': max_output_tokens},
+                {}
+            ]
+
+        primary_key = 'max_tokens' if prefer_legacy_chat_token_param else 'max_completion_tokens'
+        secondary_key = 'max_completion_tokens' if prefer_legacy_chat_token_param else 'max_tokens'
+        return [
+            {primary_key: max_output_tokens},
+            {secondary_key: max_output_tokens},
+            {}
+        ]
+
+    def _is_unsupported_token_parameter_error(self, exc: Exception) -> bool:
+        message = str(exc or '').lower()
+        if not message:
+            return False
+
+        if not any(keyword in message for keyword in ['unsupported parameter', 'unknown parameter', 'extra inputs are not permitted']):
+            return False
+
+        return any(
+            token_key in message
+            for token_key in ['max_output_tokens', 'max_completion_tokens', 'max_tokens']
+        )
 
     def _build_compatible_headers(self) -> dict:
         return {
@@ -545,13 +629,32 @@ class AIPredictor:
             'User-Agent': 'AITradingSimulator/1.0'
         }
 
+    def _decode_compatible_response_body(self, response: requests.Response) -> str:
+        raw_bytes = response.content or b''
+        if not raw_bytes:
+            return response.text or ''
+
+        candidate_encodings = []
+        for encoding in ('utf-8', getattr(response, 'encoding', None), getattr(response, 'apparent_encoding', None)):
+            normalized = str(encoding or '').strip()
+            if normalized and normalized not in candidate_encodings:
+                candidate_encodings.append(normalized)
+
+        for encoding in candidate_encodings:
+            try:
+                return raw_bytes.decode(encoding)
+            except (LookupError, UnicodeDecodeError):
+                continue
+
+        return raw_bytes.decode('utf-8', errors='replace')
+
     def _extract_http_error_message(self, response: requests.Response) -> str:
-        body = (response.text or '').strip()
+        body = self._decode_compatible_response_body(response).strip()
         if not body:
             return response.reason or '未知错误'
 
         try:
-            payload = response.json()
+            payload = json.loads(body)
         except ValueError:
             return body[:500]
 
@@ -573,15 +676,17 @@ class AIPredictor:
         response: requests.Response,
         resolved_api_mode: str
     ) -> dict:
+        body = self._decode_compatible_response_body(response)
+        parse_error = None
         try:
-            payload = response.json()
-        except ValueError:
-            payload = None
+            parsed_payload = json.loads(body)
+        except ValueError as exc:
+            parsed_payload = None
+            parse_error = exc
 
-        if isinstance(payload, dict):
-            return payload
+        if isinstance(parsed_payload, dict):
+            return parsed_payload
 
-        body = response.text or ''
         content_type = response.headers.get('Content-Type', '')
         if self._looks_like_sse_response(body, content_type):
             return self._parse_sse_payload(
@@ -589,11 +694,8 @@ class AIPredictor:
                 resolved_api_mode=resolved_api_mode
             )
 
-        try:
-            parsed_payload = json.loads(body)
-        except ValueError as exc:
-            raise ValueError(f'API 返回了非 JSON 内容：{body[:500]}') from exc
-
+        if parsed_payload is None:
+            raise ValueError(f'API 返回了非 JSON 内容：{body[:500]}') from parse_error
         if not isinstance(parsed_payload, dict):
             raise ValueError(f'API 返回的 JSON 不是对象：{body[:500]}')
         return parsed_payload
