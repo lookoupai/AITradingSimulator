@@ -416,13 +416,11 @@ class AIPredictor:
                 }
 
             response, latency_ms = self._call_with_token_limit_fallback(
+                base_request_kwargs=response_kwargs,
                 resolved_api_mode=resolved_api_mode,
                 max_output_tokens=max_output_tokens,
                 prefer_legacy_chat_token_param=False,
-                caller=lambda token_limit_kwargs: client.responses.create(
-                    **response_kwargs,
-                    **token_limit_kwargs
-                )
+                caller=lambda request_kwargs: client.responses.create(**request_kwargs)
             )
             raw_response = self._extract_response_output_text(response)
             return {
@@ -445,13 +443,11 @@ class AIPredictor:
             response_kwargs['response_format'] = {'type': 'json_object'}
 
         response, latency_ms = self._call_with_token_limit_fallback(
+            base_request_kwargs=response_kwargs,
             resolved_api_mode=resolved_api_mode,
             max_output_tokens=max_output_tokens,
             prefer_legacy_chat_token_param=False,
-            caller=lambda token_limit_kwargs: client.chat.completions.create(
-                **response_kwargs,
-                **token_limit_kwargs
-            )
+            caller=lambda request_kwargs: client.chat.completions.create(**request_kwargs)
         )
         raw_response = self._extract_message_text(response)
         return {
@@ -480,16 +476,14 @@ class AIPredictor:
             json_output=json_output
         )
         response, latency_ms = self._call_with_token_limit_fallback(
+            base_request_kwargs=payload,
             resolved_api_mode=resolved_api_mode,
             max_output_tokens=max_output_tokens,
             prefer_legacy_chat_token_param=True,
-            caller=lambda token_limit_kwargs: requests.post(
+            caller=lambda request_kwargs: requests.post(
                 endpoint,
                 headers=self._build_compatible_headers(),
-                json={
-                    **payload,
-                    **token_limit_kwargs,
-                },
+                json=request_kwargs,
                 timeout=60
             )
         )
@@ -560,30 +554,84 @@ class AIPredictor:
 
     def _call_with_token_limit_fallback(
         self,
+        base_request_kwargs: dict,
         resolved_api_mode: str,
         max_output_tokens: int,
         prefer_legacy_chat_token_param: bool,
         caller
     ) -> tuple[object, int]:
         last_error: Optional[Exception] = None
-        for token_limit_kwargs in self._iter_token_limit_kwargs(
-            resolved_api_mode=resolved_api_mode,
-            max_output_tokens=max_output_tokens,
-            prefer_legacy_chat_token_param=prefer_legacy_chat_token_param
-        ):
-            start_time = time.perf_counter()
-            try:
-                response = caller(token_limit_kwargs)
-                return response, int((time.perf_counter() - start_time) * 1000)
-            except Exception as exc:
-                if not self._is_unsupported_token_parameter_error(exc):
-                    raise
-                last_error = exc
+        disabled_parameters: set[str] = set()
+        attempted_request_keys: set[str] = set()
+
+        while True:
+            attempted_in_round = False
+            should_restart_round = False
+            for token_limit_kwargs in self._iter_token_limit_kwargs(
+                resolved_api_mode=resolved_api_mode,
+                max_output_tokens=max_output_tokens,
+                prefer_legacy_chat_token_param=prefer_legacy_chat_token_param
+            ):
+                if any(parameter in disabled_parameters for parameter in token_limit_kwargs):
+                    continue
+                request_kwargs = self._build_fallback_request_kwargs(
+                    base_request_kwargs=base_request_kwargs,
+                    token_limit_kwargs=token_limit_kwargs,
+                    disabled_parameters=disabled_parameters
+                )
+                request_key = json.dumps(request_kwargs, ensure_ascii=False, sort_keys=True)
+                if request_key in attempted_request_keys:
+                    continue
+
+                attempted_request_keys.add(request_key)
+                attempted_in_round = True
+                start_time = time.perf_counter()
+                try:
+                    response = caller(request_kwargs)
+                    unsupported_parameter = self._extract_unsupported_parameter_from_response(response)
+                    if unsupported_parameter:
+                        last_error = Exception(
+                            f'HTTP {response.status_code}：{self._extract_http_error_message(response)}'
+                        )
+                        if unsupported_parameter not in disabled_parameters:
+                            disabled_parameters.add(unsupported_parameter)
+                            should_restart_round = True
+                            break
+                        continue
+                    return response, int((time.perf_counter() - start_time) * 1000)
+                except Exception as exc:
+                    unsupported_parameter = self._extract_unsupported_parameter_name(str(exc))
+                    if not unsupported_parameter:
+                        raise
+                    last_error = exc
+                    if unsupported_parameter not in disabled_parameters:
+                        disabled_parameters.add(unsupported_parameter)
+                        should_restart_round = True
+                        break
+                    continue
+
+            if should_restart_round:
                 continue
+            if not attempted_in_round:
+                break
 
         if last_error is not None:
             raise last_error
         raise RuntimeError('未生成可用的 token 限制参数')
+
+    def _build_fallback_request_kwargs(
+        self,
+        base_request_kwargs: dict,
+        token_limit_kwargs: dict,
+        disabled_parameters: set[str]
+    ) -> dict:
+        request_kwargs = {
+            **base_request_kwargs,
+            **token_limit_kwargs
+        }
+        for parameter in disabled_parameters:
+            request_kwargs.pop(parameter, None)
+        return request_kwargs
 
     def _iter_token_limit_kwargs(
         self,
@@ -608,18 +656,39 @@ class AIPredictor:
             {}
         ]
 
-    def _is_unsupported_token_parameter_error(self, exc: Exception) -> bool:
-        message = str(exc or '').lower()
+    def _extract_unsupported_parameter_name(self, message: str) -> Optional[str]:
+        message = str(message or '').lower()
         if not message:
-            return False
+            return None
 
         if not any(keyword in message for keyword in ['unsupported parameter', 'unknown parameter', 'extra inputs are not permitted']):
-            return False
+            return None
 
-        return any(
-            token_key in message
-            for token_key in ['max_output_tokens', 'max_completion_tokens', 'max_tokens']
-        )
+        supported_candidates = [
+            'max_output_tokens',
+            'max_completion_tokens',
+            'max_tokens',
+            'temperature',
+            'response_format',
+            'text.format',
+            'text'
+        ]
+        for parameter in supported_candidates:
+            if parameter in message:
+                return parameter.split('.')[0]
+        return None
+
+    def _extract_unsupported_parameter_from_response(self, response) -> Optional[str]:
+        status_code = getattr(response, 'status_code', 200)
+        if not isinstance(status_code, int) or status_code < 400:
+            return None
+
+        try:
+            message = self._extract_http_error_message(response)
+        except Exception:
+            return None
+
+        return self._extract_unsupported_parameter_name(message)
 
     def _build_compatible_headers(self) -> dict:
         return {

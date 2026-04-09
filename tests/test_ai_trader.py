@@ -16,9 +16,9 @@ class AIPredictorEncodingTests(unittest.TestCase):
             model_name='gpt-5.4'
         )
 
-    def _build_response(self, body: str, content_type: str) -> Response:
+    def _build_response(self, body: str, content_type: str, status_code: int = 200) -> Response:
         response = Response()
-        response.status_code = 200
+        response.status_code = status_code
         response.headers['Content-Type'] = content_type
         response._content = body.encode('utf-8')
         response.encoding = 'ISO-8859-1'
@@ -135,13 +135,14 @@ class AIPredictorEncodingTests(unittest.TestCase):
     def test_call_with_token_limit_fallback_retries_on_unsupported_parameter(self):
         attempts = []
 
-        def caller(token_limit_kwargs):
-            attempts.append(token_limit_kwargs)
-            if 'max_tokens' in token_limit_kwargs:
+        def caller(request_kwargs):
+            attempts.append(request_kwargs)
+            if 'max_tokens' in request_kwargs:
                 raise Exception('HTTP 400：Unsupported parameter: max_tokens')
-            return {'status': 'ok', 'token_limit_kwargs': token_limit_kwargs}
+            return {'status': 'ok', 'request_kwargs': request_kwargs}
 
         response, latency_ms = self.predictor._call_with_token_limit_fallback(
+            base_request_kwargs={'model': 'gpt-5.4', 'temperature': 0.7},
             resolved_api_mode='chat_completions',
             max_output_tokens=300,
             prefer_legacy_chat_token_param=True,
@@ -151,12 +152,119 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(
             attempts,
             [
-                {'max_tokens': 300},
-                {'max_completion_tokens': 300}
+                {'model': 'gpt-5.4', 'temperature': 0.7, 'max_tokens': 300},
+                {'model': 'gpt-5.4', 'temperature': 0.7, 'max_completion_tokens': 300}
             ]
         )
         self.assertEqual(response['status'], 'ok')
-        self.assertEqual(response['token_limit_kwargs'], {'max_completion_tokens': 300})
+        self.assertEqual(
+            response['request_kwargs'],
+            {'model': 'gpt-5.4', 'temperature': 0.7, 'max_completion_tokens': 300}
+        )
+        self.assertGreaterEqual(latency_ms, 0)
+
+    def test_call_with_token_limit_fallback_retries_on_http_400_response(self):
+        attempts = []
+
+        def caller(request_kwargs):
+            attempts.append(request_kwargs)
+            if request_kwargs == {'model': 'gpt-5.4', 'temperature': 0.7, 'max_tokens': 300}:
+                return self._build_response(
+                    json.dumps({
+                        'error': {
+                            'message': 'Unsupported parameter: max_tokens'
+                        }
+                    }, ensure_ascii=False),
+                    'application/json',
+                    status_code=400
+                )
+
+            return self._build_response(
+                json.dumps({
+                    'id': 'chatcmpl_1',
+                    'object': 'chat.completion',
+                    'choices': [
+                        {
+                            'index': 0,
+                            'message': {
+                                'role': 'assistant',
+                                'content': '{"status":"ok"}'
+                            },
+                            'finish_reason': 'stop'
+                        }
+                    ]
+                }, ensure_ascii=False),
+                'application/json'
+                )
+
+        response, latency_ms = self.predictor._call_with_token_limit_fallback(
+            base_request_kwargs={'model': 'gpt-5.4', 'temperature': 0.7},
+            resolved_api_mode='chat_completions',
+            max_output_tokens=300,
+            prefer_legacy_chat_token_param=True,
+            caller=caller
+        )
+
+        self.assertEqual(
+            attempts,
+            [
+                {'model': 'gpt-5.4', 'temperature': 0.7, 'max_tokens': 300},
+                {'model': 'gpt-5.4', 'temperature': 0.7, 'max_completion_tokens': 300}
+            ]
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(latency_ms, 0)
+
+    def test_call_with_token_limit_fallback_drops_temperature_when_unsupported(self):
+        attempts = []
+
+        def caller(request_kwargs):
+            attempts.append(request_kwargs)
+            if 'temperature' in request_kwargs:
+                return self._build_response(
+                    json.dumps({
+                        'error': {
+                            'message': 'Unsupported parameter: temperature'
+                        }
+                    }, ensure_ascii=False),
+                    'application/json',
+                    status_code=400
+                )
+
+            return self._build_response(
+                json.dumps({
+                    'id': 'chatcmpl_1',
+                    'object': 'chat.completion',
+                    'choices': [
+                        {
+                            'index': 0,
+                            'message': {
+                                'role': 'assistant',
+                                'content': '{"status":"ok"}'
+                            },
+                            'finish_reason': 'stop'
+                        }
+                    ]
+                }, ensure_ascii=False),
+                'application/json'
+            )
+
+        response, latency_ms = self.predictor._call_with_token_limit_fallback(
+            base_request_kwargs={'model': 'gpt-5.4', 'temperature': 0.7},
+            resolved_api_mode='chat_completions',
+            max_output_tokens=300,
+            prefer_legacy_chat_token_param=True,
+            caller=caller
+        )
+
+        self.assertEqual(
+            attempts,
+            [
+                {'model': 'gpt-5.4', 'temperature': 0.7, 'max_tokens': 300},
+                {'model': 'gpt-5.4', 'max_tokens': 300},
+            ]
+        )
+        self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(latency_ms, 0)
 
 
