@@ -1496,6 +1496,32 @@ def _get_predictor_dashboard_data(predictor_id: int) -> dict:
     return _get_pc28_predictor_dashboard_data(predictor_id)
 
 
+def _get_predictor_history_data(predictor_id: int) -> dict:
+    predictor = db.get_predictor(predictor_id, include_secret=True)
+    if not predictor:
+        raise ValueError('预测方案不存在')
+
+    lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
+    serialized_predictor = _serialize_predictor(predictor)
+    if lottery_type == 'jingcai_football':
+        handler = lottery_runtime.get_handler(lottery_type)
+        prediction_items = handler.get_recent_prediction_items(db, predictor_id, limit=None) if handler else []
+        draws = db.get_recent_lottery_events(lottery_type, limit=None)
+        return {
+            'predictor': serialized_predictor,
+            'recent_predictions': [_serialize_prediction_item_group(item) for item in prediction_items],
+            'recent_draws': [_serialize_lottery_event(item) for item in draws]
+        }
+
+    recent_predictions = db.get_recent_predictions(predictor_id, limit=None)
+    draws = db.get_recent_draws(lottery_type, limit=None)
+    return {
+        'predictor': serialized_predictor,
+        'recent_predictions': [_serialize_prediction(item) for item in recent_predictions],
+        'recent_draws': [_serialize_draw(draw) for draw in draws]
+    }
+
+
 def _get_pc28_predictor_dashboard_data(predictor_id: int) -> dict:
     predictor = db.get_predictor(predictor_id, include_secret=True)
     stats = db.get_predictor_stats(predictor_id)
@@ -1617,6 +1643,28 @@ def dashboard():
     if not get_current_user_id():
         return redirect('/login')
     return render_template('dashboard.html', prompt_placeholders=get_prompt_placeholder_catalog('all'))
+
+
+@app.route('/settings')
+def settings_page():
+    if not get_current_user_id():
+        return redirect('/login')
+    return render_template('settings.html')
+
+
+@app.route('/predictors/<int:predictor_id>/history')
+def predictor_history_page(predictor_id: int):
+    user_id = get_current_user_id()
+    if not user_id:
+        return redirect('/login')
+    if not db.predictor_exists_for_user(predictor_id, user_id):
+        return redirect('/dashboard')
+
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    initial_tab = str(request.args.get('tab') or 'predictions').strip().lower()
+    if initial_tab not in {'predictions', 'draws', 'ai'}:
+        initial_tab = 'predictions'
+    return render_template('predictor_history.html', predictor=_serialize_predictor(predictor), initial_tab=initial_tab)
 
 
 @app.route('/admin')
@@ -2729,6 +2777,16 @@ def get_predictor_dashboard(predictor_id: int):
         return jsonify({'error': '无权访问此预测方案'}), 403
 
     return jsonify(_get_predictor_dashboard_data(predictor_id))
+
+
+@app.route('/api/predictors/<int:predictor_id>/history', methods=['GET'])
+@login_required
+def get_predictor_history(predictor_id: int):
+    user_id = get_current_user_id()
+    if not db.predictor_exists_for_user(predictor_id, user_id):
+        return jsonify({'error': '无权访问此预测方案'}), 403
+
+    return jsonify(_get_predictor_history_data(predictor_id))
 
 
 @app.route('/api/predictors/<int:predictor_id>/stats', methods=['GET'])

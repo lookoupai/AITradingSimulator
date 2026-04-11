@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>{{ predictor.name }} - 全部记录</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v={{ app_version }}">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/pc28.css?v={{ app_version }}">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+</head>
+<body class="pc28-theme" data-page="predictor-history" data-predictor-id="{{ predictor.id }}" data-initial-tab="{{ initial_tab }}">
+    <div class="pc28-shell">
+        <header class="pc28-header">
+            <div>
+                <div class="eyebrow">Predictor History</div>
+                <h1>{{ predictor.name }}</h1>
+                <p>查看当前方案的全部预测记录、官方开奖和 AI 原始输出。默认按最新记录在前展示。</p>
+            </div>
+            <div class="header-actions">
+                <span class="header-user" id="userInfo">加载中...</span>
+                <button class="btn ghost" id="themeToggle" title="切换主题">
+                    <i class="bi bi-moon-stars"></i>
+                </button>
+                <button class="btn ghost" id="refreshBtn">
+                    <i class="bi bi-arrow-clockwise"></i>
+                    刷新
+                </button>
+                <a class="btn primary" href="/dashboard">
+                    <i class="bi bi-arrow-left"></i>
+                    返回方案页
+                </a>
+                <a class="btn ghost" id="adminEntryBtn" href="/admin" style="display: none;">
+                    <i class="bi bi-shield-lock"></i>
+                    后台
+                </a>
+                <button class="btn ghost" id="logoutBtn">
+                    <i class="bi bi-box-arrow-right"></i>
+                    登出
+                </button>
+            </div>
+        </header>
+
+        <main class="pc28-main pc28-main-single">
+            <section class="panel">
+                <div class="tabs">
+                    <button class="tab-btn active" data-tab="predictions">预测记录</button>
+                    <button class="tab-btn" data-tab="draws">官方开奖</button>
+                    <button class="tab-btn" data-tab="ai">AI 原始输出</button>
+                </div>
+
+                <div class="tab-panel active" id="predictionsTab">
+                    <div class="panel-header compact">
+                        <div>
+                            <h3>全部预测记录</h3>
+                            <p class="panel-subtitle">保留状态和命中筛选，方便快速定位异常记录或高命中片段。</p>
+                        </div>
+                    </div>
+                    <div class="panel-actions table-filters">
+                        <select id="predictionStatusFilter" class="home-select">
+                            <option value="all">全部状态</option>
+                            <option value="pending">待开奖</option>
+                            <option value="settled">已结算</option>
+                            <option value="expired">过期未结算</option>
+                            <option value="failed">执行失败</option>
+                        </select>
+                        <select id="predictionOutcomeFilter" class="home-select">
+                            <option value="all">全部结果</option>
+                            <option value="hit">只看有命中</option>
+                            <option value="miss">只看全失手</option>
+                        </select>
+                    </div>
+                    <div class="table-wrap scroll-table-wrap predictions-table-wrap desktop-only">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>期号</th>
+                                    <th>状态</th>
+                                    <th>预测明细</th>
+                                    <th>开奖明细</th>
+                                    <th>命中明细</th>
+                                    <th>置信度</th>
+                                    <th>得分</th>
+                                    <th>结算时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="predictionsBody">
+                                <tr><td colspan="8" class="empty-cell">暂无预测记录</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="predictionsCards" class="mobile-only mobile-card-list">
+                        <div class="empty-panel">暂无预测记录</div>
+                    </div>
+                </div>
+
+                <div class="tab-panel" id="drawsTab">
+                    <div class="panel-header compact">
+                        <div>
+                            <h3>全部官方开奖</h3>
+                            <p class="panel-subtitle">按彩种展示开奖或赛程结果，默认最新在上。</p>
+                        </div>
+                    </div>
+                    <div class="table-wrap desktop-only">
+                        <table class="data-table">
+                            <thead>
+                                <tr id="drawTableHeadRow">
+                                    <th>期号</th>
+                                    <th>开奖号码</th>
+                                    <th>大/小</th>
+                                    <th>单/双</th>
+                                    <th>组合结果</th>
+                                    <th>开奖时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="drawsBody">
+                                <tr><td colspan="6" class="empty-cell">暂无官方开奖数据</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="drawsCards" class="mobile-only mobile-card-list">
+                        <div class="empty-panel">暂无官方开奖数据</div>
+                    </div>
+                </div>
+
+                <div class="tab-panel" id="aiTab">
+                    <div class="panel-header compact">
+                        <div>
+                            <h3>全部 AI 原始输出</h3>
+                            <p class="panel-subtitle">保留简要说明和原始响应，便于回看模型当时的判断过程。</p>
+                        </div>
+                    </div>
+                    <div id="aiLogs" class="ai-log-list">
+                        <div class="empty-panel">暂无 AI 输出记录</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/app.js?v={{ app_version }}"></script>
+</body>
+</html>

@@ -7,6 +7,47 @@ from tests.support import create_predictor, fresh_app_harness
 
 
 class UserSettingsApiTests(unittest.TestCase):
+    def test_dashboard_and_settings_pages_split_user_settings_sections(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28')
+
+            dashboard_response = client.get('/dashboard')
+            settings_response = client.get('/settings')
+            history_response = client.get(f'/predictors/{predictor_id}/history?tab=ai')
+            history_api_response = client.get(f'/api/predictors/{predictor_id}/history')
+            guest_settings_response = harness.app.test_client().get('/settings')
+
+            self.assertEqual(dashboard_response.status_code, 200)
+            self.assertEqual(settings_response.status_code, 200)
+            self.assertEqual(history_response.status_code, 200)
+            self.assertEqual(history_api_response.status_code, 200)
+            self.assertEqual(guest_settings_response.status_code, 302)
+            self.assertIn('/login', guest_settings_response.headers.get('Location', ''))
+
+            dashboard_html = dashboard_response.get_data(as_text=True)
+            settings_html = settings_response.get_data(as_text=True)
+            history_html = history_response.get_data(as_text=True)
+            history_payload = history_api_response.get_json()
+
+            self.assertIn('通知与自动化入口', dashboard_html)
+            self.assertIn('通知订阅', dashboard_html)
+            self.assertIn('当前方案订阅数', dashboard_html)
+            self.assertIn('查看全部', dashboard_html)
+            self.assertNotIn('保存通知发送方', dashboard_html)
+            self.assertNotIn('保存通知接收端', dashboard_html)
+            self.assertNotIn('最近通知投递', dashboard_html)
+
+            self.assertIn('通知与下注设置', settings_html)
+            self.assertIn('通知发送方', settings_html)
+            self.assertIn('通知接收端', settings_html)
+            self.assertIn('最近通知投递', settings_html)
+
+            self.assertIn('全部预测记录', history_html)
+            self.assertIn('全部官方开奖', history_html)
+            self.assertIn('全部 AI 原始输出', history_html)
+            self.assertEqual(history_payload['predictor']['id'], predictor_id)
+
     def test_bet_profile_crud_and_simulation_supports_bet_profile(self):
         with fresh_app_harness() as harness:
             client, user_id = harness.make_client()

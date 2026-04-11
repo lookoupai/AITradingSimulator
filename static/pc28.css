@@ -47,6 +47,14 @@ body.pc28-home {
     color: var(--text);
 }
 
+body[data-page="dashboard"] #notification-entry {
+    order: 98;
+}
+
+body[data-page="dashboard"] #notification-subscriptions {
+    order: 99;
+}
+
 body.pc28-auth {
     margin: 0;
     min-height: 100vh;
@@ -261,6 +269,17 @@ a {
     display: flex;
     flex-direction: column;
     gap: 20px;
+}
+
+.pc28-main-single {
+    margin-top: 20px;
+}
+
+.settings-section-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+    align-items: start;
 }
 
 .pc28-sidebar.sticky {
@@ -1548,6 +1567,10 @@ a {
     }
 
     .stats-detail-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .settings-section-grid {
         grid-template-columns: 1fr;
     }
 

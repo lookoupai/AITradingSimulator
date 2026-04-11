@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="/static/pc28.css?v={{ app_version }}">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 </head>
-<body class="pc28-theme">
+<body class="pc28-theme" data-page="dashboard">
     <div class="pc28-shell">
         <header class="pc28-header">
             <div>
@@ -29,6 +29,10 @@
                     <i class="bi bi-arrow-clockwise"></i>
                     刷新
                 </button>
+                <a class="btn ghost" href="/settings">
+                    <i class="bi bi-sliders"></i>
+                    设置
+                </a>
                 <a class="btn ghost" id="adminEntryBtn" href="/admin" style="display: none;">
                     <i class="bi bi-shield-lock"></i>
                     后台
@@ -73,248 +77,40 @@
             <main class="pc28-main">
                 <section class="stats-grid" id="statsGrid"></section>
 
-                <section class="panel">
+                <section class="panel" id="notification-entry">
                     <div class="panel-header">
                         <div>
-                            <h3>用户通知与下注设置</h3>
-                            <p class="panel-subtitle">把预测方案、通知接收端和下注资金策略拆开配置，后续可同时服务手动通知和自动下注。</p>
+                            <h3>通知与自动化入口</h3>
+                            <p class="panel-subtitle">低频的通知发送方、接收端、下注策略和投递排查已迁移到独立设置页，方案页只保留和当前方案直接相关的订阅绑定。</p>
+                        </div>
+                        <div class="panel-actions">
+                            <a class="btn primary" href="/settings">
+                                <i class="bi bi-sliders"></i>
+                                打开设置页
+                            </a>
                         </div>
                     </div>
-
-                    <div class="stats-detail-grid">
-                        <div class="panel-soft-section">
-                            <div class="panel-header compact">
-                                <div>
-                                    <h3>下注策略</h3>
-                                    <p class="panel-subtitle">用于理论收益模拟，也可作为后续自动下注或跟单策略基线。</p>
-                                </div>
-                                <div class="panel-actions mobile-stack">
-                                    <button class="btn ghost compact" id="resetBetProfileFormBtn">清空表单</button>
-                                </div>
-                            </div>
-                            <div class="form-grid">
-                                <input type="hidden" id="betProfileId">
-                                <label class="form-field">
-                                    <span>策略名称</span>
-                                    <input type="text" id="betProfileName" class="form-input" placeholder="例如：PC28 倍投 2 倍">
-                                </label>
-                                <label class="form-field">
-                                    <span>彩种</span>
-                                    <select id="betProfileLotteryType" class="form-input">
-                                        <option value="pc28">加拿大28 / PC28</option>
-                                        <option value="jingcai_football">竞彩足球</option>
-                                    </select>
-                                </label>
-                                <label class="form-field">
-                                    <span>模式</span>
-                                    <select id="betProfileMode" class="form-input">
-                                        <option value="flat">均注</option>
-                                        <option value="martingale">倍投</option>
-                                    </select>
-                                </label>
-                                <label class="form-field">
-                                    <span>基础注</span>
-                                    <input type="number" id="betProfileBaseStake" class="form-input" min="0.01" step="0.01" value="10">
-                                </label>
-                                <label class="form-field">
-                                    <span>倍数</span>
-                                    <input type="number" id="betProfileMultiplier" class="form-input" min="1.01" step="0.01" value="2">
-                                </label>
-                                <label class="form-field">
-                                    <span>最高追手</span>
-                                    <input type="number" id="betProfileMaxSteps" class="form-input" min="1" step="1" value="6">
-                                </label>
-                                <label class="form-field">
-                                    <span>启用状态</span>
-                                    <select id="betProfileEnabled" class="form-input">
-                                        <option value="true">启用</option>
-                                        <option value="false">停用</option>
-                                    </select>
-                                </label>
-                                <label class="form-field">
-                                    <span>默认策略</span>
-                                    <select id="betProfileIsDefault" class="form-input">
-                                        <option value="false">否</option>
-                                        <option value="true">是</option>
-                                    </select>
-                                </label>
-                            </div>
-                            <div class="panel-actions">
-                                <button class="btn primary compact" id="saveBetProfileBtn">保存下注策略</button>
-                            </div>
-                            <div class="table-wrap scroll-table-wrap desktop-only">
-                                <table class="data-table compact-table">
-                                    <thead>
-                                        <tr>
-                                            <th>名称</th>
-                                            <th>彩种</th>
-                                            <th>策略</th>
-                                            <th>状态</th>
-                                            <th>操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="betProfilesBody">
-                                        <tr><td colspan="5" class="empty-cell">暂无下注策略</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div id="betProfilesCards" class="mobile-only mobile-card-list">
-                                <div class="empty-panel">暂无下注策略</div>
-                            </div>
-                        </div>
-
-                        <div class="panel-soft-section">
-                            <div class="panel-header compact">
-                                <div>
-                                    <h3>通知发送方</h3>
-                                    <p class="panel-subtitle">可选配置你自己的 Telegram Bot，快彩场景下可减少和平台统一机器人抢发送队列。</p>
-                                </div>
-                                <div class="panel-actions mobile-stack">
-                                    <button class="btn ghost compact" id="resetSenderFormBtn">清空表单</button>
-                                </div>
-                            </div>
-                            <div class="form-grid">
-                                <input type="hidden" id="notificationSenderId">
-                                <label class="form-field">
-                                    <span>发送渠道</span>
-                                    <select id="notificationSenderChannelType" class="form-input">
-                                        <option value="telegram">Telegram</option>
-                                    </select>
-                                </label>
-                                <label class="form-field">
-                                    <span>发送方名称</span>
-                                    <input type="text" id="notificationSenderName" class="form-input" placeholder="例如：我的快彩 Bot">
-                                </label>
-                                <label class="form-field">
-                                    <span>Bot 名称</span>
-                                    <input type="text" id="notificationSenderBotName" class="form-input" placeholder="例如：my_fast_bot">
-                                </label>
-                                <label class="form-field">
-                                    <span>发送方状态</span>
-                                    <select id="notificationSenderStatus" class="form-input">
-                                        <option value="active">启用</option>
-                                        <option value="disabled">停用</option>
-                                    </select>
-                                </label>
-                                <label class="form-field span-2">
-                                    <span>Bot Token</span>
-                                    <input type="password" id="notificationSenderBotToken" class="form-input" placeholder="编辑时留空表示保持原值">
-                                    <small class="field-hint">你的 Telegram 机器人 Token。仅在选择“我的机器人”发送时使用。</small>
-                                </label>
-                                <label class="form-field">
-                                    <span>默认发送方</span>
-                                    <select id="notificationSenderIsDefault" class="form-input">
-                                        <option value="false">否</option>
-                                        <option value="true">是</option>
-                                    </select>
-                                </label>
-                                <label class="form-field">
-                                    <span>测试接收端标识</span>
-                                    <input type="text" id="notificationSenderTestChatId" class="form-input" placeholder="例如：123456789 或 @channel_name">
-                                </label>
-                            </div>
-                            <div class="panel-actions">
-                                <button class="btn primary compact" id="saveNotificationSenderBtn">保存通知发送方</button>
-                                <button class="btn ghost compact" id="testNotificationSenderBtn">测试我的机器人</button>
-                            </div>
-                            <div class="table-wrap scroll-table-wrap desktop-only">
-                                <table class="data-table compact-table">
-                                    <thead>
-                                        <tr>
-                                            <th>名称</th>
-                                            <th>渠道</th>
-                                            <th>Bot 名称</th>
-                                            <th>状态</th>
-                                            <th>操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="notificationSendersBody">
-                                        <tr><td colspan="5" class="empty-cell">暂无通知发送方</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div id="notificationSendersCards" class="mobile-only mobile-card-list">
-                                <div class="empty-panel">暂无通知发送方</div>
-                            </div>
-                        </div>
-
-                        <div class="panel-soft-section">
-                            <div class="panel-header compact">
-                                <div>
-                                    <h3>通知接收端</h3>
-                                    <p class="panel-subtitle">第一版先配置 Telegram 接收端，后续可以扩展更多渠道。</p>
-                                </div>
-                                <div class="panel-actions mobile-stack">
-                                    <button class="btn ghost compact" id="resetEndpointFormBtn">清空表单</button>
-                                </div>
-                            </div>
-                            <div class="form-grid">
-                                <input type="hidden" id="notificationEndpointId">
-                                <label class="form-field">
-                                    <span>接收渠道</span>
-                                    <select id="notificationEndpointChannelType" class="form-input">
-                                        <option value="telegram">Telegram</option>
-                                    </select>
-                                </label>
-                                <label class="form-field">
-                                    <span>接收端标识</span>
-                                    <input type="text" id="notificationEndpointKey" class="form-input" placeholder="例如：123456789 或 @channel_name">
-                                </label>
-                                <label class="form-field">
-                                    <span>备注名称</span>
-                                    <input type="text" id="notificationEndpointLabel" class="form-input" placeholder="例如：我的手机 Telegram">
-                                </label>
-                                <label class="form-field">
-                                    <span>聊天类型</span>
-                                    <select id="notificationEndpointChatType" class="form-input">
-                                        <option value="private">私聊</option>
-                                        <option value="group">群组</option>
-                                        <option value="channel">频道</option>
-                                    </select>
-                                </label>
-                                <label class="form-field">
-                                    <span>接收端状态</span>
-                                    <select id="notificationEndpointStatus" class="form-input">
-                                        <option value="active">启用</option>
-                                        <option value="disabled">停用</option>
-                                    </select>
-                                </label>
-                                <label class="form-field">
-                                    <span>默认接收端</span>
-                                    <select id="notificationEndpointIsDefault" class="form-input">
-                                        <option value="false">否</option>
-                                        <option value="true">是</option>
-                                    </select>
-                                </label>
-                            </div>
-                            <div class="panel-actions">
-                                <button class="btn primary compact" id="saveNotificationEndpointBtn">保存通知接收端</button>
-                                <button class="btn ghost compact" id="testNotificationEndpointBtn">测试接收端</button>
-                            </div>
-                            <div class="table-wrap scroll-table-wrap desktop-only">
-                                <table class="data-table compact-table">
-                                    <thead>
-                                        <tr>
-                                            <th>名称</th>
-                                            <th>渠道</th>
-                                            <th>标识</th>
-                                            <th>状态</th>
-                                            <th>操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="notificationEndpointsBody">
-                                        <tr><td colspan="5" class="empty-cell">暂无通知接收端</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div id="notificationEndpointsCards" class="mobile-only mobile-card-list">
-                                <div class="empty-panel">暂无通知接收端</div>
-                            </div>
-                        </div>
+                    <div class="summary-grid settings-summary-grid">
+                        <article class="stat-card">
+                            <span class="stat-label">下注策略</span>
+                            <strong class="stat-value" id="settingsSummaryBetProfiles">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">通知发送方</span>
+                            <strong class="stat-value" id="settingsSummarySenders">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">通知接收端</span>
+                            <strong class="stat-value" id="settingsSummaryEndpoints">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">启用中订阅</span>
+                            <strong class="stat-value" id="settingsSummarySubscriptions">0</strong>
+                        </article>
                     </div>
                 </section>
 
-                <section class="panel">
+                <section class="panel" id="notification-subscriptions">
                     <div class="panel-header">
                         <div>
                             <h3>通知订阅</h3>
@@ -323,6 +119,39 @@
                         <div class="panel-actions mobile-stack">
                             <button class="btn ghost compact" id="resetSubscriptionFormBtn">清空表单</button>
                         </div>
+                    </div>
+                    <div class="metric-hint">
+                        <div class="metric-hint-head">
+                            <div>
+                                <strong>这里仅处理方案级绑定</strong>
+                                <span class="metric-hint-alias">发送方、接收端、下注策略本身请到独立设置页维护。</span>
+                            </div>
+                            <a class="btn ghost compact" href="/settings">
+                                <i class="bi bi-box-arrow-up-right"></i>
+                                去设置页
+                            </a>
+                        </div>
+                    </div>
+                    <div class="summary-grid settings-summary-grid">
+                        <article class="stat-card">
+                            <span class="stat-label">当前方案订阅数</span>
+                            <strong class="stat-value" id="currentPredictorSubscriptionCount">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">仅通知</span>
+                            <strong class="stat-value" id="currentPredictorNotifyOnlyCount">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">通知 + 下注</span>
+                            <strong class="stat-value" id="currentPredictorFollowBetCount">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">启用中</span>
+                            <strong class="stat-value" id="currentPredictorEnabledSubscriptionCount">0</strong>
+                        </article>
+                    </div>
+                    <div id="currentPredictorSubscriptionSummary" class="prediction-summary empty-panel">
+                        当前方案暂无通知订阅。
                     </div>
                     <div class="form-grid">
                         <input type="hidden" id="notificationSubscriptionId">
@@ -399,35 +228,6 @@
                     </div>
                     <div id="notificationSubscriptionsCards" class="mobile-only mobile-card-list">
                         <div class="empty-panel">暂无通知订阅</div>
-                    </div>
-                </section>
-
-                <section class="panel">
-                    <div class="panel-header">
-                        <div>
-                            <h3>最近通知投递</h3>
-                            <p class="panel-subtitle">用于后续排查 Telegram 推送是否真正发送成功。</p>
-                        </div>
-                    </div>
-                    <div class="table-wrap scroll-table-wrap desktop-only">
-                        <table class="data-table compact-table">
-                            <thead>
-                                <tr>
-                                    <th>方案</th>
-                                    <th>接收端</th>
-                                    <th>事件</th>
-                                    <th>记录键</th>
-                                    <th>状态</th>
-                                    <th>时间</th>
-                                </tr>
-                            </thead>
-                            <tbody id="notificationDeliveriesBody">
-                                <tr><td colspan="6" class="empty-cell">暂无通知投递记录</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <div id="notificationDeliveriesCards" class="mobile-only mobile-card-list">
-                        <div class="empty-panel">暂无通知投递记录</div>
                     </div>
                 </section>
 
@@ -611,6 +411,18 @@
                     </div>
 
                     <div class="tab-panel active" id="predictionsTab">
+                        <div class="panel-header compact">
+                            <div>
+                                <h3>预测记录</h3>
+                                <p class="panel-subtitle">默认只展示最新 10 条，更多内容请进入独立页面查看。</p>
+                            </div>
+                            <div class="panel-actions">
+                                <a class="btn ghost compact" id="viewAllPredictionsLink" href="/dashboard">
+                                    <i class="bi bi-box-arrow-up-right"></i>
+                                    查看全部
+                                </a>
+                            </div>
+                        </div>
                         <div class="panel-actions table-filters">
                             <select id="predictionStatusFilter" class="home-select">
                                 <option value="all">全部状态</option>
@@ -650,6 +462,18 @@
                     </div>
 
                     <div class="tab-panel" id="drawsTab">
+                        <div class="panel-header compact">
+                            <div>
+                                <h3>官方开奖</h3>
+                                <p class="panel-subtitle">默认只展示最新 10 条，更多内容请进入独立页面查看。</p>
+                            </div>
+                            <div class="panel-actions">
+                                <a class="btn ghost compact" id="viewAllDrawsLink" href="/dashboard">
+                                    <i class="bi bi-box-arrow-up-right"></i>
+                                    查看全部
+                                </a>
+                            </div>
+                        </div>
                         <div class="table-wrap desktop-only">
                             <table class="data-table">
                                 <thead>
@@ -673,6 +497,18 @@
                     </div>
 
                     <div class="tab-panel" id="aiTab">
+                        <div class="panel-header compact">
+                            <div>
+                                <h3>AI 原始输出</h3>
+                                <p class="panel-subtitle">默认只展示最新 10 条，更多内容请进入独立页面查看。</p>
+                            </div>
+                            <div class="panel-actions">
+                                <a class="btn ghost compact" id="viewAllAILogsLink" href="/dashboard">
+                                    <i class="bi bi-box-arrow-up-right"></i>
+                                    查看全部
+                                </a>
+                            </div>
+                        </div>
                         <div id="aiLogs" class="ai-log-list">
                             <div class="empty-panel">暂无 AI 输出记录</div>
                         </div>

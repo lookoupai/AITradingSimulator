@@ -900,18 +900,28 @@ class Database:
         conn.commit()
         conn.close()
 
-    def get_recent_draws(self, lottery_type: str = 'pc28', limit: int = 20) -> list[dict]:
+    def get_recent_draws(self, lottery_type: str = 'pc28', limit: Optional[int] = 20) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            '''
-            SELECT * FROM lottery_draws
-            WHERE lottery_type = ?
-            ORDER BY CAST(issue_no AS INTEGER) DESC
-            LIMIT ?
-            ''',
-            (lottery_type, limit)
-        )
+        if limit is None:
+            cursor.execute(
+                '''
+                SELECT * FROM lottery_draws
+                WHERE lottery_type = ?
+                ORDER BY CAST(issue_no AS INTEGER) DESC
+                ''',
+                (lottery_type,)
+            )
+        else:
+            cursor.execute(
+                '''
+                SELECT * FROM lottery_draws
+                WHERE lottery_type = ?
+                ORDER BY CAST(issue_no AS INTEGER) DESC
+                LIMIT ?
+                ''',
+                (lottery_type, limit)
+            )
         rows = cursor.fetchall()
         conn.close()
         return [self._prepare_draw(row) for row in rows]
@@ -1033,7 +1043,7 @@ class Database:
     def get_recent_lottery_events(
         self,
         lottery_type: str,
-        limit: int = 20,
+        limit: int | None = 20,
         batch_key: str | None = None,
         source_provider: str | None = None
     ) -> list[dict]:
@@ -1050,8 +1060,10 @@ class Database:
         if source_provider:
             query += ' AND source_provider = ?'
             values.append(source_provider)
-        query += ' ORDER BY event_time DESC, updated_at DESC LIMIT ?'
-        values.append(limit)
+        query += ' ORDER BY event_time DESC, updated_at DESC'
+        if limit is not None:
+            query += ' LIMIT ?'
+            values.append(limit)
         cursor.execute(query, values)
         rows = cursor.fetchall()
         conn.close()
@@ -1367,43 +1379,77 @@ class Database:
         conn.close()
         return [self._prepare_prediction_item(row) for row in rows]
 
-    def get_recent_prediction_items(self, predictor_id: int, lottery_type: str | None = None, limit: int = 100) -> list[dict]:
+    def get_recent_prediction_items(self, predictor_id: int, lottery_type: str | None = None, limit: int | None = 100) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
         if lottery_type:
-            cursor.execute(
-                '''
-                SELECT
-                    i.*,
-                    r.created_at AS run_created_at,
-                    r.updated_at AS run_updated_at,
-                    r.raw_response AS run_raw_response,
-                    r.error_message AS run_error_message
-                FROM prediction_items i
-                JOIN prediction_runs r ON r.id = i.run_id
-                WHERE i.predictor_id = ? AND i.lottery_type = ?
-                ORDER BY i.created_at DESC, i.id DESC
-                LIMIT ?
-                ''',
-                (predictor_id, normalize_lottery_type(lottery_type), limit)
-            )
+            if limit is None:
+                cursor.execute(
+                    '''
+                    SELECT
+                        i.*,
+                        r.created_at AS run_created_at,
+                        r.updated_at AS run_updated_at,
+                        r.raw_response AS run_raw_response,
+                        r.error_message AS run_error_message
+                    FROM prediction_items i
+                    JOIN prediction_runs r ON r.id = i.run_id
+                    WHERE i.predictor_id = ? AND i.lottery_type = ?
+                    ORDER BY i.created_at DESC, i.id DESC
+                    ''',
+                    (predictor_id, normalize_lottery_type(lottery_type))
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT
+                        i.*,
+                        r.created_at AS run_created_at,
+                        r.updated_at AS run_updated_at,
+                        r.raw_response AS run_raw_response,
+                        r.error_message AS run_error_message
+                    FROM prediction_items i
+                    JOIN prediction_runs r ON r.id = i.run_id
+                    WHERE i.predictor_id = ? AND i.lottery_type = ?
+                    ORDER BY i.created_at DESC, i.id DESC
+                    LIMIT ?
+                    ''',
+                    (predictor_id, normalize_lottery_type(lottery_type), limit)
+                )
         else:
-            cursor.execute(
-                '''
-                SELECT
-                    i.*,
-                    r.created_at AS run_created_at,
-                    r.updated_at AS run_updated_at,
-                    r.raw_response AS run_raw_response,
-                    r.error_message AS run_error_message
-                FROM prediction_items i
-                JOIN prediction_runs r ON r.id = i.run_id
-                WHERE i.predictor_id = ?
-                ORDER BY i.created_at DESC, i.id DESC
-                LIMIT ?
-                ''',
-                (predictor_id, limit)
-            )
+            if limit is None:
+                cursor.execute(
+                    '''
+                    SELECT
+                        i.*,
+                        r.created_at AS run_created_at,
+                        r.updated_at AS run_updated_at,
+                        r.raw_response AS run_raw_response,
+                        r.error_message AS run_error_message
+                    FROM prediction_items i
+                    JOIN prediction_runs r ON r.id = i.run_id
+                    WHERE i.predictor_id = ?
+                    ORDER BY i.created_at DESC, i.id DESC
+                    ''',
+                    (predictor_id,)
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT
+                        i.*,
+                        r.created_at AS run_created_at,
+                        r.updated_at AS run_updated_at,
+                        r.raw_response AS run_raw_response,
+                        r.error_message AS run_error_message
+                    FROM prediction_items i
+                    JOIN prediction_runs r ON r.id = i.run_id
+                    WHERE i.predictor_id = ?
+                    ORDER BY i.created_at DESC, i.id DESC
+                    LIMIT ?
+                    ''',
+                    (predictor_id, limit)
+                )
         rows = cursor.fetchall()
         conn.close()
         return [self._prepare_prediction_item(row) for row in rows]

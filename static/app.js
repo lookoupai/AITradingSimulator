@@ -169,6 +169,9 @@ const LOTTERY_UI_CONFIG = {
 
 class PredictionApp {
     constructor() {
+        this.pageMode = document.body?.dataset?.page || 'dashboard';
+        this.historyPredictorId = Number(document.body?.dataset?.predictorId || 0);
+        this.activeContentTab = document.body?.dataset?.initialTab || 'predictions';
         this.currentUser = null;
         this.currentPredictorId = null;
         this.currentPredictor = null;
@@ -206,143 +209,185 @@ class PredictionApp {
         this.init();
     }
 
+    isDashboardPage() {
+        return this.pageMode === 'dashboard';
+    }
+
+    isSettingsPage() {
+        return this.pageMode === 'settings';
+    }
+
+    isHistoryPage() {
+        return this.pageMode === 'predictor-history';
+    }
+
+    getElement(id) {
+        return document.getElementById(id);
+    }
+
+    bindEvent(id, eventName, handler) {
+        const element = this.getElement(id);
+        if (element) {
+            element.addEventListener(eventName, handler);
+        }
+        return element;
+    }
+
     async init() {
         this.applyTheme();
         this.initEventListeners();
         await this.checkAuth();
-        await this.refresh(true);
+        if (this.isSettingsPage()) {
+            await this.loadUserSettings();
+            return;
+        }
+        if (this.isHistoryPage()) {
+            await this.loadPredictorHistory();
+            return;
+        }
+        await this.refresh(true, true);
         this.refreshTimer = setInterval(() => this.refresh(), 10000);
     }
 
     initEventListeners() {
-        document.getElementById('themeToggle').addEventListener('click', () => this.toggleTheme());
-        document.getElementById('refreshBtn').addEventListener('click', () => this.refresh(true));
-        document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
-        document.getElementById('addPredictorBtn').addEventListener('click', () => this.openCreateModal());
-        document.getElementById('closeModalBtn').addEventListener('click', () => this.hideModal());
-        document.getElementById('cancelModalBtn').addEventListener('click', () => this.hideModal());
-        document.getElementById('savePredictorBtn').addEventListener('click', () => this.submitPredictor());
-        document.getElementById('testPredictorBtn').addEventListener('click', () => this.testPredictorConfig());
-        document.getElementById('checkPromptBtn').addEventListener('click', () => this.checkPromptAssistant());
-        document.getElementById('optimizePromptBtn').addEventListener('click', () => this.optimizePromptAssistant());
-        document.getElementById('applyOptimizedPromptBtn').addEventListener('click', () => this.applyOptimizedPrompt());
-        document.getElementById('buildExternalPromptBtn').addEventListener('click', () => this.buildExternalPromptTemplate());
-        document.getElementById('copyExternalPromptBtn').addEventListener('click', () => this.copyExternalPromptTemplate());
-        document.getElementById('predictNowBtn').addEventListener('click', () => this.predictNow());
-        document.getElementById('editPredictorBtn').addEventListener('click', () => this.openEditModal());
-        document.getElementById('togglePredictorBtn').addEventListener('click', () => this.toggleCurrentPredictor());
-        document.getElementById('footballManualSettleBtn').addEventListener('click', () => this.manualSettleFootball());
-        document.getElementById('footballReplayBtn').addEventListener('click', () => this.replayFootballScheduleByDate());
-        document.getElementById('togglePresetListBtn').addEventListener('click', () => this.togglePresetList());
-        document.getElementById('statsMetricView').addEventListener('change', (event) => {
+        this.bindEvent('themeToggle', 'click', () => this.toggleTheme());
+        this.bindEvent('refreshBtn', 'click', async () => {
+            if (this.isSettingsPage()) {
+                await this.loadUserSettings();
+                return;
+            }
+            if (this.isHistoryPage()) {
+                await this.loadPredictorHistory();
+                return;
+            }
+            await this.refresh(true, true);
+        });
+        this.bindEvent('logoutBtn', 'click', () => this.logout());
+        this.bindEvent('addPredictorBtn', 'click', () => this.openCreateModal());
+        this.bindEvent('closeModalBtn', 'click', () => this.hideModal());
+        this.bindEvent('cancelModalBtn', 'click', () => this.hideModal());
+        this.bindEvent('savePredictorBtn', 'click', () => this.submitPredictor());
+        this.bindEvent('testPredictorBtn', 'click', () => this.testPredictorConfig());
+        this.bindEvent('checkPromptBtn', 'click', () => this.checkPromptAssistant());
+        this.bindEvent('optimizePromptBtn', 'click', () => this.optimizePromptAssistant());
+        this.bindEvent('applyOptimizedPromptBtn', 'click', () => this.applyOptimizedPrompt());
+        this.bindEvent('buildExternalPromptBtn', 'click', () => this.buildExternalPromptTemplate());
+        this.bindEvent('copyExternalPromptBtn', 'click', () => this.copyExternalPromptTemplate());
+        this.bindEvent('predictNowBtn', 'click', () => this.predictNow());
+        this.bindEvent('editPredictorBtn', 'click', () => this.openEditModal());
+        this.bindEvent('togglePredictorBtn', 'click', () => this.toggleCurrentPredictor());
+        this.bindEvent('footballManualSettleBtn', 'click', () => this.manualSettleFootball());
+        this.bindEvent('footballReplayBtn', 'click', () => this.replayFootballScheduleByDate());
+        this.bindEvent('togglePresetListBtn', 'click', () => this.togglePresetList());
+        this.bindEvent('statsMetricView', 'change', (event) => {
             this.selectedStatsMetric = event.target.value;
             if (this.currentStats) {
                 this.renderStats(this.currentStats);
             }
         });
-        document.getElementById('lotteryType').addEventListener('change', (event) => {
+        this.bindEvent('lotteryType', 'change', (event) => {
             this.saveCurrentFormState(this.formLotteryType);
             this.formLotteryType = event.target.value || 'pc28';
             this.updateLotteryForm();
         });
-        document.getElementById('primaryMetric').addEventListener('change', () => this.syncProfitMetricOptions());
+        this.bindEvent('primaryMetric', 'change', () => this.syncProfitMetricOptions());
         ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo'].forEach((id) => {
-            document.getElementById(id).addEventListener('change', () => this.syncProfitMetricOptions());
+            this.bindEvent(id, 'change', () => this.syncProfitMetricOptions());
         });
-        document.getElementById('profitRuleId').addEventListener('change', () => this.saveCurrentFormState());
-        document.getElementById('profitDefaultMetric').addEventListener('change', () => this.saveCurrentFormState());
-        document.getElementById('predictionStatusFilter').addEventListener('change', (event) => {
+        this.bindEvent('profitRuleId', 'change', () => this.saveCurrentFormState());
+        this.bindEvent('profitDefaultMetric', 'change', () => this.saveCurrentFormState());
+        this.bindEvent('predictionStatusFilter', 'change', (event) => {
             this.predictionStatusFilter = event.target.value;
             this.renderPredictionsTable(this.currentPredictions || []);
         });
-        document.getElementById('predictionOutcomeFilter').addEventListener('change', (event) => {
+        this.bindEvent('predictionOutcomeFilter', 'change', (event) => {
             this.predictionOutcomeFilter = event.target.value;
             this.renderPredictionsTable(this.currentPredictions || []);
         });
-        document.getElementById('profitRuleView').addEventListener('change', (event) => {
+        this.bindEvent('profitRuleView', 'change', (event) => {
             this.selectedProfitRuleId = event.target.value;
             this.loadProfitSimulation();
         });
-        document.getElementById('profitMetricView').addEventListener('change', (event) => {
+        this.bindEvent('profitMetricView', 'change', (event) => {
             this.selectedProfitMetric = event.target.value;
             this.loadProfitSimulation();
         });
-        document.getElementById('profitPeriodView').addEventListener('change', (event) => {
+        this.bindEvent('profitPeriodView', 'change', (event) => {
             this.selectedProfitPeriodKey = event.target.value;
             this.loadProfitSimulation();
         });
-        document.getElementById('profitBetProfileView').addEventListener('change', (event) => {
+        this.bindEvent('profitBetProfileView', 'change', (event) => {
             this.selectedProfitBetProfileId = event.target.value || '';
             this.loadProfitSimulation();
         });
-        document.getElementById('profitBetModeView').addEventListener('change', (event) => {
+        this.bindEvent('profitBetModeView', 'change', (event) => {
             this.selectedProfitBetMode = event.target.value;
             this.syncProfitBetControlState();
             this.loadProfitSimulation();
         });
-        document.getElementById('profitBaseStakeView').addEventListener('change', (event) => {
+        this.bindEvent('profitBaseStakeView', 'change', (event) => {
             this.selectedProfitBaseStake = this.normalizePositiveNumber(event.target.value, DEFAULT_PROFIT_BASE_STAKE, 0.01);
             event.target.value = String(this.selectedProfitBaseStake);
             this.loadProfitSimulation();
         });
-        document.getElementById('profitMultiplierView').addEventListener('change', (event) => {
+        this.bindEvent('profitMultiplierView', 'change', (event) => {
             this.selectedProfitMultiplier = this.normalizePositiveNumber(event.target.value, DEFAULT_PROFIT_MULTIPLIER, 1.01);
             event.target.value = String(this.selectedProfitMultiplier);
             this.loadProfitSimulation();
         });
-        document.getElementById('profitMaxStepsView').addEventListener('change', (event) => {
+        this.bindEvent('profitMaxStepsView', 'change', (event) => {
             this.selectedProfitMaxSteps = this.normalizePositiveInt(event.target.value, DEFAULT_PROFIT_MAX_STEPS, 1, 12);
             event.target.value = String(this.selectedProfitMaxSteps);
             this.loadProfitSimulation();
         });
-        document.getElementById('profitOrderView').addEventListener('change', (event) => {
+        this.bindEvent('profitOrderView', 'change', (event) => {
             this.selectedProfitOrder = event.target.value;
             this.loadProfitSimulation();
         });
-        document.getElementById('profitOddsProfileView').addEventListener('change', (event) => {
+        this.bindEvent('profitOddsProfileView', 'change', (event) => {
             this.selectedProfitOddsProfile = event.target.value;
             this.loadProfitSimulation();
         });
-        document.getElementById('saveBetProfileBtn').addEventListener('click', () => this.submitBetProfile());
-        document.getElementById('resetBetProfileFormBtn').addEventListener('click', () => this.resetBetProfileForm());
-        document.getElementById('betProfileMode').addEventListener('change', () => this.syncBetProfileModeState());
-        document.getElementById('betProfilesBody').addEventListener('click', (event) => this.handleBetProfileTableClick(event));
-        const betProfileCards = document.getElementById('betProfilesCards');
+        this.bindEvent('saveBetProfileBtn', 'click', () => this.submitBetProfile());
+        this.bindEvent('resetBetProfileFormBtn', 'click', () => this.resetBetProfileForm());
+        this.bindEvent('betProfileMode', 'change', () => this.syncBetProfileModeState());
+        this.bindEvent('betProfilesBody', 'click', (event) => this.handleBetProfileTableClick(event));
+        const betProfileCards = this.getElement('betProfilesCards');
         if (betProfileCards) {
             betProfileCards.addEventListener('click', (event) => this.handleBetProfileTableClick(event));
         }
-        document.getElementById('saveNotificationSenderBtn').addEventListener('click', () => this.submitNotificationSender());
-        document.getElementById('testNotificationSenderBtn').addEventListener('click', () => this.testNotificationSender());
-        document.getElementById('resetSenderFormBtn').addEventListener('click', () => this.resetNotificationSenderForm());
-        document.getElementById('notificationSendersBody').addEventListener('click', (event) => this.handleNotificationSenderTableClick(event));
-        const notificationSenderCards = document.getElementById('notificationSendersCards');
+        this.bindEvent('saveNotificationSenderBtn', 'click', () => this.submitNotificationSender());
+        this.bindEvent('testNotificationSenderBtn', 'click', () => this.testNotificationSender());
+        this.bindEvent('resetSenderFormBtn', 'click', () => this.resetNotificationSenderForm());
+        this.bindEvent('notificationSendersBody', 'click', (event) => this.handleNotificationSenderTableClick(event));
+        const notificationSenderCards = this.getElement('notificationSendersCards');
         if (notificationSenderCards) {
             notificationSenderCards.addEventListener('click', (event) => this.handleNotificationSenderTableClick(event));
         }
-        document.getElementById('saveNotificationEndpointBtn').addEventListener('click', () => this.submitNotificationEndpoint());
-        document.getElementById('testNotificationEndpointBtn').addEventListener('click', () => this.testNotificationEndpoint());
-        document.getElementById('resetEndpointFormBtn').addEventListener('click', () => this.resetNotificationEndpointForm());
-        document.getElementById('notificationEndpointsBody').addEventListener('click', (event) => this.handleNotificationEndpointTableClick(event));
-        const notificationEndpointCards = document.getElementById('notificationEndpointsCards');
+        this.bindEvent('saveNotificationEndpointBtn', 'click', () => this.submitNotificationEndpoint());
+        this.bindEvent('testNotificationEndpointBtn', 'click', () => this.testNotificationEndpoint());
+        this.bindEvent('resetEndpointFormBtn', 'click', () => this.resetNotificationEndpointForm());
+        this.bindEvent('notificationEndpointsBody', 'click', (event) => this.handleNotificationEndpointTableClick(event));
+        const notificationEndpointCards = this.getElement('notificationEndpointsCards');
         if (notificationEndpointCards) {
             notificationEndpointCards.addEventListener('click', (event) => this.handleNotificationEndpointTableClick(event));
         }
-        document.getElementById('saveNotificationSubscriptionBtn').addEventListener('click', () => this.submitNotificationSubscription());
-        document.getElementById('resetSubscriptionFormBtn').addEventListener('click', () => this.resetNotificationSubscriptionForm());
-        document.getElementById('notificationSubscriptionPredictorId').addEventListener('change', () => this.syncSubscriptionBetProfileOptions());
-        document.getElementById('notificationSubscriptionSenderMode').addEventListener('change', () => this.syncSubscriptionSenderState());
-        document.getElementById('notificationSubscriptionDeliveryMode').addEventListener('change', () => this.syncSubscriptionBetProfileState());
-        document.getElementById('notificationSubscriptionsBody').addEventListener('click', (event) => this.handleNotificationSubscriptionTableClick(event));
-        const notificationSubscriptionCards = document.getElementById('notificationSubscriptionsCards');
+        this.bindEvent('saveNotificationSubscriptionBtn', 'click', () => this.submitNotificationSubscription());
+        this.bindEvent('resetSubscriptionFormBtn', 'click', () => this.resetNotificationSubscriptionForm());
+        this.bindEvent('notificationSubscriptionPredictorId', 'change', () => this.syncSubscriptionBetProfileOptions());
+        this.bindEvent('notificationSubscriptionSenderMode', 'change', () => this.syncSubscriptionSenderState());
+        this.bindEvent('notificationSubscriptionDeliveryMode', 'change', () => this.syncSubscriptionBetProfileState());
+        this.bindEvent('notificationSubscriptionsBody', 'click', (event) => this.handleNotificationSubscriptionTableClick(event));
+        const notificationSubscriptionCards = this.getElement('notificationSubscriptionsCards');
         if (notificationSubscriptionCards) {
             notificationSubscriptionCards.addEventListener('click', (event) => this.handleNotificationSubscriptionTableClick(event));
         }
-        document.getElementById('notificationDeliveriesBody').addEventListener('click', (event) => this.handleNotificationDeliveryTableClick(event));
-        const notificationDeliveryCards = document.getElementById('notificationDeliveriesCards');
+        this.bindEvent('notificationDeliveriesBody', 'click', (event) => this.handleNotificationDeliveryTableClick(event));
+        const notificationDeliveryCards = this.getElement('notificationDeliveriesCards');
         if (notificationDeliveryCards) {
             notificationDeliveryCards.addEventListener('click', (event) => this.handleNotificationDeliveryTableClick(event));
         }
-        document.getElementById('publicSharePanel').addEventListener('click', (event) => {
+        this.bindEvent('publicSharePanel', 'click', (event) => {
             const button = event.target.closest('[data-action="copy-public-url"]');
             if (!button) {
                 return;
@@ -353,23 +398,35 @@ class PredictionApp {
         document.querySelectorAll('.tab-btn').forEach((button) => {
             button.addEventListener('click', (event) => this.switchTab(event.currentTarget.dataset.tab));
         });
-        window.addEventListener('resize', this.handleChartResizeBound);
-        window.addEventListener('orientationchange', this.handleChartResizeBound);
+        if (this.isDashboardPage()) {
+            window.addEventListener('resize', this.handleChartResizeBound);
+            window.addEventListener('orientationchange', this.handleChartResizeBound);
+        }
 
-        document.getElementById('predictorModal').addEventListener('click', (event) => {
+        this.bindEvent('predictorModal', 'click', (event) => {
             if (event.target.id === 'predictorModal') {
                 this.hideModal();
             }
         });
 
-        this.renderPresetCards();
-        this.enforceNumberTarget();
-        this.updateLotteryForm();
-        this.resetBetProfileForm();
-        this.resetNotificationSenderForm();
-        this.resetNotificationEndpointForm();
-        this.resetNotificationSubscriptionForm();
-        const footballReplayDate = document.getElementById('footballReplayDate');
+        if (this.getElement('lotteryType')) {
+            this.renderPresetCards();
+            this.enforceNumberTarget();
+            this.updateLotteryForm();
+        }
+        if (this.getElement('betProfileId')) {
+            this.resetBetProfileForm();
+        }
+        if (this.getElement('notificationSenderId')) {
+            this.resetNotificationSenderForm();
+        }
+        if (this.getElement('notificationEndpointId')) {
+            this.resetNotificationEndpointForm();
+        }
+        if (this.getElement('notificationSubscriptionId')) {
+            this.resetNotificationSubscriptionForm();
+        }
+        const footballReplayDate = this.getElement('footballReplayDate');
         if (footballReplayDate && !footballReplayDate.value) {
             footballReplayDate.value = this.getTodayDateValue();
         }
@@ -666,21 +723,56 @@ class PredictionApp {
         }
 
         this.currentUser = await response.json();
-        document.getElementById('userInfo').textContent = `当前用户：${this.currentUser.username}`;
-        const adminEntry = document.getElementById('adminEntryBtn');
+        const userInfo = this.getElement('userInfo');
+        if (userInfo) {
+            userInfo.textContent = `当前用户：${this.currentUser.username}`;
+        }
+        const adminEntry = this.getElement('adminEntryBtn');
         if (adminEntry) {
             adminEntry.style.display = this.currentUser.is_admin ? 'inline-flex' : 'none';
         }
     }
 
-    async refresh(forceReloadPredictorList = false) {
+    async refresh(forceReloadPredictorList = false, reloadUserSettings = false) {
         await this.loadPredictors(forceReloadPredictorList);
-        await this.loadUserSettings();
+        if (reloadUserSettings) {
+            await this.loadUserSettings();
+        }
         if (this.currentPredictorId) {
             await this.loadPredictorDashboard(this.currentPredictorId);
         } else {
             await this.loadOverview();
             this.renderEmptyPredictorState();
+        }
+    }
+
+    async loadPredictorHistory() {
+        if (!this.historyPredictorId) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/predictors/${this.historyPredictorId}/history`, {
+                credentials: 'include'
+            });
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '加载方案完整记录失败');
+            }
+            this.currentPredictorId = this.historyPredictorId;
+            this.currentPredictor = data.predictor || null;
+            this.currentLotteryType = data.predictor?.lottery_type || 'pc28';
+            this.currentPredictions = data.recent_predictions || [];
+            this.renderPredictionsTable(this.currentPredictions);
+            this.renderDrawsTable(data.recent_draws || []);
+            this.renderAILogs(this.currentPredictions);
+            this.updateHistoryLinks();
+            this.switchTab(this.activeContentTab || 'predictions');
+        } catch (error) {
+            console.error('Failed to load predictor history:', error);
         }
     }
 
@@ -837,6 +929,7 @@ class PredictionApp {
             this.notificationEndpoints = Array.isArray(endpoints) ? endpoints : [];
             this.notificationSubscriptions = Array.isArray(subscriptions) ? subscriptions : [];
             this.notificationDeliveries = Array.isArray(deliveries) ? deliveries : [];
+            this.renderUserSettingsSummary();
             this.renderBetProfiles(this.betProfiles);
             this.renderNotificationSenders(this.notificationSenders);
             this.renderNotificationEndpoints(this.notificationEndpoints);
@@ -853,7 +946,62 @@ class PredictionApp {
         }
     }
 
+    renderUserSettingsSummary() {
+        const activeSubscriptions = (this.notificationSubscriptions || []).filter((item) => item.enabled).length;
+        const mappings = [
+            ['settingsSummaryBetProfiles', this.betProfiles.length],
+            ['settingsSummarySenders', this.notificationSenders.length],
+            ['settingsSummaryEndpoints', this.notificationEndpoints.length],
+            ['settingsSummarySubscriptions', activeSubscriptions],
+            ['settingsSummaryDeliveries', this.notificationDeliveries.length]
+        ];
+        mappings.forEach(([id, value]) => {
+            const element = this.getElement(id);
+            if (element) {
+                element.textContent = String(value);
+            }
+        });
+    }
+
+    getPreviewLimit() {
+        return this.isDashboardPage() ? 10 : null;
+    }
+
+    getPreviewItems(items, limit = this.getPreviewLimit()) {
+        if (!Array.isArray(items)) {
+            return [];
+        }
+        if (!limit || limit <= 0) {
+            return [...items];
+        }
+        return items.slice(0, limit);
+    }
+
+    updateHistoryLinks() {
+        const mappings = [
+            ['viewAllPredictionsLink', 'predictions'],
+            ['viewAllDrawsLink', 'draws'],
+            ['viewAllAILogsLink', 'ai']
+        ];
+        mappings.forEach(([id, tab]) => {
+            const element = this.getElement(id);
+            if (!element) {
+                return;
+            }
+            if (!this.currentPredictorId) {
+                element.setAttribute('href', '/dashboard');
+                element.setAttribute('aria-disabled', 'true');
+                return;
+            }
+            element.setAttribute('href', `/predictors/${this.currentPredictorId}/history?tab=${tab}`);
+            element.removeAttribute('aria-disabled');
+        });
+    }
+
     resetBetProfileForm() {
+        if (!this.getElement('betProfileId')) {
+            return;
+        }
         document.getElementById('betProfileId').value = '';
         document.getElementById('betProfileName').value = '';
         document.getElementById('betProfileLotteryType').value = this.currentLotteryType || 'pc28';
@@ -867,17 +1015,24 @@ class PredictionApp {
     }
 
     syncBetProfileModeState() {
-        const mode = document.getElementById('betProfileMode').value || 'flat';
-        const multiplierInput = document.getElementById('betProfileMultiplier');
-        const maxStepsInput = document.getElementById('betProfileMaxSteps');
+        const modeInput = this.getElement('betProfileMode');
+        const multiplierInput = this.getElement('betProfileMultiplier');
+        const maxStepsInput = this.getElement('betProfileMaxSteps');
+        if (!modeInput || !multiplierInput || !maxStepsInput) {
+            return;
+        }
+        const mode = modeInput.value || 'flat';
         const isFlat = mode === 'flat';
         multiplierInput.disabled = isFlat;
         maxStepsInput.disabled = isFlat;
     }
 
     renderBetProfiles(items) {
-        const tbody = document.getElementById('betProfilesBody');
-        const cards = document.getElementById('betProfilesCards');
+        const tbody = this.getElement('betProfilesBody');
+        const cards = this.getElement('betProfilesCards');
+        if (!tbody) {
+            return;
+        }
         if (!items.length) {
             tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">暂无下注策略</td></tr>';
             if (cards) {
@@ -1027,8 +1182,11 @@ class PredictionApp {
     }
 
     renderNotificationSenders(items) {
-        const tbody = document.getElementById('notificationSendersBody');
-        const cards = document.getElementById('notificationSendersCards');
+        const tbody = this.getElement('notificationSendersBody');
+        const cards = this.getElement('notificationSendersCards');
+        if (!tbody) {
+            return;
+        }
         if (!items.length) {
             tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">暂无通知发送方</td></tr>';
             if (cards) {
@@ -1187,6 +1345,9 @@ class PredictionApp {
     }
 
     resetNotificationEndpointForm() {
+        if (!this.getElement('notificationEndpointId')) {
+            return;
+        }
         document.getElementById('notificationEndpointId').value = '';
         document.getElementById('notificationEndpointChannelType').value = 'telegram';
         document.getElementById('notificationEndpointKey').value = '';
@@ -1197,8 +1358,11 @@ class PredictionApp {
     }
 
     renderNotificationEndpoints(items) {
-        const tbody = document.getElementById('notificationEndpointsBody');
-        const cards = document.getElementById('notificationEndpointsCards');
+        const tbody = this.getElement('notificationEndpointsBody');
+        const cards = this.getElement('notificationEndpointsCards');
+        if (!tbody) {
+            return;
+        }
         if (!items.length) {
             tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">暂无通知接收端</td></tr>';
             if (cards) {
@@ -1358,8 +1522,23 @@ class PredictionApp {
     }
 
     renderSubscriptionPredictorOptions() {
-        const select = document.getElementById('notificationSubscriptionPredictorId');
+        const select = this.getElement('notificationSubscriptionPredictorId');
+        if (!select) {
+            return;
+        }
         const currentValue = select.value;
+        if (this.isDashboardPage()) {
+            const currentPredictor = (this.predictors || []).find((item) => String(item.id) === String(this.currentPredictorId)) || this.currentPredictor;
+            if (!currentPredictor) {
+                select.innerHTML = '<option value="">暂无预测方案</option>';
+                select.disabled = true;
+                return;
+            }
+            select.disabled = true;
+            select.innerHTML = `<option value="${currentPredictor.id}">${this.escapeHtml(currentPredictor.name)} · ${this.escapeHtml(currentPredictor.lottery_label || '--')}</option>`;
+            select.value = String(currentPredictor.id);
+            return;
+        }
         if (!(this.predictors || []).length) {
             select.innerHTML = '<option value="">暂无预测方案</option>';
             select.disabled = true;
@@ -1376,7 +1555,10 @@ class PredictionApp {
     }
 
     renderNotificationEndpointOptions() {
-        const select = document.getElementById('notificationSubscriptionEndpointId');
+        const select = this.getElement('notificationSubscriptionEndpointId');
+        if (!select) {
+            return;
+        }
         const currentValue = select.value;
         if (!(this.notificationEndpoints || []).length) {
             select.innerHTML = '<option value="">暂无通知接收端</option>';
@@ -1394,7 +1576,10 @@ class PredictionApp {
     }
 
     renderNotificationSenderOptions() {
-        const select = document.getElementById('notificationSubscriptionSenderAccountId');
+        const select = this.getElement('notificationSubscriptionSenderAccountId');
+        if (!select) {
+            return;
+        }
         const currentValue = select.value;
         const items = this.getCurrentSenderOptions();
         select.innerHTML = ['<option value="">请选择我的机器人</option>'].concat(
@@ -1413,6 +1598,9 @@ class PredictionApp {
     }
 
     resetNotificationSubscriptionForm() {
+        if (!this.getElement('notificationSubscriptionId')) {
+            return;
+        }
         document.getElementById('notificationSubscriptionId').value = '';
         this.renderSubscriptionPredictorOptions();
         document.getElementById('notificationSubscriptionSenderMode').value = 'platform';
@@ -1428,10 +1616,14 @@ class PredictionApp {
     }
 
     syncSubscriptionBetProfileOptions() {
-        const predictorId = Number(document.getElementById('notificationSubscriptionPredictorId').value || 0);
+        const predictorSelect = this.getElement('notificationSubscriptionPredictorId');
+        const select = this.getElement('notificationSubscriptionBetProfileId');
+        if (!predictorSelect || !select) {
+            return;
+        }
+        const predictorId = Number(predictorSelect.value || 0);
         const predictor = (this.predictors || []).find((item) => item.id === predictorId) || this.currentPredictor;
         const lotteryType = predictor?.lottery_type || this.currentLotteryType || 'pc28';
-        const select = document.getElementById('notificationSubscriptionBetProfileId');
         const currentValue = select.value;
         const items = (this.betProfiles || []).filter((item) => item.lottery_type === lotteryType);
         select.innerHTML = ['<option value="">不绑定下注策略</option>'].concat(
@@ -1447,8 +1639,12 @@ class PredictionApp {
     }
 
     syncSubscriptionBetProfileState() {
-        const mode = document.getElementById('notificationSubscriptionDeliveryMode').value || 'notify_only';
-        const betProfileSelect = document.getElementById('notificationSubscriptionBetProfileId');
+        const modeInput = this.getElement('notificationSubscriptionDeliveryMode');
+        const betProfileSelect = this.getElement('notificationSubscriptionBetProfileId');
+        if (!modeInput || !betProfileSelect) {
+            return;
+        }
+        const mode = modeInput.value || 'notify_only';
         betProfileSelect.disabled = mode !== 'follow_bet';
         if (mode !== 'follow_bet') {
             betProfileSelect.value = '';
@@ -1461,8 +1657,12 @@ class PredictionApp {
     }
 
     syncSubscriptionSenderState() {
-        const mode = document.getElementById('notificationSubscriptionSenderMode').value || 'platform';
-        const senderSelect = document.getElementById('notificationSubscriptionSenderAccountId');
+        const modeInput = this.getElement('notificationSubscriptionSenderMode');
+        const senderSelect = this.getElement('notificationSubscriptionSenderAccountId');
+        if (!modeInput || !senderSelect) {
+            return;
+        }
+        const mode = modeInput.value || 'platform';
         senderSelect.disabled = mode !== 'user_sender';
         if (mode !== 'user_sender') {
             senderSelect.value = '';
@@ -1476,17 +1676,91 @@ class PredictionApp {
         }
     }
 
-    renderNotificationSubscriptions(items) {
-        const tbody = document.getElementById('notificationSubscriptionsBody');
-        const cards = document.getElementById('notificationSubscriptionsCards');
+    getVisibleNotificationSubscriptions(items = this.notificationSubscriptions || []) {
+        if (!this.isDashboardPage()) {
+            return [...(items || [])];
+        }
+        if (!this.currentPredictorId) {
+            return [];
+        }
+        return (items || []).filter((item) => String(item.predictor_id) === String(this.currentPredictorId));
+    }
+
+    renderCurrentPredictorSubscriptionSummary(items = this.getVisibleNotificationSubscriptions()) {
+        const totalElement = this.getElement('currentPredictorSubscriptionCount');
+        const notifyOnlyElement = this.getElement('currentPredictorNotifyOnlyCount');
+        const followBetElement = this.getElement('currentPredictorFollowBetCount');
+        const enabledElement = this.getElement('currentPredictorEnabledSubscriptionCount');
+        const container = this.getElement('currentPredictorSubscriptionSummary');
+        if (!container) {
+            return;
+        }
+
+        const notifyOnlyCount = items.filter((item) => item.delivery_mode === 'notify_only').length;
+        const followBetCount = items.filter((item) => item.delivery_mode === 'follow_bet').length;
+        const enabledCount = items.filter((item) => item.enabled).length;
+        if (totalElement) totalElement.textContent = String(items.length);
+        if (notifyOnlyElement) notifyOnlyElement.textContent = String(notifyOnlyCount);
+        if (followBetElement) followBetElement.textContent = String(followBetCount);
+        if (enabledElement) enabledElement.textContent = String(enabledCount);
+
+        if (!this.currentPredictorId) {
+            container.className = 'prediction-summary empty-panel';
+            container.textContent = '请先选择一个预测方案，再配置它的通知订阅。';
+            return;
+        }
+
         if (!items.length) {
+            container.className = 'prediction-summary empty-panel';
+            container.textContent = '当前方案暂无通知订阅。';
+            return;
+        }
+
+        container.className = 'prediction-summary';
+        container.innerHTML = items.map((item) => `
+            <article class="prediction-card">
+                <div class="prediction-section-head">
+                    <strong>${this.escapeHtml(item.endpoint_label || '--')}</strong>
+                    <span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span>
+                </div>
+                <div class="detail-list">
+                    <div class="detail-row">
+                        <span class="detail-label">发送方</span>
+                        <div>${this.escapeHtml(item.sender_mode === 'user_sender' ? (item.sender_account_name || '--') : '平台机器人')}</div>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">模式</span>
+                        <div>${this.escapeHtml(item.delivery_mode_label || '--')}</div>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">下注策略</span>
+                        <div>${this.escapeHtml(item.bet_profile_name || '未绑定')}</div>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">最低置信度</span>
+                        <div>${this.escapeHtml(String((item.filter || {}).confidence_gte ?? '未设置'))}</div>
+                    </div>
+                </div>
+            </article>
+        `).join('');
+    }
+
+    renderNotificationSubscriptions(items) {
+        const tbody = this.getElement('notificationSubscriptionsBody');
+        const cards = this.getElement('notificationSubscriptionsCards');
+        if (!tbody) {
+            return;
+        }
+        const visibleItems = this.getVisibleNotificationSubscriptions(items);
+        this.renderCurrentPredictorSubscriptionSummary(visibleItems);
+        if (!visibleItems.length) {
             tbody.innerHTML = '<tr><td colspan="7" class="empty-cell">暂无通知订阅</td></tr>';
             if (cards) {
                 cards.innerHTML = '<div class="empty-panel">暂无通知订阅</div>';
             }
             return;
         }
-        tbody.innerHTML = items.map((item) => `
+        tbody.innerHTML = visibleItems.map((item) => `
             <tr>
                 <td>
                     <div class="result-stack">
@@ -1508,7 +1782,7 @@ class PredictionApp {
             </tr>
         `).join('');
         if (cards) {
-            cards.innerHTML = items.map((item) => this.renderMobileDataCard({
+            cards.innerHTML = visibleItems.map((item) => this.renderMobileDataCard({
                 title: this.escapeHtml(item.predictor_name || '--'),
                 badgeHtml: `<span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span>`,
                 sections: [
@@ -1631,8 +1905,11 @@ class PredictionApp {
     }
 
     renderNotificationDeliveries(items) {
-        const tbody = document.getElementById('notificationDeliveriesBody');
-        const cards = document.getElementById('notificationDeliveriesCards');
+        const tbody = this.getElement('notificationDeliveriesBody');
+        const cards = this.getElement('notificationDeliveriesCards');
+        if (!tbody) {
+            return;
+        }
         if (!items.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无通知投递记录</td></tr>';
             if (cards) {
@@ -1802,9 +2079,14 @@ class PredictionApp {
 
             this.currentPredictor = data.predictor;
             this.currentLotteryType = data.predictor?.lottery_type || 'pc28';
+            this.updateHistoryLinks();
             this.renderSubscriptionPredictorOptions();
             this.renderNotificationSenderOptions();
             this.syncSubscriptionBetProfileOptions();
+            if (previousPredictorId !== predictorId) {
+                this.resetNotificationSubscriptionForm();
+            }
+            this.renderNotificationSubscriptions(this.notificationSubscriptions);
             document.getElementById('profitPanel').style.display = data.predictor?.capabilities?.supports_profit_simulation ? '' : 'none';
             this.currentStats = data.stats || null;
             this.currentPredictions = data.recent_predictions || [];
@@ -2914,7 +3196,7 @@ class PredictionApp {
     renderPredictionsTable(predictions) {
         const tbody = document.getElementById('predictionsBody');
         const cardsContainer = document.getElementById('predictionsCards');
-        const filteredPredictions = this.filterPredictions(predictions);
+        const filteredPredictions = this.getPreviewItems(this.filterPredictions(predictions));
 
         if (!filteredPredictions.length) {
             tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">当前筛选条件下暂无记录</td></tr>';
@@ -2973,6 +3255,7 @@ class PredictionApp {
         const tbody = document.getElementById('drawsBody');
         const headerRow = document.getElementById('drawTableHeadRow');
         const cardsContainer = document.getElementById('drawsCards');
+        const visibleDraws = this.getPreviewItems(draws || []);
         if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
             headerRow.innerHTML = `
                 <th>场次</th>
@@ -2992,7 +3275,7 @@ class PredictionApp {
                 <th>开奖时间</th>
             `;
         }
-        if (!draws.length) {
+        if (!visibleDraws.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无官方开奖数据</td></tr>';
             if (cardsContainer) {
                 cardsContainer.innerHTML = '<div class="empty-panel">暂无官方开奖数据</div>';
@@ -3001,7 +3284,7 @@ class PredictionApp {
         }
 
         if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
-            tbody.innerHTML = draws.map((draw) => {
+            tbody.innerHTML = visibleDraws.map((draw) => {
                 const meta = draw.meta_payload || {
                     match_no: draw.match_no,
                     spf_odds: draw.spf_odds,
@@ -3035,12 +3318,12 @@ class PredictionApp {
                 `;
             }).join('');
             if (cardsContainer) {
-                cardsContainer.innerHTML = this.renderDrawCards(draws);
+                cardsContainer.innerHTML = this.renderDrawCards(visibleDraws);
             }
             return;
         }
 
-        tbody.innerHTML = draws.map((draw) => `
+        tbody.innerHTML = visibleDraws.map((draw) => `
             <tr>
                 <td>${this.escapeHtml(draw.issue_no)}</td>
                 <td><strong>${this.escapeHtml(draw.result_number_text)}</strong></td>
@@ -3051,7 +3334,7 @@ class PredictionApp {
             </tr>
         `).join('');
         if (cardsContainer) {
-            cardsContainer.innerHTML = this.renderDrawCards(draws);
+            cardsContainer.innerHTML = this.renderDrawCards(visibleDraws);
         }
     }
 
@@ -3166,13 +3449,14 @@ class PredictionApp {
 
     renderAILogs(predictions) {
         const container = document.getElementById('aiLogs');
-        if (!predictions.length) {
+        const visiblePredictions = this.getPreviewItems(predictions || []);
+        if (!visiblePredictions.length) {
             container.innerHTML = '<div class="empty-panel">暂无 AI 输出记录</div>';
             return;
         }
 
         if ((this.currentLotteryType || 'pc28') === 'jingcai_football') {
-            container.innerHTML = predictions.map((prediction) => `
+            container.innerHTML = visiblePredictions.map((prediction) => `
                 <article class="ai-log-card">
                     <div class="ai-log-head">
                         <div>
@@ -3195,7 +3479,7 @@ class PredictionApp {
             return;
         }
 
-        container.innerHTML = predictions.map((prediction) => `
+        container.innerHTML = visiblePredictions.map((prediction) => `
             <article class="ai-log-card">
                 <div class="ai-log-head">
                     <div>
@@ -3313,6 +3597,9 @@ class PredictionApp {
         this.renderSubscriptionPredictorOptions();
         this.renderNotificationSenderOptions();
         this.syncSubscriptionBetProfileOptions();
+        this.updateHistoryLinks();
+        this.renderCurrentPredictorSubscriptionSummary([]);
+        this.renderNotificationSubscriptions([]);
         this.renderPredictorGuardPanel(null);
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
@@ -3362,6 +3649,7 @@ class PredictionApp {
     }
 
     switchTab(tabName) {
+        this.activeContentTab = tabName;
         document.querySelectorAll('.tab-btn').forEach((button) => {
             button.classList.toggle('active', button.dataset.tab === tabName);
         });
