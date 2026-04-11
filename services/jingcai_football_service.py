@@ -29,9 +29,10 @@ DETAIL_CACHE_SECONDS = getattr(config, 'JINGCAI_DETAIL_CACHE_SECONDS', 6 * 60 * 
 class JingcaiFootballService:
     lottery_type = 'jingcai_football'
 
-    def __init__(self, timeout: int = DEFAULT_TIMEOUT, prediction_guard: PredictionGuardService | None = None):
+    def __init__(self, timeout: int = DEFAULT_TIMEOUT, prediction_guard: PredictionGuardService | None = None, notification_service=None):
         self.timeout = timeout
         self.prediction_guard = prediction_guard
+        self.notification_service = notification_service
         self._next_auto_run_at = None
         self._last_auto_reason = ''
 
@@ -545,7 +546,15 @@ class JingcaiFootballService:
         self._refresh_run_summary(db, run_id)
         if auto_mode and self.prediction_guard:
             self.prediction_guard.record_success(predictor['id'])
-        return db.get_prediction_run(run_id) or run_payload
+        saved = db.get_prediction_run(run_id) or run_payload
+        if self.notification_service and saved.get('status') == 'pending':
+            self.notification_service.notify_prediction_created(
+                predictor=predictor,
+                prediction=saved,
+                lottery_type=self.lottery_type,
+                detail_builder=lambda run: self.build_run_view_model(db, run)
+            )
+        return saved
 
     def settle_pending_predictions(self, db) -> list[dict]:
         settled_items: list[dict] = []

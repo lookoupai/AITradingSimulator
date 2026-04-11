@@ -104,6 +104,96 @@ class Database:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS bet_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                lottery_type TEXT NOT NULL DEFAULT 'pc28',
+                mode TEXT NOT NULL DEFAULT 'flat',
+                base_stake REAL NOT NULL DEFAULT 10,
+                multiplier REAL NOT NULL DEFAULT 2,
+                max_steps INTEGER NOT NULL DEFAULT 6,
+                refund_action TEXT NOT NULL DEFAULT 'hold',
+                cap_action TEXT NOT NULL DEFAULT 'reset',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS notification_endpoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                channel_type TEXT NOT NULL DEFAULT 'telegram',
+                endpoint_key TEXT NOT NULL,
+                endpoint_label TEXT NOT NULL DEFAULT '',
+                config_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'active',
+                is_default INTEGER NOT NULL DEFAULT 0,
+                last_verified_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, channel_type, endpoint_key)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS notification_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                predictor_id INTEGER NOT NULL,
+                endpoint_id INTEGER NOT NULL,
+                bet_profile_id INTEGER,
+                event_type TEXT NOT NULL DEFAULT 'prediction_created',
+                delivery_mode TEXT NOT NULL DEFAULT 'notify_only',
+                filter_json TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (predictor_id) REFERENCES predictors(id),
+                FOREIGN KEY (endpoint_id) REFERENCES notification_endpoints(id),
+                FOREIGN KEY (bet_profile_id) REFERENCES bet_profiles(id),
+                UNIQUE(user_id, predictor_id, endpoint_id, event_type)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS notification_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subscription_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                predictor_id INTEGER NOT NULL,
+                endpoint_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                record_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                error_message TEXT,
+                sent_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (subscription_id) REFERENCES notification_subscriptions(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (predictor_id) REFERENCES predictors(id),
+                FOREIGN KEY (endpoint_id) REFERENCES notification_endpoints(id),
+                UNIQUE(subscription_id, event_type, record_key)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS lottery_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lottery_type TEXT NOT NULL,
@@ -280,6 +370,10 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_predictor ON predictions(predictor_id, issue_no)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status, issue_no)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictor_runtime_state_paused ON predictor_runtime_state(auto_paused, predictor_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_bet_profiles_user ON bet_profiles(user_id, lottery_type, enabled)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_endpoints_user ON notification_endpoints(user_id, channel_type, status)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, predictor_id, enabled)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_deliveries_subscription ON notification_deliveries(subscription_id, created_at)')
 
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
@@ -477,6 +571,8 @@ class Database:
     def delete_predictor(self, predictor_id: int):
         conn = self.get_connection()
         cursor = conn.cursor()
+        cursor.execute('DELETE FROM notification_deliveries WHERE predictor_id = ?', (predictor_id,))
+        cursor.execute('DELETE FROM notification_subscriptions WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM predictor_runtime_state WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM prediction_items WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM prediction_runs WHERE predictor_id = ?', (predictor_id,))
@@ -1619,6 +1715,586 @@ class Database:
         conn.commit()
         conn.close()
 
+    # ============ Bet Profiles ============
+
+    def create_bet_profile(
+        self,
+        user_id: int,
+        name: str,
+        lottery_type: str,
+        mode: str,
+        base_stake: float,
+        multiplier: float,
+        max_steps: int,
+        refund_action: str,
+        cap_action: str,
+        enabled: bool,
+        is_default: bool
+    ) -> int:
+        normalized_lottery_type = normalize_lottery_type(lottery_type)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if is_default:
+            cursor.execute(
+                '''
+                UPDATE bet_profiles
+                SET is_default = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND lottery_type = ?
+                ''',
+                (user_id, normalized_lottery_type)
+            )
+        cursor.execute(
+            '''
+            INSERT INTO bet_profiles (
+                user_id, name, lottery_type, mode, base_stake,
+                multiplier, max_steps, refund_action, cap_action,
+                enabled, is_default
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                user_id,
+                name,
+                normalized_lottery_type,
+                mode,
+                base_stake,
+                multiplier,
+                max_steps,
+                refund_action,
+                cap_action,
+                1 if enabled else 0,
+                1 if is_default else 0
+            )
+        )
+        profile_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return int(profile_id)
+
+    def get_bet_profile(self, profile_id: int) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM bet_profiles
+            WHERE id = ?
+            LIMIT 1
+            ''',
+            (profile_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_bet_profile(row) if row else None
+
+    def list_bet_profiles(self, user_id: int, lottery_type: str | None = None) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if lottery_type:
+            cursor.execute(
+                '''
+                SELECT * FROM bet_profiles
+                WHERE user_id = ? AND lottery_type = ?
+                ORDER BY is_default DESC, created_at ASC, id ASC
+                ''',
+                (user_id, normalize_lottery_type(lottery_type))
+            )
+        else:
+            cursor.execute(
+                '''
+                SELECT * FROM bet_profiles
+                WHERE user_id = ?
+                ORDER BY lottery_type ASC, is_default DESC, created_at ASC, id ASC
+                ''',
+                (user_id,)
+            )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_bet_profile(row) for row in rows]
+
+    def update_bet_profile(self, profile_id: int, user_id: int, fields: dict):
+        if not fields:
+            return
+        existing = self.get_bet_profile(profile_id)
+        if not existing or int(existing.get('user_id') or 0) != int(user_id):
+            return
+
+        normalized_lottery_type = normalize_lottery_type(fields.get('lottery_type') or existing.get('lottery_type'))
+        updates = []
+        values = []
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if 'is_default' in fields and fields.get('is_default'):
+            cursor.execute(
+                '''
+                UPDATE bet_profiles
+                SET is_default = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND lottery_type = ? AND id != ?
+                ''',
+                (user_id, normalized_lottery_type, profile_id)
+            )
+
+        for key, value in fields.items():
+            if key == 'lottery_type':
+                value = normalized_lottery_type
+            if key in {'enabled', 'is_default'}:
+                value = 1 if value else 0
+            updates.append(f'{key} = ?')
+            values.append(value)
+
+        updates.append('updated_at = CURRENT_TIMESTAMP')
+        values.append(profile_id)
+        values.append(user_id)
+        cursor.execute(
+            f'''
+            UPDATE bet_profiles
+            SET {', '.join(updates)}
+            WHERE id = ? AND user_id = ?
+            ''',
+            values
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_bet_profile(self, profile_id: int, user_id: int):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            DELETE FROM notification_subscriptions
+            WHERE bet_profile_id = ? AND user_id = ?
+            ''',
+            (profile_id, user_id)
+        )
+        cursor.execute(
+            '''
+            DELETE FROM bet_profiles
+            WHERE id = ? AND user_id = ?
+            ''',
+            (profile_id, user_id)
+        )
+        conn.commit()
+        conn.close()
+
+    # ============ Notification Endpoints ============
+
+    def create_notification_endpoint(
+        self,
+        user_id: int,
+        channel_type: str,
+        endpoint_key: str,
+        endpoint_label: str,
+        config: dict,
+        status: str,
+        is_default: bool,
+        last_verified_at: str | None = None
+    ) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if is_default:
+            cursor.execute(
+                '''
+                UPDATE notification_endpoints
+                SET is_default = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND channel_type = ?
+                ''',
+                (user_id, channel_type)
+            )
+        cursor.execute(
+            '''
+            INSERT INTO notification_endpoints (
+                user_id, channel_type, endpoint_key, endpoint_label,
+                config_json, status, is_default, last_verified_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                user_id,
+                channel_type,
+                endpoint_key,
+                endpoint_label,
+                json.dumps(config or {}, ensure_ascii=False),
+                status,
+                1 if is_default else 0,
+                last_verified_at
+            )
+        )
+        endpoint_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return int(endpoint_id)
+
+    def get_notification_endpoint(self, endpoint_id: int) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM notification_endpoints
+            WHERE id = ?
+            LIMIT 1
+            ''',
+            (endpoint_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_notification_endpoint(row) if row else None
+
+    def list_notification_endpoints(self, user_id: int) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM notification_endpoints
+            WHERE user_id = ?
+            ORDER BY channel_type ASC, is_default DESC, created_at ASC, id ASC
+            ''',
+            (user_id,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_notification_endpoint(row) for row in rows]
+
+    def update_notification_endpoint(self, endpoint_id: int, user_id: int, fields: dict):
+        if not fields:
+            return
+        existing = self.get_notification_endpoint(endpoint_id)
+        if not existing or int(existing.get('user_id') or 0) != int(user_id):
+            return
+
+        channel_type = str(fields.get('channel_type') or existing.get('channel_type') or 'telegram').strip().lower()
+        updates = []
+        values = []
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if 'is_default' in fields and fields.get('is_default'):
+            cursor.execute(
+                '''
+                UPDATE notification_endpoints
+                SET is_default = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND channel_type = ? AND id != ?
+                ''',
+                (user_id, channel_type, endpoint_id)
+            )
+
+        for key, value in fields.items():
+            if key == 'config':
+                key = 'config_json'
+                value = json.dumps(value or {}, ensure_ascii=False)
+            if key == 'is_default':
+                value = 1 if value else 0
+            updates.append(f'{key} = ?')
+            values.append(value)
+
+        updates.append('updated_at = CURRENT_TIMESTAMP')
+        values.append(endpoint_id)
+        values.append(user_id)
+        cursor.execute(
+            f'''
+            UPDATE notification_endpoints
+            SET {', '.join(updates)}
+            WHERE id = ? AND user_id = ?
+            ''',
+            values
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_notification_endpoint(self, endpoint_id: int, user_id: int):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            DELETE FROM notification_deliveries
+            WHERE endpoint_id = ? AND user_id = ?
+            ''',
+            (endpoint_id, user_id)
+        )
+        cursor.execute(
+            '''
+            DELETE FROM notification_subscriptions
+            WHERE endpoint_id = ? AND user_id = ?
+            ''',
+            (endpoint_id, user_id)
+        )
+        cursor.execute(
+            '''
+            DELETE FROM notification_endpoints
+            WHERE id = ? AND user_id = ?
+            ''',
+            (endpoint_id, user_id)
+        )
+        conn.commit()
+        conn.close()
+
+    # ============ Notification Subscriptions ============
+
+    def create_notification_subscription(
+        self,
+        user_id: int,
+        predictor_id: int,
+        endpoint_id: int,
+        bet_profile_id: int | None,
+        event_type: str,
+        delivery_mode: str,
+        filters: dict,
+        enabled: bool
+    ) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO notification_subscriptions (
+                user_id, predictor_id, endpoint_id, bet_profile_id,
+                event_type, delivery_mode, filter_json, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                user_id,
+                predictor_id,
+                endpoint_id,
+                bet_profile_id,
+                event_type,
+                delivery_mode,
+                json.dumps(filters or {}, ensure_ascii=False),
+                1 if enabled else 0
+            )
+        )
+        subscription_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return int(subscription_id)
+
+    def get_notification_subscription(self, subscription_id: int) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                s.*,
+                p.name AS predictor_name,
+                p.lottery_type AS predictor_lottery_type,
+                e.channel_type,
+                e.endpoint_key,
+                e.endpoint_label,
+                b.name AS bet_profile_name,
+                b.mode AS bet_profile_mode,
+                b.base_stake AS bet_profile_base_stake
+            FROM notification_subscriptions s
+            JOIN predictors p ON p.id = s.predictor_id
+            JOIN notification_endpoints e ON e.id = s.endpoint_id
+            LEFT JOIN bet_profiles b ON b.id = s.bet_profile_id
+            WHERE s.id = ?
+            LIMIT 1
+            ''',
+            (subscription_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_notification_subscription(row) if row else None
+
+    def list_notification_subscriptions(self, user_id: int) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                s.*,
+                p.name AS predictor_name,
+                p.lottery_type AS predictor_lottery_type,
+                e.channel_type,
+                e.endpoint_key,
+                e.endpoint_label,
+                b.name AS bet_profile_name,
+                b.mode AS bet_profile_mode,
+                b.base_stake AS bet_profile_base_stake
+            FROM notification_subscriptions s
+            JOIN predictors p ON p.id = s.predictor_id
+            JOIN notification_endpoints e ON e.id = s.endpoint_id
+            LEFT JOIN bet_profiles b ON b.id = s.bet_profile_id
+            WHERE s.user_id = ?
+            ORDER BY s.created_at DESC, s.id DESC
+            ''',
+            (user_id,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_notification_subscription(row) for row in rows]
+
+    def list_active_notification_subscriptions_by_predictor(
+        self,
+        predictor_id: int,
+        event_type: str = 'prediction_created'
+    ) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                s.*,
+                p.name AS predictor_name,
+                p.lottery_type AS predictor_lottery_type,
+                e.channel_type,
+                e.endpoint_key,
+                e.endpoint_label,
+                e.status AS endpoint_status,
+                e.config_json AS endpoint_config_json,
+                b.name AS bet_profile_name,
+                b.lottery_type AS bet_profile_lottery_type,
+                b.mode AS bet_profile_mode,
+                b.base_stake AS bet_profile_base_stake,
+                b.multiplier AS bet_profile_multiplier,
+                b.max_steps AS bet_profile_max_steps,
+                b.refund_action AS bet_profile_refund_action,
+                b.cap_action AS bet_profile_cap_action,
+                b.enabled AS bet_profile_enabled
+            FROM notification_subscriptions s
+            JOIN predictors p ON p.id = s.predictor_id
+            JOIN notification_endpoints e ON e.id = s.endpoint_id
+            LEFT JOIN bet_profiles b ON b.id = s.bet_profile_id
+            WHERE s.predictor_id = ?
+              AND s.event_type = ?
+              AND s.enabled = 1
+              AND e.status = 'active'
+            ORDER BY s.created_at ASC, s.id ASC
+            ''',
+            (predictor_id, event_type)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_notification_subscription(row) for row in rows]
+
+    def update_notification_subscription(self, subscription_id: int, user_id: int, fields: dict):
+        if not fields:
+            return
+        updates = []
+        values = []
+        for key, value in fields.items():
+            if key == 'filters':
+                key = 'filter_json'
+                value = json.dumps(value or {}, ensure_ascii=False)
+            if key == 'enabled':
+                value = 1 if value else 0
+            updates.append(f'{key} = ?')
+            values.append(value)
+        updates.append('updated_at = CURRENT_TIMESTAMP')
+        values.append(subscription_id)
+        values.append(user_id)
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            UPDATE notification_subscriptions
+            SET {', '.join(updates)}
+            WHERE id = ? AND user_id = ?
+            ''',
+            values
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_notification_subscription(self, subscription_id: int, user_id: int):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            DELETE FROM notification_deliveries
+            WHERE subscription_id = ? AND user_id = ?
+            ''',
+            (subscription_id, user_id)
+        )
+        cursor.execute(
+            '''
+            DELETE FROM notification_subscriptions
+            WHERE id = ? AND user_id = ?
+            ''',
+            (subscription_id, user_id)
+        )
+        conn.commit()
+        conn.close()
+
+    # ============ Notification Deliveries ============
+
+    def upsert_notification_delivery(self, payload: dict) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO notification_deliveries (
+                subscription_id, user_id, predictor_id, endpoint_id, event_type,
+                record_key, status, payload_json, error_message, sent_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(subscription_id, event_type, record_key) DO UPDATE SET
+                status = excluded.status,
+                payload_json = excluded.payload_json,
+                error_message = excluded.error_message,
+                sent_at = excluded.sent_at,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (
+                payload['subscription_id'],
+                payload['user_id'],
+                payload['predictor_id'],
+                payload['endpoint_id'],
+                payload['event_type'],
+                payload['record_key'],
+                payload.get('status', 'pending'),
+                json.dumps(payload.get('payload') or {}, ensure_ascii=False),
+                payload.get('error_message'),
+                payload.get('sent_at')
+            )
+        )
+        conn.commit()
+        delivery_id = cursor.lastrowid or 0
+        conn.close()
+        return int(delivery_id)
+
+    def get_notification_delivery(self, subscription_id: int, event_type: str, record_key: str) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                d.*,
+                p.name AS predictor_name,
+                e.channel_type,
+                e.endpoint_label
+            FROM notification_deliveries d
+            JOIN predictors p ON p.id = d.predictor_id
+            JOIN notification_endpoints e ON e.id = d.endpoint_id
+            WHERE d.subscription_id = ? AND d.event_type = ? AND d.record_key = ?
+            LIMIT 1
+            ''',
+            (subscription_id, event_type, record_key)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_notification_delivery(row) if row else None
+
+    def list_notification_deliveries(self, user_id: int, limit: int = 50) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                d.*,
+                p.name AS predictor_name,
+                e.channel_type,
+                e.endpoint_label
+            FROM notification_deliveries d
+            JOIN predictors p ON p.id = d.predictor_id
+            JOIN notification_endpoints e ON e.id = d.endpoint_id
+            WHERE d.user_id = ?
+            ORDER BY d.created_at DESC, d.id DESC
+            LIMIT ?
+            ''',
+            (user_id, limit)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_notification_delivery(row) for row in rows]
+
     def get_admin_users_overview(self) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -1876,6 +2552,55 @@ class Database:
                 **runtime_state
             })
         return enriched
+
+    def _prepare_bet_profile(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+        data = dict(row)
+        data['lottery_type'] = normalize_lottery_type(data.get('lottery_type'))
+        data['enabled'] = bool(data.get('enabled'))
+        data['is_default'] = bool(data.get('is_default'))
+        data['base_stake'] = round(float(data.get('base_stake') or 0), 2)
+        data['multiplier'] = round(float(data.get('multiplier') or 0), 2)
+        data['max_steps'] = int(data.get('max_steps') or 1)
+        return data
+
+    def _prepare_notification_endpoint(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+        data = dict(row)
+        data['channel_type'] = str(data.get('channel_type') or 'telegram').strip().lower()
+        config_value = data.get('config_json')
+        if config_value is None and data.get('endpoint_config_json') is not None:
+            config_value = data.get('endpoint_config_json')
+        data['config'] = self._decode_json_object(config_value)
+        data['status'] = str(data.get('status') or 'active').strip().lower()
+        data['is_default'] = bool(data.get('is_default'))
+        data.pop('config_json', None)
+        data.pop('endpoint_config_json', None)
+        return data
+
+    def _prepare_notification_subscription(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+        data = dict(row)
+        data['filter'] = self._decode_json_object(data.get('filter_json'))
+        data['enabled'] = bool(data.get('enabled'))
+        data['predictor_lottery_type'] = normalize_lottery_type(data.get('predictor_lottery_type'))
+        data['endpoint_config'] = self._decode_json_object(data.get('endpoint_config_json'))
+        data['endpoint_status'] = str(data.get('endpoint_status') or '').strip().lower() if data.get('endpoint_status') is not None else None
+        data['bet_profile_enabled'] = bool(data.get('bet_profile_enabled')) if data.get('bet_profile_enabled') is not None else None
+        data.pop('filter_json', None)
+        data.pop('endpoint_config_json', None)
+        return data
+
+    def _prepare_notification_delivery(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+        data = dict(row)
+        data['payload'] = self._decode_json_object(data.get('payload_json'))
+        data.pop('payload_json', None)
+        return data
 
     def _prepare_lottery_event(self, row) -> dict:
         data = dict(row)

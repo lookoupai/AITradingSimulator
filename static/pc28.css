@@ -608,6 +608,13 @@ a {
     align-items: start;
 }
 
+.panel-soft-section {
+    padding: 18px;
+    border-radius: 18px;
+    background: var(--panel-soft);
+    border: 1px solid color-mix(in srgb, var(--border) 85%, transparent 15%);
+}
+
 .compact-table {
     min-width: 560px;
 }

@@ -172,6 +172,11 @@ class PredictionApp {
         this.currentUser = null;
         this.currentPredictorId = null;
         this.currentPredictor = null;
+        this.predictors = [];
+        this.betProfiles = [];
+        this.notificationEndpoints = [];
+        this.notificationSubscriptions = [];
+        this.notificationDeliveries = [];
         this.currentLotteryType = 'pc28';
         this.formLotteryType = 'pc28';
         this.formStateByLottery = this.buildInitialFormStateByLottery();
@@ -181,6 +186,7 @@ class PredictionApp {
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
         this.selectedProfitPeriodKey = DEFAULT_PROFIT_PERIOD_KEY;
+        this.selectedProfitBetProfileId = '';
         this.selectedProfitBetMode = DEFAULT_PROFIT_BET_MODE;
         this.selectedProfitBaseStake = DEFAULT_PROFIT_BASE_STAKE;
         this.selectedProfitMultiplier = DEFAULT_PROFIT_MULTIPLIER;
@@ -264,6 +270,10 @@ class PredictionApp {
             this.selectedProfitPeriodKey = event.target.value;
             this.loadProfitSimulation();
         });
+        document.getElementById('profitBetProfileView').addEventListener('change', (event) => {
+            this.selectedProfitBetProfileId = event.target.value || '';
+            this.loadProfitSimulation();
+        });
         document.getElementById('profitBetModeView').addEventListener('change', (event) => {
             this.selectedProfitBetMode = event.target.value;
             this.syncProfitBetControlState();
@@ -292,6 +302,30 @@ class PredictionApp {
             this.selectedProfitOddsProfile = event.target.value;
             this.loadProfitSimulation();
         });
+        document.getElementById('saveBetProfileBtn').addEventListener('click', () => this.submitBetProfile());
+        document.getElementById('resetBetProfileFormBtn').addEventListener('click', () => this.resetBetProfileForm());
+        document.getElementById('betProfileMode').addEventListener('change', () => this.syncBetProfileModeState());
+        document.getElementById('betProfilesBody').addEventListener('click', (event) => this.handleBetProfileTableClick(event));
+        const betProfileCards = document.getElementById('betProfilesCards');
+        if (betProfileCards) {
+            betProfileCards.addEventListener('click', (event) => this.handleBetProfileTableClick(event));
+        }
+        document.getElementById('saveNotificationEndpointBtn').addEventListener('click', () => this.submitNotificationEndpoint());
+        document.getElementById('resetEndpointFormBtn').addEventListener('click', () => this.resetNotificationEndpointForm());
+        document.getElementById('notificationEndpointsBody').addEventListener('click', (event) => this.handleNotificationEndpointTableClick(event));
+        const notificationEndpointCards = document.getElementById('notificationEndpointsCards');
+        if (notificationEndpointCards) {
+            notificationEndpointCards.addEventListener('click', (event) => this.handleNotificationEndpointTableClick(event));
+        }
+        document.getElementById('saveNotificationSubscriptionBtn').addEventListener('click', () => this.submitNotificationSubscription());
+        document.getElementById('resetSubscriptionFormBtn').addEventListener('click', () => this.resetNotificationSubscriptionForm());
+        document.getElementById('notificationSubscriptionPredictorId').addEventListener('change', () => this.syncSubscriptionBetProfileOptions());
+        document.getElementById('notificationSubscriptionDeliveryMode').addEventListener('change', () => this.syncSubscriptionBetProfileState());
+        document.getElementById('notificationSubscriptionsBody').addEventListener('click', (event) => this.handleNotificationSubscriptionTableClick(event));
+        const notificationSubscriptionCards = document.getElementById('notificationSubscriptionsCards');
+        if (notificationSubscriptionCards) {
+            notificationSubscriptionCards.addEventListener('click', (event) => this.handleNotificationSubscriptionTableClick(event));
+        }
         document.getElementById('publicSharePanel').addEventListener('click', (event) => {
             const button = event.target.closest('[data-action="copy-public-url"]');
             if (!button) {
@@ -315,6 +349,9 @@ class PredictionApp {
         this.renderPresetCards();
         this.enforceNumberTarget();
         this.updateLotteryForm();
+        this.resetBetProfileForm();
+        this.resetNotificationEndpointForm();
+        this.resetNotificationSubscriptionForm();
         const footballReplayDate = document.getElementById('footballReplayDate');
         if (footballReplayDate && !footballReplayDate.value) {
             footballReplayDate.value = this.getTodayDateValue();
@@ -621,6 +658,7 @@ class PredictionApp {
 
     async refresh(forceReloadPredictorList = false) {
         await this.loadPredictors(forceReloadPredictorList);
+        await this.loadUserSettings();
         if (this.currentPredictorId) {
             await this.loadPredictorDashboard(this.currentPredictorId);
         } else {
@@ -760,6 +798,602 @@ class PredictionApp {
         }
     }
 
+    async loadUserSettings() {
+        try {
+            const [betProfilesResponse, endpointsResponse, subscriptionsResponse, deliveriesResponse] = await Promise.all([
+                fetch('/api/bet-profiles', { credentials: 'include' }),
+                fetch('/api/notification-endpoints', { credentials: 'include' }),
+                fetch('/api/notification-subscriptions', { credentials: 'include' }),
+                fetch('/api/notification-deliveries', { credentials: 'include' })
+            ]);
+            const responses = [betProfilesResponse, endpointsResponse, subscriptionsResponse, deliveriesResponse];
+            if (responses.some((item) => item.status === 401)) {
+                window.location.href = '/login';
+                return;
+            }
+            const [betProfiles, endpoints, subscriptions, deliveries] = await Promise.all(
+                responses.map((item) => this.parseJsonSafely(item))
+            );
+            this.betProfiles = Array.isArray(betProfiles) ? betProfiles : [];
+            this.notificationEndpoints = Array.isArray(endpoints) ? endpoints : [];
+            this.notificationSubscriptions = Array.isArray(subscriptions) ? subscriptions : [];
+            this.notificationDeliveries = Array.isArray(deliveries) ? deliveries : [];
+            this.renderBetProfiles(this.betProfiles);
+            this.renderNotificationEndpoints(this.notificationEndpoints);
+            this.renderNotificationSubscriptions(this.notificationSubscriptions);
+            this.renderNotificationDeliveries(this.notificationDeliveries);
+            this.renderSubscriptionPredictorOptions();
+            this.renderNotificationEndpointOptions();
+            this.syncSubscriptionBetProfileOptions();
+            this.syncBetProfileModeState();
+        } catch (error) {
+            console.error('Failed to load user settings:', error);
+        }
+    }
+
+    resetBetProfileForm() {
+        document.getElementById('betProfileId').value = '';
+        document.getElementById('betProfileName').value = '';
+        document.getElementById('betProfileLotteryType').value = this.currentLotteryType || 'pc28';
+        document.getElementById('betProfileMode').value = 'flat';
+        document.getElementById('betProfileBaseStake').value = '10';
+        document.getElementById('betProfileMultiplier').value = '2';
+        document.getElementById('betProfileMaxSteps').value = '6';
+        document.getElementById('betProfileEnabled').value = 'true';
+        document.getElementById('betProfileIsDefault').value = 'false';
+        this.syncBetProfileModeState();
+    }
+
+    syncBetProfileModeState() {
+        const mode = document.getElementById('betProfileMode').value || 'flat';
+        const multiplierInput = document.getElementById('betProfileMultiplier');
+        const maxStepsInput = document.getElementById('betProfileMaxSteps');
+        const isFlat = mode === 'flat';
+        multiplierInput.disabled = isFlat;
+        maxStepsInput.disabled = isFlat;
+    }
+
+    renderBetProfiles(items) {
+        const tbody = document.getElementById('betProfilesBody');
+        const cards = document.getElementById('betProfilesCards');
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">暂无下注策略</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">暂无下注策略</div>';
+            }
+            return;
+        }
+
+        tbody.innerHTML = items.map((item) => `
+            <tr>
+                <td>
+                    <div class="result-stack">
+                        <strong>${this.escapeHtml(item.name)}</strong>
+                        <span class="result-meta-text">${item.is_default ? '默认策略' : '普通策略'}</span>
+                    </div>
+                </td>
+                <td>${this.escapeHtml(item.lottery_label || '--')}</td>
+                <td>${this.escapeHtml(item.strategy_label || '--')}</td>
+                <td><span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span></td>
+                <td>
+                    <div class="predictor-actions">
+                        <button class="icon-btn" data-action="edit-bet-profile" data-id="${item.id}" title="编辑下注策略"><i class="bi bi-pencil"></i></button>
+                        <button class="icon-btn danger" data-action="delete-bet-profile" data-id="${item.id}" title="删除下注策略"><i class="bi bi-trash"></i></button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+
+        if (cards) {
+            cards.innerHTML = items.map((item) => this.renderMobileDataCard({
+                title: this.escapeHtml(item.name),
+                badgeHtml: `<span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span>`,
+                sections: [
+                    { label: '彩种', content: this.escapeHtml(item.lottery_label || '--') },
+                    { label: '策略', content: this.escapeHtml(item.strategy_label || '--') },
+                    { label: '默认', content: this.escapeHtml(item.is_default ? '是' : '否') }
+                ],
+                footer: `
+                    <div class="predictor-actions">
+                        <button class="icon-btn" data-action="edit-bet-profile" data-id="${item.id}" title="编辑下注策略"><i class="bi bi-pencil"></i></button>
+                        <button class="icon-btn danger" data-action="delete-bet-profile" data-id="${item.id}" title="删除下注策略"><i class="bi bi-trash"></i></button>
+                    </div>
+                `
+            })).join('');
+        }
+    }
+
+    handleBetProfileTableClick(event) {
+        const button = event.target.closest('[data-action]');
+        if (!button) {
+            return;
+        }
+        const profileId = Number(button.dataset.id);
+        if (!profileId) {
+            return;
+        }
+        if (button.dataset.action === 'edit-bet-profile') {
+            this.populateBetProfileForm(profileId);
+            return;
+        }
+        if (button.dataset.action === 'delete-bet-profile') {
+            this.deleteBetProfile(profileId);
+        }
+    }
+
+    populateBetProfileForm(profileId) {
+        const item = (this.betProfiles || []).find((row) => row.id === profileId);
+        if (!item) {
+            return;
+        }
+        document.getElementById('betProfileId').value = String(item.id);
+        document.getElementById('betProfileName').value = item.name || '';
+        document.getElementById('betProfileLotteryType').value = item.lottery_type || 'pc28';
+        document.getElementById('betProfileMode').value = item.mode || 'flat';
+        document.getElementById('betProfileBaseStake').value = String(item.base_stake || 10);
+        document.getElementById('betProfileMultiplier').value = String(item.multiplier || 2);
+        document.getElementById('betProfileMaxSteps').value = String(item.max_steps || 6);
+        document.getElementById('betProfileEnabled').value = item.enabled ? 'true' : 'false';
+        document.getElementById('betProfileIsDefault').value = item.is_default ? 'true' : 'false';
+        this.syncBetProfileModeState();
+    }
+
+    async submitBetProfile() {
+        const profileId = document.getElementById('betProfileId').value;
+        const payload = {
+            name: document.getElementById('betProfileName').value.trim(),
+            lottery_type: document.getElementById('betProfileLotteryType').value || 'pc28',
+            mode: document.getElementById('betProfileMode').value || 'flat',
+            base_stake: Number(document.getElementById('betProfileBaseStake').value || 10),
+            multiplier: Number(document.getElementById('betProfileMultiplier').value || 2),
+            max_steps: Number(document.getElementById('betProfileMaxSteps').value || 6),
+            enabled: document.getElementById('betProfileEnabled').value === 'true',
+            is_default: document.getElementById('betProfileIsDefault').value === 'true'
+        };
+        const url = profileId ? `/api/bet-profiles/${profileId}` : '/api/bet-profiles';
+        const method = profileId ? 'PUT' : 'POST';
+        try {
+            const response = await fetch(url, {
+                method,
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '保存下注策略失败');
+            }
+            this.resetBetProfileForm();
+            await this.loadUserSettings();
+            if (this.currentPredictorId) {
+                await this.loadProfitSimulation();
+            }
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async deleteBetProfile(profileId) {
+        if (!window.confirm('确定删除这个下注策略吗？关联订阅会同时解除绑定。')) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/bet-profiles/${profileId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '删除下注策略失败');
+            }
+            this.resetBetProfileForm();
+            await this.loadUserSettings();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    resetNotificationEndpointForm() {
+        document.getElementById('notificationEndpointId').value = '';
+        document.getElementById('notificationEndpointChannelType').value = 'telegram';
+        document.getElementById('notificationEndpointKey').value = '';
+        document.getElementById('notificationEndpointLabel').value = '';
+        document.getElementById('notificationEndpointChatType').value = 'private';
+        document.getElementById('notificationEndpointStatus').value = 'active';
+        document.getElementById('notificationEndpointIsDefault').value = 'false';
+    }
+
+    renderNotificationEndpoints(items) {
+        const tbody = document.getElementById('notificationEndpointsBody');
+        const cards = document.getElementById('notificationEndpointsCards');
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">暂无通知接收端</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">暂无通知接收端</div>';
+            }
+            return;
+        }
+        tbody.innerHTML = items.map((item) => `
+            <tr>
+                <td>
+                    <div class="result-stack">
+                        <strong>${this.escapeHtml(item.endpoint_label || '--')}</strong>
+                        <span class="result-meta-text">${item.is_default ? '默认接收端' : '普通接收端'}</span>
+                    </div>
+                </td>
+                <td>${this.escapeHtml(item.channel_label || '--')}</td>
+                <td>${this.escapeHtml(item.endpoint_key || '--')}</td>
+                <td><span class="status-chip ${item.status === 'active' ? 'enabled' : 'disabled'}">${this.escapeHtml(item.status_label || '--')}</span></td>
+                <td>
+                    <div class="predictor-actions">
+                        <button class="icon-btn" data-action="edit-endpoint" data-id="${item.id}" title="编辑通知接收端"><i class="bi bi-pencil"></i></button>
+                        <button class="icon-btn danger" data-action="delete-endpoint" data-id="${item.id}" title="删除通知接收端"><i class="bi bi-trash"></i></button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+        if (cards) {
+            cards.innerHTML = items.map((item) => this.renderMobileDataCard({
+                title: this.escapeHtml(item.endpoint_label || '--'),
+                badgeHtml: `<span class="status-chip ${item.status === 'active' ? 'enabled' : 'disabled'}">${this.escapeHtml(item.status_label || '--')}</span>`,
+                sections: [
+                    { label: '渠道', content: this.escapeHtml(item.channel_label || '--') },
+                    { label: '标识', content: this.escapeHtml(item.endpoint_key || '--') },
+                    { label: '类型', content: this.escapeHtml((item.config || {}).chat_type || '--') }
+                ],
+                footer: `
+                    <div class="predictor-actions">
+                        <button class="icon-btn" data-action="edit-endpoint" data-id="${item.id}" title="编辑通知接收端"><i class="bi bi-pencil"></i></button>
+                        <button class="icon-btn danger" data-action="delete-endpoint" data-id="${item.id}" title="删除通知接收端"><i class="bi bi-trash"></i></button>
+                    </div>
+                `
+            })).join('');
+        }
+    }
+
+    handleNotificationEndpointTableClick(event) {
+        const button = event.target.closest('[data-action]');
+        if (!button) {
+            return;
+        }
+        const endpointId = Number(button.dataset.id);
+        if (!endpointId) {
+            return;
+        }
+        if (button.dataset.action === 'edit-endpoint') {
+            this.populateNotificationEndpointForm(endpointId);
+            return;
+        }
+        if (button.dataset.action === 'delete-endpoint') {
+            this.deleteNotificationEndpoint(endpointId);
+        }
+    }
+
+    populateNotificationEndpointForm(endpointId) {
+        const item = (this.notificationEndpoints || []).find((row) => row.id === endpointId);
+        if (!item) {
+            return;
+        }
+        document.getElementById('notificationEndpointId').value = String(item.id);
+        document.getElementById('notificationEndpointChannelType').value = item.channel_type || 'telegram';
+        document.getElementById('notificationEndpointKey').value = item.endpoint_key || '';
+        document.getElementById('notificationEndpointLabel').value = item.endpoint_label || '';
+        document.getElementById('notificationEndpointChatType').value = (item.config || {}).chat_type || 'private';
+        document.getElementById('notificationEndpointStatus').value = item.status || 'active';
+        document.getElementById('notificationEndpointIsDefault').value = item.is_default ? 'true' : 'false';
+    }
+
+    async submitNotificationEndpoint() {
+        const endpointId = document.getElementById('notificationEndpointId').value;
+        const payload = {
+            channel_type: document.getElementById('notificationEndpointChannelType').value || 'telegram',
+            endpoint_key: document.getElementById('notificationEndpointKey').value.trim(),
+            endpoint_label: document.getElementById('notificationEndpointLabel').value.trim(),
+            config: {
+                chat_type: document.getElementById('notificationEndpointChatType').value || 'private'
+            },
+            status: document.getElementById('notificationEndpointStatus').value || 'active',
+            is_default: document.getElementById('notificationEndpointIsDefault').value === 'true'
+        };
+        const url = endpointId ? `/api/notification-endpoints/${endpointId}` : '/api/notification-endpoints';
+        const method = endpointId ? 'PUT' : 'POST';
+        try {
+            const response = await fetch(url, {
+                method,
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '保存通知接收端失败');
+            }
+            this.resetNotificationEndpointForm();
+            await this.loadUserSettings();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async deleteNotificationEndpoint(endpointId) {
+        if (!window.confirm('确定删除这个通知接收端吗？关联订阅和投递记录会同时清理。')) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/notification-endpoints/${endpointId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '删除通知接收端失败');
+            }
+            this.resetNotificationEndpointForm();
+            await this.loadUserSettings();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    renderSubscriptionPredictorOptions() {
+        const select = document.getElementById('notificationSubscriptionPredictorId');
+        const currentValue = select.value;
+        if (!(this.predictors || []).length) {
+            select.innerHTML = '<option value="">暂无预测方案</option>';
+            select.disabled = true;
+            return;
+        }
+        select.disabled = false;
+        select.innerHTML = (this.predictors || []).map((item) => `
+            <option value="${item.id}">${this.escapeHtml(item.name)} · ${this.escapeHtml(item.lottery_label || '--')}</option>
+        `).join('');
+        const nextValue = currentValue && this.predictors.some((item) => String(item.id) === String(currentValue))
+            ? currentValue
+            : String(this.currentPredictorId || this.predictors[0].id);
+        select.value = nextValue;
+    }
+
+    renderNotificationEndpointOptions() {
+        const select = document.getElementById('notificationSubscriptionEndpointId');
+        const currentValue = select.value;
+        if (!(this.notificationEndpoints || []).length) {
+            select.innerHTML = '<option value="">暂无通知接收端</option>';
+            select.disabled = true;
+            return;
+        }
+        select.disabled = false;
+        select.innerHTML = (this.notificationEndpoints || []).map((item) => `
+            <option value="${item.id}">${this.escapeHtml(item.endpoint_label || item.endpoint_key || '--')} · ${this.escapeHtml(item.channel_label || '--')}</option>
+        `).join('');
+        const nextValue = currentValue && this.notificationEndpoints.some((item) => String(item.id) === String(currentValue))
+            ? currentValue
+            : String(this.notificationEndpoints[0].id);
+        select.value = nextValue;
+    }
+
+    resetNotificationSubscriptionForm() {
+        document.getElementById('notificationSubscriptionId').value = '';
+        this.renderSubscriptionPredictorOptions();
+        this.renderNotificationEndpointOptions();
+        document.getElementById('notificationSubscriptionEventType').value = 'prediction_created';
+        document.getElementById('notificationSubscriptionDeliveryMode').value = 'notify_only';
+        document.getElementById('notificationSubscriptionConfidenceGte').value = '';
+        document.getElementById('notificationSubscriptionEnabled').value = 'true';
+        this.syncSubscriptionBetProfileOptions();
+        this.syncSubscriptionBetProfileState();
+    }
+
+    syncSubscriptionBetProfileOptions() {
+        const predictorId = Number(document.getElementById('notificationSubscriptionPredictorId').value || 0);
+        const predictor = (this.predictors || []).find((item) => item.id === predictorId) || this.currentPredictor;
+        const lotteryType = predictor?.lottery_type || this.currentLotteryType || 'pc28';
+        const select = document.getElementById('notificationSubscriptionBetProfileId');
+        const currentValue = select.value;
+        const items = (this.betProfiles || []).filter((item) => item.lottery_type === lotteryType);
+        select.innerHTML = ['<option value="">不绑定下注策略</option>'].concat(
+            items.map((item) => `<option value="${item.id}">${this.escapeHtml(item.name)} · ${this.escapeHtml(item.strategy_label || '--')}</option>`)
+        ).join('');
+        if (currentValue && items.some((item) => String(item.id) === String(currentValue))) {
+            select.value = currentValue;
+        } else {
+            const defaultItem = items.find((item) => item.is_default) || null;
+            select.value = defaultItem ? String(defaultItem.id) : '';
+        }
+        this.syncSubscriptionBetProfileState();
+    }
+
+    syncSubscriptionBetProfileState() {
+        const mode = document.getElementById('notificationSubscriptionDeliveryMode').value || 'notify_only';
+        const betProfileSelect = document.getElementById('notificationSubscriptionBetProfileId');
+        betProfileSelect.disabled = mode !== 'follow_bet';
+        if (mode !== 'follow_bet') {
+            betProfileSelect.value = '';
+        } else if (!betProfileSelect.value) {
+            const firstAvailable = Array.from(betProfileSelect.options).find((item) => item.value);
+            if (firstAvailable) {
+                betProfileSelect.value = firstAvailable.value;
+            }
+        }
+    }
+
+    renderNotificationSubscriptions(items) {
+        const tbody = document.getElementById('notificationSubscriptionsBody');
+        const cards = document.getElementById('notificationSubscriptionsCards');
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无通知订阅</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">暂无通知订阅</div>';
+            }
+            return;
+        }
+        tbody.innerHTML = items.map((item) => `
+            <tr>
+                <td>
+                    <div class="result-stack">
+                        <strong>${this.escapeHtml(item.predictor_name || '--')}</strong>
+                        <span class="result-meta-text">${this.escapeHtml(item.lottery_label || '--')}</span>
+                    </div>
+                </td>
+                <td>${this.escapeHtml(item.endpoint_label || '--')}</td>
+                <td>${this.escapeHtml(item.delivery_mode_label || '--')}</td>
+                <td>${this.escapeHtml(item.bet_profile_name || '--')}</td>
+                <td><span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span></td>
+                <td>
+                    <div class="predictor-actions">
+                        <button class="icon-btn" data-action="edit-subscription" data-id="${item.id}" title="编辑通知订阅"><i class="bi bi-pencil"></i></button>
+                        <button class="icon-btn danger" data-action="delete-subscription" data-id="${item.id}" title="删除通知订阅"><i class="bi bi-trash"></i></button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+        if (cards) {
+            cards.innerHTML = items.map((item) => this.renderMobileDataCard({
+                title: this.escapeHtml(item.predictor_name || '--'),
+                badgeHtml: `<span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span>`,
+                sections: [
+                    { label: '接收端', content: this.escapeHtml(item.endpoint_label || '--') },
+                    { label: '模式', content: this.escapeHtml(item.delivery_mode_label || '--') },
+                    { label: '下注策略', content: this.escapeHtml(item.bet_profile_name || '--') },
+                    { label: '最低置信度', content: this.escapeHtml(String((item.filter || {}).confidence_gte ?? '--')) }
+                ],
+                footer: `
+                    <div class="predictor-actions">
+                        <button class="icon-btn" data-action="edit-subscription" data-id="${item.id}" title="编辑通知订阅"><i class="bi bi-pencil"></i></button>
+                        <button class="icon-btn danger" data-action="delete-subscription" data-id="${item.id}" title="删除通知订阅"><i class="bi bi-trash"></i></button>
+                    </div>
+                `
+            })).join('');
+        }
+    }
+
+    handleNotificationSubscriptionTableClick(event) {
+        const button = event.target.closest('[data-action]');
+        if (!button) {
+            return;
+        }
+        const subscriptionId = Number(button.dataset.id);
+        if (!subscriptionId) {
+            return;
+        }
+        if (button.dataset.action === 'edit-subscription') {
+            this.populateNotificationSubscriptionForm(subscriptionId);
+            return;
+        }
+        if (button.dataset.action === 'delete-subscription') {
+            this.deleteNotificationSubscription(subscriptionId);
+        }
+    }
+
+    populateNotificationSubscriptionForm(subscriptionId) {
+        const item = (this.notificationSubscriptions || []).find((row) => row.id === subscriptionId);
+        if (!item) {
+            return;
+        }
+        document.getElementById('notificationSubscriptionId').value = String(item.id);
+        this.renderSubscriptionPredictorOptions();
+        document.getElementById('notificationSubscriptionPredictorId').value = String(item.predictor_id);
+        this.renderNotificationEndpointOptions();
+        document.getElementById('notificationSubscriptionEndpointId').value = String(item.endpoint_id);
+        document.getElementById('notificationSubscriptionEventType').value = item.event_type || 'prediction_created';
+        document.getElementById('notificationSubscriptionDeliveryMode').value = item.delivery_mode || 'notify_only';
+        document.getElementById('notificationSubscriptionConfidenceGte').value = (item.filter || {}).confidence_gte ?? '';
+        document.getElementById('notificationSubscriptionEnabled').value = item.enabled ? 'true' : 'false';
+        this.syncSubscriptionBetProfileOptions();
+        document.getElementById('notificationSubscriptionBetProfileId').value = item.bet_profile_id ? String(item.bet_profile_id) : '';
+        this.syncSubscriptionBetProfileState();
+    }
+
+    async submitNotificationSubscription() {
+        const subscriptionId = document.getElementById('notificationSubscriptionId').value;
+        const confidenceGteText = document.getElementById('notificationSubscriptionConfidenceGte').value.trim();
+        const payload = {
+            predictor_id: Number(document.getElementById('notificationSubscriptionPredictorId').value || 0),
+            endpoint_id: Number(document.getElementById('notificationSubscriptionEndpointId').value || 0),
+            bet_profile_id: document.getElementById('notificationSubscriptionBetProfileId').value
+                ? Number(document.getElementById('notificationSubscriptionBetProfileId').value)
+                : null,
+            event_type: document.getElementById('notificationSubscriptionEventType').value || 'prediction_created',
+            delivery_mode: document.getElementById('notificationSubscriptionDeliveryMode').value || 'notify_only',
+            enabled: document.getElementById('notificationSubscriptionEnabled').value === 'true',
+            filter: {}
+        };
+        if (confidenceGteText !== '') {
+            payload.filter.confidence_gte = Number(confidenceGteText);
+        }
+        const url = subscriptionId ? `/api/notification-subscriptions/${subscriptionId}` : '/api/notification-subscriptions';
+        const method = subscriptionId ? 'PUT' : 'POST';
+        try {
+            const response = await fetch(url, {
+                method,
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '保存通知订阅失败');
+            }
+            this.resetNotificationSubscriptionForm();
+            await this.loadUserSettings();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async deleteNotificationSubscription(subscriptionId) {
+        if (!window.confirm('确定删除这个通知订阅吗？')) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/notification-subscriptions/${subscriptionId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '删除通知订阅失败');
+            }
+            this.resetNotificationSubscriptionForm();
+            await this.loadUserSettings();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    renderNotificationDeliveries(items) {
+        const tbody = document.getElementById('notificationDeliveriesBody');
+        const cards = document.getElementById('notificationDeliveriesCards');
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无通知投递记录</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">暂无通知投递记录</div>';
+            }
+            return;
+        }
+        tbody.innerHTML = items.map((item) => `
+            <tr>
+                <td>${this.escapeHtml(item.predictor_name || '--')}</td>
+                <td>${this.escapeHtml(item.endpoint_label || '--')}</td>
+                <td>${this.escapeHtml(item.event_label || '--')}</td>
+                <td>${this.escapeHtml(item.record_key || '--')}</td>
+                <td><span class="status-chip ${item.status === 'delivered' ? 'enabled' : item.status === 'failed' ? 'failed' : 'pending'}">${this.escapeHtml(item.status_label || '--')}</span></td>
+                <td>${this.escapeHtml(item.sent_at || item.created_at || '--')}</td>
+            </tr>
+        `).join('');
+        if (cards) {
+            cards.innerHTML = items.map((item) => this.renderMobileDataCard({
+                title: this.escapeHtml(item.predictor_name || '--'),
+                badgeHtml: `<span class="status-chip ${item.status === 'delivered' ? 'enabled' : item.status === 'failed' ? 'failed' : 'pending'}">${this.escapeHtml(item.status_label || '--')}</span>`,
+                sections: [
+                    { label: '接收端', content: this.escapeHtml(item.endpoint_label || '--') },
+                    { label: '事件', content: this.escapeHtml(item.event_label || '--') },
+                    { label: '记录键', content: this.escapeHtml(item.record_key || '--') },
+                    { label: '时间', content: this.escapeHtml(item.sent_at || item.created_at || '--') }
+                ]
+            })).join('');
+        }
+    }
+
     renderPredictorList(predictors) {
         const container = document.getElementById('predictorList');
         if (!predictors.length) {
@@ -860,6 +1494,8 @@ class PredictionApp {
 
             this.currentPredictor = data.predictor;
             this.currentLotteryType = data.predictor?.lottery_type || 'pc28';
+            this.renderSubscriptionPredictorOptions();
+            this.syncSubscriptionBetProfileOptions();
             document.getElementById('profitPanel').style.display = data.predictor?.capabilities?.supports_profit_simulation ? '' : 'none';
             this.currentStats = data.stats || null;
             this.currentPredictions = data.recent_predictions || [];
@@ -1604,6 +2240,7 @@ class PredictionApp {
         const ruleSelect = document.getElementById('profitRuleView');
         const metricSelect = document.getElementById('profitMetricView');
         const periodSelect = document.getElementById('profitPeriodView');
+        const betProfileSelect = document.getElementById('profitBetProfileView');
         const betModeSelect = document.getElementById('profitBetModeView');
         const baseStakeInput = document.getElementById('profitBaseStakeView');
         const multiplierInput = document.getElementById('profitMultiplierView');
@@ -1614,6 +2251,7 @@ class PredictionApp {
         const metrics = predictor?.simulation_metrics || [];
         const periodOptions = predictor?.profit_period_options || [];
         const oddsProfiles = predictor?.odds_profiles || [];
+        const profileOptions = (this.betProfiles || []).filter((item) => item.lottery_type === (predictor?.lottery_type || 'pc28'));
 
         if (!metrics.length || !rules.length) {
             ruleSelect.innerHTML = '<option value="">暂无规则</option>';
@@ -1622,6 +2260,8 @@ class PredictionApp {
             metricSelect.disabled = true;
             periodSelect.innerHTML = '<option value="">暂无区间</option>';
             periodSelect.disabled = true;
+            betProfileSelect.innerHTML = '<option value="">临时参数</option>';
+            betProfileSelect.disabled = true;
             betModeSelect.disabled = true;
             baseStakeInput.disabled = true;
             multiplierInput.disabled = true;
@@ -1668,6 +2308,9 @@ class PredictionApp {
         this.selectedProfitBaseStake = this.normalizePositiveNumber(this.selectedProfitBaseStake, DEFAULT_PROFIT_BASE_STAKE, 0.01);
         this.selectedProfitMultiplier = this.normalizePositiveNumber(this.selectedProfitMultiplier, DEFAULT_PROFIT_MULTIPLIER, 1.01);
         this.selectedProfitMaxSteps = this.normalizePositiveInt(this.selectedProfitMaxSteps, DEFAULT_PROFIT_MAX_STEPS, 1, 12);
+        if (this.selectedProfitBetProfileId && !profileOptions.some((item) => String(item.id) === String(this.selectedProfitBetProfileId))) {
+            this.selectedProfitBetProfileId = '';
+        }
 
         ruleSelect.innerHTML = rules.map((item) => `
             <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
@@ -1685,6 +2328,11 @@ class PredictionApp {
         `).join('');
         periodSelect.value = this.selectedProfitPeriodKey;
         periodSelect.disabled = periodOptions.length <= 1;
+        betProfileSelect.innerHTML = ['<option value="">临时参数</option>'].concat(
+            profileOptions.map((item) => `<option value="${item.id}">${this.escapeHtml(item.name)} · ${this.escapeHtml(item.strategy_label || '--')}</option>`)
+        ).join('');
+        betProfileSelect.value = this.selectedProfitBetProfileId || '';
+        betProfileSelect.disabled = false;
         betModeSelect.value = this.selectedProfitBetMode;
         betModeSelect.disabled = false;
         baseStakeInput.value = String(this.selectedProfitBaseStake);
@@ -1732,7 +2380,7 @@ class PredictionApp {
 
         try {
             const response = await fetch(
-                `/api/predictors/${this.currentPredictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&period_key=${encodeURIComponent(this.selectedProfitPeriodKey)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`,
+                `/api/predictors/${this.currentPredictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&period_key=${encodeURIComponent(this.selectedProfitPeriodKey)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_profile_id=${encodeURIComponent(this.selectedProfitBetProfileId || '')}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`,
                 { credentials: 'include' }
             );
             if (response.status === 401) {
@@ -1764,6 +2412,7 @@ class PredictionApp {
         const container = document.getElementById('profitSimulationHint');
         const period = simulation.period || {};
         const summary = simulation.summary || {};
+        const selectedBetProfile = (this.betProfiles || []).find((item) => String(item.id) === String(this.selectedProfitBetProfileId));
         const primaryMetric = predictor?.primary_metric || '';
         const fallbackText = primaryMetric && primaryMetric !== simulation.metric
             ? `当前方案主玩法为 ${this.escapeHtml(this.targetLabel(primaryMetric, predictor?.lottery_type || this.currentLotteryType))}，收益模拟已回退为 ${this.escapeHtml(simulation.metric_label || '--')}。`
@@ -1785,6 +2434,7 @@ class PredictionApp {
                 <span class="tag">${this.escapeHtml(simulation.bet_strategy_label || '--')}</span>
             </div>
             <p>${fallbackText}</p>
+            ${selectedBetProfile ? `<p>当前已套用下注策略：<strong>${this.escapeHtml(selectedBetProfile.name || '--')}</strong>，系统会优先使用已保存的下注参数。</p>` : ''}
             <p class="metric-hint-foot">基础注 ${this.formatUsd(simulation.bet_config?.base_stake || 0)} · ${this.escapeHtml(oddsText)} · ${this.escapeHtml(simulation.bet_config?.refund_action_label || '--')} · ${this.escapeHtml(simulation.bet_config?.cap_action_label || '--')} · 当前共计下注 ${summary.bet_count || 0} 笔模拟票。</p>
         `;
     }
@@ -1924,11 +2574,16 @@ class PredictionApp {
     }
 
     syncProfitBetControlState() {
+        const betModeSelect = document.getElementById('profitBetModeView');
+        const baseStakeInput = document.getElementById('profitBaseStakeView');
         const multiplierInput = document.getElementById('profitMultiplierView');
         const maxStepsInput = document.getElementById('profitMaxStepsView');
+        const hasProfileOverride = Boolean(this.selectedProfitBetProfileId);
         const isFlatMode = this.selectedProfitBetMode === DEFAULT_PROFIT_BET_MODE;
-        multiplierInput.disabled = isFlatMode;
-        maxStepsInput.disabled = isFlatMode;
+        betModeSelect.disabled = hasProfileOverride;
+        baseStakeInput.disabled = hasProfileOverride;
+        multiplierInput.disabled = hasProfileOverride || isFlatMode;
+        maxStepsInput.disabled = hasProfileOverride || isFlatMode;
     }
 
     normalizePositiveNumber(value, fallback, min = 0.01, max = 1000000) {
@@ -2195,7 +2850,7 @@ class PredictionApp {
                         </div>
                     `).join('')}
                 </div>
-                ${footer ? `<span class="card-hint">${footer}</span>` : ''}
+                ${footer ? `<div class="card-hint">${footer}</div>` : ''}
             </article>
         `;
     }
@@ -2338,6 +2993,7 @@ class PredictionApp {
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
         this.selectedProfitPeriodKey = DEFAULT_PROFIT_PERIOD_KEY;
+        this.selectedProfitBetProfileId = '';
         this.selectedProfitBetMode = DEFAULT_PROFIT_BET_MODE;
         this.selectedProfitBaseStake = DEFAULT_PROFIT_BASE_STAKE;
         this.selectedProfitMultiplier = DEFAULT_PROFIT_MULTIPLIER;
@@ -2345,6 +3001,8 @@ class PredictionApp {
         this.selectedProfitOrder = 'desc';
         this.currentPredictions = [];
         this.updatePredictorActionState(null);
+        this.renderSubscriptionPredictorOptions();
+        this.syncSubscriptionBetProfileOptions();
         this.renderPredictorGuardPanel(null);
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
         document.getElementById('currentPrediction').textContent = '暂无预测方案，请先新建方案';
@@ -2363,6 +3021,8 @@ class PredictionApp {
         document.getElementById('profitMetricView').disabled = true;
         document.getElementById('profitPeriodView').innerHTML = '<option value="">暂无区间</option>';
         document.getElementById('profitPeriodView').disabled = true;
+        document.getElementById('profitBetProfileView').innerHTML = '<option value="">临时参数</option>';
+        document.getElementById('profitBetProfileView').disabled = true;
         document.getElementById('profitBetModeView').value = this.selectedProfitBetMode;
         document.getElementById('profitBetModeView').disabled = true;
         document.getElementById('profitBaseStakeView').value = String(this.selectedProfitBaseStake);

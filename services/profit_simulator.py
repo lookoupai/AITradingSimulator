@@ -9,6 +9,14 @@ from datetime import timedelta
 from typing import Optional
 
 from lotteries.registry import normalize_lottery_type
+from services.bet_strategy import (
+    BET_MODE_LABELS,
+    DEFAULT_BASE_STAKE,
+    DEFAULT_BET_MAX_STEPS,
+    DEFAULT_BET_MODE,
+    DEFAULT_BET_MULTIPLIER,
+    build_bet_strategy
+)
 from utils import jingcai_football as football_utils
 from utils.pc28 import (
     DEFAULT_PROFIT_RULE_ID as PC28_DEFAULT_PROFIT_RULE_ID,
@@ -35,16 +43,6 @@ FOOTBALL_PARLAY_METRIC_MAP = {
     'rqspf_parlay': 'rqspf'
 }
 DEFAULT_ODDS_PROFILE = 'regular'
-DEFAULT_BASE_STAKE = 10.0
-DEFAULT_BET_MODE = 'flat'
-DEFAULT_BET_MULTIPLIER = 2.0
-DEFAULT_BET_MAX_STEPS = 6
-MAX_BET_STEPS = 12
-
-BET_MODE_LABELS = {
-    'flat': '均注',
-    'martingale': '倍投'
-}
 
 ODDS_PROFILE_LABELS = {
     'regular': '常规盘',
@@ -831,43 +829,12 @@ class ProfitSimulator:
         multiplier: Optional[float],
         max_steps: Optional[int]
     ) -> dict:
-        normalized_mode = str(bet_mode or '').strip().lower()
-        if normalized_mode not in BET_MODE_LABELS:
-            normalized_mode = DEFAULT_BET_MODE
-
-        try:
-            resolved_base_stake = float(base_stake)
-        except (TypeError, ValueError):
-            resolved_base_stake = DEFAULT_BASE_STAKE
-        if resolved_base_stake <= 0:
-            resolved_base_stake = DEFAULT_BASE_STAKE
-        resolved_base_stake = round(min(resolved_base_stake, 1_000_000.0), 2)
-
-        try:
-            resolved_multiplier = float(multiplier)
-        except (TypeError, ValueError):
-            resolved_multiplier = DEFAULT_BET_MULTIPLIER
-        if resolved_multiplier <= 1:
-            resolved_multiplier = DEFAULT_BET_MULTIPLIER
-        resolved_multiplier = round(min(resolved_multiplier, 20.0), 2)
-
-        try:
-            resolved_max_steps = int(max_steps)
-        except (TypeError, ValueError):
-            resolved_max_steps = DEFAULT_BET_MAX_STEPS
-        resolved_max_steps = max(1, min(resolved_max_steps, MAX_BET_STEPS))
-
-        return {
-            'mode': normalized_mode,
-            'mode_label': BET_MODE_LABELS[normalized_mode],
-            'base_stake': resolved_base_stake,
-            'multiplier': resolved_multiplier,
-            'max_steps': resolved_max_steps,
-            'refund_action': 'hold',
-            'refund_action_label': '退本金保持当前手',
-            'cap_action': 'reset',
-            'cap_action_label': '封顶后未中回到基础注'
-        }
+        return build_bet_strategy(
+            bet_mode=bet_mode,
+            base_stake=base_stake,
+            multiplier=multiplier,
+            max_steps=max_steps
+        )
 
     def _bet_strategy_label(self, bet_strategy: dict) -> str:
         if bet_strategy['mode'] == 'flat':

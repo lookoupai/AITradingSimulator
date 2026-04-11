@@ -14,10 +14,11 @@ from utils.timezone import get_current_utc_time_str
 
 
 class PredictionEngine:
-    def __init__(self, db, pc28_service, prediction_guard: PredictionGuardService | None = None):
+    def __init__(self, db, pc28_service, prediction_guard: PredictionGuardService | None = None, notification_service=None):
         self.db = db
         self.pc28_service = pc28_service
         self.prediction_guard = prediction_guard or PredictionGuardService(db)
+        self.notification_service = notification_service
         self._lock = threading.RLock()
 
     def generate_prediction(self, predictor_id: int, auto_mode: bool = False) -> dict:
@@ -218,7 +219,14 @@ class PredictionEngine:
             self.db.upsert_prediction(payload)
             if auto_mode:
                 self.prediction_guard.record_success(predictor['id'])
-            return self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
+            saved = self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
+            if self.notification_service and saved.get('status') == 'pending':
+                self.notification_service.notify_prediction_created(
+                    predictor=predictor,
+                    prediction=saved,
+                    lottery_type='pc28'
+                )
+            return saved
         except AIPredictionError as exc:
             raw_response = getattr(exc, 'raw_response', raw_response)
             prompt_snapshot = getattr(exc, 'prompt_snapshot', prompt_snapshot)

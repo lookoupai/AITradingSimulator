@@ -67,6 +67,17 @@ class AdminPage {
             }
             this.savePredictionGuardSettings();
         });
+        document.getElementById('adminNotificationSettingsPanel').addEventListener('click', (event) => {
+            const saveButton = event.target.closest('[data-action="save-notification-settings"]');
+            if (saveButton) {
+                this.saveNotificationSettings();
+                return;
+            }
+            const testButton = event.target.closest('[data-action="send-notification-test"]');
+            if (testButton) {
+                this.sendNotificationTest();
+            }
+        });
     }
 
     async checkAuth() {
@@ -106,6 +117,7 @@ class AdminPage {
             this.renderSummary(data.summary || {});
             this.renderScheduler(data.scheduler || {});
             this.renderPredictionGuard(data.prediction_guard || {});
+            this.renderNotificationSettings(data.notification_settings || {});
             this.renderUsers(data.users || []);
             this.renderPredictors(data.predictors || []);
             this.renderFailures(data.recent_failures || []);
@@ -160,6 +172,59 @@ class AdminPage {
                     <i class="bi bi-shield-check"></i>
                     保存设置
                 </button>
+            </div>
+        `;
+    }
+
+    renderNotificationSettings(settings) {
+        const container = document.getElementById('adminNotificationSettingsPanel');
+        const enabled = Boolean(settings.enabled);
+        const botName = String(settings.telegram_bot_name || '');
+        const maskedToken = String(settings.telegram_bot_token_masked || '');
+
+        container.className = 'prediction-summary';
+        container.innerHTML = `
+            <div class="form-grid">
+                <label class="toggle-row">
+                    <span>启用通知服务</span>
+                    <input type="checkbox" id="adminNotificationEnabled" ${enabled ? 'checked' : ''}>
+                </label>
+                <label class="form-field">
+                    <span>Bot 名称</span>
+                    <input type="text" id="adminTelegramBotName" value="${this.escapeHtml(botName)}" placeholder="例如：predictor_bot">
+                    <small class="field-hint">仅用于后台展示和通知消息头部标识。</small>
+                </label>
+                <label class="form-field span-2">
+                    <span>Telegram Bot Token</span>
+                    <input type="password" id="adminTelegramBotToken" value="" placeholder="${this.escapeHtml(maskedToken || '留空表示保持原值')}">
+                    <small class="field-hint">如果当前已配置 Token，这里留空将保持原值，不会覆盖。</small>
+                </label>
+                <label class="form-field">
+                    <span>测试接收端标识</span>
+                    <input type="text" id="adminTelegramTestChatId" value="" placeholder="例如：123456789 或 @channel_name">
+                </label>
+                <label class="form-field span-2">
+                    <span>测试消息内容</span>
+                    <textarea id="adminTelegramTestMessage" rows="3" placeholder="例如：这是一条后台测试消息。">AITradingSimulator Telegram 测试消息</textarea>
+                </label>
+            </div>
+            <div class="panel-actions">
+                <button class="btn primary" data-action="save-notification-settings">
+                    <i class="bi bi-bell"></i>
+                    保存通知设置
+                </button>
+                <button class="btn ghost" data-action="send-notification-test">
+                    <i class="bi bi-send"></i>
+                    发送测试消息
+                </button>
+            </div>
+            <div class="metric-hint">
+                <div class="metric-hint-head">
+                    <div><strong>当前状态</strong></div>
+                    <span class="tag">${enabled ? '已启用' : '未启用'}</span>
+                </div>
+                <p>当前 Bot 名称：${this.escapeHtml(botName || '--')}</p>
+                <p class="metric-hint-foot">当前 Token：${this.escapeHtml(maskedToken || '未配置')}</p>
             </div>
         `;
     }
@@ -435,6 +500,55 @@ class AdminPage {
             }
             this.renderPredictionGuard(data.settings || {});
             await this.loadDashboard();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async saveNotificationSettings() {
+        const enabled = document.getElementById('adminNotificationEnabled')?.checked ?? false;
+        const telegram_bot_name = document.getElementById('adminTelegramBotName')?.value ?? '';
+        const telegram_bot_token = document.getElementById('adminTelegramBotToken')?.value ?? '';
+        try {
+            const response = await fetch('/api/admin/settings/notifications', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    enabled,
+                    telegram_bot_name,
+                    telegram_bot_token
+                })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '保存通知设置失败');
+            }
+            this.renderNotificationSettings(data.settings || {});
+            await this.loadDashboard();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async sendNotificationTest() {
+        const chat_id = document.getElementById('adminTelegramTestChatId')?.value ?? '';
+        const message = document.getElementById('adminTelegramTestMessage')?.value ?? '';
+        try {
+            const response = await fetch('/api/admin/settings/notifications/test', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id,
+                    message
+                })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '发送测试消息失败');
+            }
+            alert(data.message || '测试消息发送成功');
         } catch (error) {
             alert(error.message);
         }

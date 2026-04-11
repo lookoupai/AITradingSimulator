@@ -27,7 +27,9 @@ from lotteries.registry import (
     supports_public_pages
 )
 from services.jingcai_football_service import JingcaiFootballService
+from services.bet_strategy import BET_MODE_LABELS, build_bet_strategy, build_bet_strategy_label
 from services.lottery_runtime import LotteryRuntime
+from services.notification_service import NotificationService
 from services.pc28_service import PC28Service
 from services.profit_simulator import DEFAULT_ODDS_PROFILE, ProfitSimulator
 from services.prediction_engine import PredictionEngine
@@ -56,9 +58,10 @@ APP_VERSION = str(int(time.time()))
 
 db = Database(config.DATABASE_PATH)
 prediction_guard = PredictionGuardService(db)
+notification_service = NotificationService(db)
 pc28_service = PC28Service()
-jingcai_football_service = JingcaiFootballService(prediction_guard=prediction_guard)
-prediction_engine = PredictionEngine(db, pc28_service, prediction_guard=prediction_guard)
+jingcai_football_service = JingcaiFootballService(prediction_guard=prediction_guard, notification_service=notification_service)
+prediction_engine = PredictionEngine(db, pc28_service, prediction_guard=prediction_guard, notification_service=notification_service)
 lottery_runtime = LotteryRuntime(
     db,
     prediction_engine,
@@ -73,6 +76,20 @@ _app_initialized = False
 _scheduler_started = False
 _scheduler_owner_id = f'{os.getpid()}-{uuid.uuid4().hex}'
 AUTO_PREDICTION_SCHEDULER = 'lottery-auto-prediction'
+NOTIFICATION_CHANNEL_LABELS = {
+    'telegram': 'Telegram'
+}
+NOTIFICATION_STATUS_LABELS = {
+    'active': '启用',
+    'disabled': '停用'
+}
+NOTIFICATION_EVENT_LABELS = {
+    'prediction_created': '预测生成'
+}
+NOTIFICATION_DELIVERY_MODE_LABELS = {
+    'notify_only': '仅通知',
+    'follow_bet': '通知 + 下注策略'
+}
 
 
 @app.context_processor
@@ -793,6 +810,7 @@ def _build_admin_dashboard_data() -> dict:
     failed_predictions = db.get_recent_failed_predictions(limit=20)
     scheduler = db.get_scheduler_snapshot(AUTO_PREDICTION_SCHEDULER)
     guard_settings = prediction_guard.get_settings()
+    notification_settings = notification_service.get_settings()
 
     scheduler_data = {
         'name': AUTO_PREDICTION_SCHEDULER,
@@ -826,9 +844,121 @@ def _build_admin_dashboard_data() -> dict:
         },
         'scheduler': scheduler_data,
         'prediction_guard': guard_settings,
+        'notification_settings': {
+            **notification_settings,
+            'telegram_bot_token_masked': mask_api_key(notification_settings.get('telegram_bot_token'))
+        },
         'users': [_serialize_admin_user(item) for item in users],
         'predictors': [_serialize_admin_predictor(item) for item in predictors],
         'recent_failures': [_serialize_admin_failure(item) for item in failed_predictions]
+    }
+
+
+def _serialize_bet_profile(item: dict) -> dict:
+    lottery_type = normalize_lottery_type(item.get('lottery_type'))
+    bet_strategy = build_bet_strategy(
+        bet_mode=item.get('mode'),
+        base_stake=item.get('base_stake'),
+        multiplier=item.get('multiplier'),
+        max_steps=item.get('max_steps'),
+        refund_action=item.get('refund_action'),
+        cap_action=item.get('cap_action')
+    )
+    return {
+        'id': item['id'],
+        'user_id': item['user_id'],
+        'name': item.get('name') or '',
+        'lottery_type': lottery_type,
+        'lottery_label': get_lottery_definition(lottery_type).label,
+        'mode': bet_strategy['mode'],
+        'mode_label': bet_strategy['mode_label'],
+        'base_stake': bet_strategy['base_stake'],
+        'multiplier': bet_strategy['multiplier'],
+        'max_steps': bet_strategy['max_steps'],
+        'refund_action': bet_strategy['refund_action'],
+        'refund_action_label': bet_strategy['refund_action_label'],
+        'cap_action': bet_strategy['cap_action'],
+        'cap_action_label': bet_strategy['cap_action_label'],
+        'strategy_label': build_bet_strategy_label(bet_strategy),
+        'enabled': bool(item.get('enabled')),
+        'is_default': bool(item.get('is_default')),
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None
+    }
+
+
+def _serialize_notification_endpoint(item: dict) -> dict:
+    channel_type = str(item.get('channel_type') or 'telegram').strip().lower()
+    status = str(item.get('status') or 'active').strip().lower()
+    return {
+        'id': item['id'],
+        'user_id': item['user_id'],
+        'channel_type': channel_type,
+        'channel_label': NOTIFICATION_CHANNEL_LABELS.get(channel_type, channel_type),
+        'endpoint_key': item.get('endpoint_key') or '',
+        'endpoint_label': item.get('endpoint_label') or item.get('endpoint_key') or '',
+        'config': item.get('config') or {},
+        'status': status,
+        'status_label': NOTIFICATION_STATUS_LABELS.get(status, status),
+        'is_default': bool(item.get('is_default')),
+        'last_verified_at': utc_to_beijing(item['last_verified_at']) if item.get('last_verified_at') else None,
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None
+    }
+
+
+def _serialize_notification_subscription(item: dict) -> dict:
+    lottery_type = normalize_lottery_type(item.get('predictor_lottery_type'))
+    event_type = str(item.get('event_type') or 'prediction_created').strip().lower()
+    delivery_mode = str(item.get('delivery_mode') or 'notify_only').strip().lower()
+    return {
+        'id': item['id'],
+        'user_id': item['user_id'],
+        'predictor_id': int(item.get('predictor_id') or 0),
+        'predictor_name': item.get('predictor_name') or '',
+        'lottery_type': lottery_type,
+        'lottery_label': get_lottery_definition(lottery_type).label,
+        'endpoint_id': int(item.get('endpoint_id') or 0),
+        'channel_type': item.get('channel_type') or 'telegram',
+        'channel_label': NOTIFICATION_CHANNEL_LABELS.get(item.get('channel_type') or 'telegram', item.get('channel_type') or 'telegram'),
+        'endpoint_key': item.get('endpoint_key') or '',
+        'endpoint_label': item.get('endpoint_label') or item.get('endpoint_key') or '',
+        'bet_profile_id': item.get('bet_profile_id'),
+        'bet_profile_name': item.get('bet_profile_name') or '',
+        'bet_profile_mode': item.get('bet_profile_mode'),
+        'bet_profile_base_stake': item.get('bet_profile_base_stake'),
+        'event_type': event_type,
+        'event_label': NOTIFICATION_EVENT_LABELS.get(event_type, event_type),
+        'delivery_mode': delivery_mode,
+        'delivery_mode_label': NOTIFICATION_DELIVERY_MODE_LABELS.get(delivery_mode, delivery_mode),
+        'filter': item.get('filter') or {},
+        'enabled': bool(item.get('enabled')),
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None
+    }
+
+
+def _serialize_notification_delivery(item: dict) -> dict:
+    status = str(item.get('status') or 'pending').strip().lower()
+    return {
+        'id': item['id'],
+        'subscription_id': int(item.get('subscription_id') or 0),
+        'predictor_id': int(item.get('predictor_id') or 0),
+        'predictor_name': item.get('predictor_name') or '',
+        'endpoint_id': int(item.get('endpoint_id') or 0),
+        'channel_type': item.get('channel_type') or 'telegram',
+        'channel_label': NOTIFICATION_CHANNEL_LABELS.get(item.get('channel_type') or 'telegram', item.get('channel_type') or 'telegram'),
+        'endpoint_label': item.get('endpoint_label') or '',
+        'event_type': item.get('event_type') or 'prediction_created',
+        'event_label': NOTIFICATION_EVENT_LABELS.get(item.get('event_type') or 'prediction_created', item.get('event_type') or 'prediction_created'),
+        'record_key': item.get('record_key') or '',
+        'status': status,
+        'status_label': status,
+        'payload': item.get('payload') or {},
+        'error_message': item.get('error_message'),
+        'sent_at': utc_to_beijing(item['sent_at']) if item.get('sent_at') else None,
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None
     }
 
 
@@ -1009,6 +1139,128 @@ def _parse_bool(value, default: bool = True) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _parse_optional_int(value):
+    if value in {None, ''}:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_bet_profile_payload(data: dict, existing_profile: dict | None = None) -> tuple[dict, list[str]]:
+    errors = []
+    lottery_type = normalize_lottery_type(data.get('lottery_type') or (existing_profile.get('lottery_type') if existing_profile else 'pc28'))
+    fallback_name = existing_profile.get('name') if existing_profile else ''
+    fallback_enabled = existing_profile.get('enabled') if existing_profile else True
+    fallback_is_default = existing_profile.get('is_default') if existing_profile else False
+    strategy = build_bet_strategy(
+        bet_mode=data.get('mode') or (existing_profile.get('mode') if existing_profile else None),
+        base_stake=data.get('base_stake', existing_profile.get('base_stake') if existing_profile else None),
+        multiplier=data.get('multiplier', existing_profile.get('multiplier') if existing_profile else None),
+        max_steps=data.get('max_steps', existing_profile.get('max_steps') if existing_profile else None),
+        refund_action=data.get('refund_action') or (existing_profile.get('refund_action') if existing_profile else None),
+        cap_action=data.get('cap_action') or (existing_profile.get('cap_action') if existing_profile else None)
+    )
+    name = str(data.get('name') or fallback_name).strip()
+    enabled = _parse_bool(data.get('enabled'), bool(fallback_enabled))
+    is_default = _parse_bool(data.get('is_default'), bool(fallback_is_default))
+
+    if not name:
+        errors.append('下注方案名称不能为空')
+
+    payload = {
+        'name': name,
+        'lottery_type': lottery_type,
+        'mode': strategy['mode'],
+        'base_stake': strategy['base_stake'],
+        'multiplier': strategy['multiplier'],
+        'max_steps': strategy['max_steps'],
+        'refund_action': strategy['refund_action'],
+        'cap_action': strategy['cap_action'],
+        'enabled': enabled,
+        'is_default': is_default
+    }
+    return payload, errors
+
+
+def _validate_notification_endpoint_payload(data: dict, existing_endpoint: dict | None = None) -> tuple[dict, list[str]]:
+    errors = []
+    channel_type = str(data.get('channel_type') or (existing_endpoint.get('channel_type') if existing_endpoint else 'telegram')).strip().lower()
+    endpoint_key = str(data.get('endpoint_key') or (existing_endpoint.get('endpoint_key') if existing_endpoint else '')).strip()
+    endpoint_label = str(data.get('endpoint_label') or (existing_endpoint.get('endpoint_label') if existing_endpoint else endpoint_key)).strip()
+    config_payload = data.get('config', existing_endpoint.get('config') if existing_endpoint else {})
+    config_payload = config_payload if isinstance(config_payload, dict) else {}
+    status = str(data.get('status') or (existing_endpoint.get('status') if existing_endpoint else 'active')).strip().lower()
+    is_default = _parse_bool(data.get('is_default'), bool(existing_endpoint.get('is_default')) if existing_endpoint else False)
+
+    if channel_type not in NOTIFICATION_CHANNEL_LABELS:
+        errors.append('当前仅支持 Telegram 通知接收端')
+    if not endpoint_key:
+        errors.append('接收端标识不能为空')
+    if status not in NOTIFICATION_STATUS_LABELS:
+        status = 'active'
+
+    payload = {
+        'channel_type': channel_type,
+        'endpoint_key': endpoint_key,
+        'endpoint_label': endpoint_label or endpoint_key,
+        'config': config_payload,
+        'status': status,
+        'is_default': is_default
+    }
+    return payload, errors
+
+
+def _validate_notification_subscription_payload(
+    user_id: int,
+    data: dict,
+    existing_subscription: dict | None = None
+) -> tuple[dict, list[str]]:
+    errors = []
+    predictor_id = _parse_optional_int(data.get('predictor_id', existing_subscription.get('predictor_id') if existing_subscription else None))
+    endpoint_id = _parse_optional_int(data.get('endpoint_id', existing_subscription.get('endpoint_id') if existing_subscription else None))
+    bet_profile_id = _parse_optional_int(data.get('bet_profile_id', existing_subscription.get('bet_profile_id') if existing_subscription else None))
+    event_type = str(data.get('event_type') or (existing_subscription.get('event_type') if existing_subscription else 'prediction_created')).strip().lower()
+    delivery_mode = str(data.get('delivery_mode') or (existing_subscription.get('delivery_mode') if existing_subscription else 'notify_only')).strip().lower()
+    filters = data.get('filter', existing_subscription.get('filter') if existing_subscription else {})
+    filters = filters if isinstance(filters, dict) else {}
+    enabled = _parse_bool(data.get('enabled'), bool(existing_subscription.get('enabled')) if existing_subscription else True)
+
+    predictor = db.get_predictor(predictor_id, include_secret=False) if predictor_id else None
+    endpoint = db.get_notification_endpoint(endpoint_id) if endpoint_id else None
+    bet_profile = db.get_bet_profile(bet_profile_id) if bet_profile_id else None
+
+    if not predictor_id or not predictor or int(predictor.get('user_id') or 0) != int(user_id):
+        errors.append('订阅的预测方案不存在或无权访问')
+    if not endpoint_id or not endpoint or int(endpoint.get('user_id') or 0) != int(user_id):
+        errors.append('通知接收端不存在或无权访问')
+    if bet_profile_id and (not bet_profile or int(bet_profile.get('user_id') or 0) != int(user_id)):
+        errors.append('下注策略不存在或无权访问')
+
+    predictor_lottery_type = normalize_lottery_type(predictor.get('lottery_type')) if predictor else 'pc28'
+    if bet_profile and normalize_lottery_type(bet_profile.get('lottery_type')) != predictor_lottery_type:
+        errors.append('下注策略和彩种必须保持一致')
+
+    if event_type not in NOTIFICATION_EVENT_LABELS:
+        errors.append('当前仅支持预测生成通知事件')
+    if delivery_mode not in NOTIFICATION_DELIVERY_MODE_LABELS:
+        delivery_mode = 'notify_only'
+    if delivery_mode == 'follow_bet' and not bet_profile_id:
+        errors.append('启用下注策略模式时必须绑定下注策略')
+
+    payload = {
+        'predictor_id': predictor_id,
+        'endpoint_id': endpoint_id,
+        'bet_profile_id': bet_profile_id,
+        'event_type': event_type,
+        'delivery_mode': delivery_mode,
+        'filters': filters,
+        'enabled': enabled
+    }
+    return payload, errors
 
 
 def _validate_predictor_payload(data: dict, existing_predictor: dict | None = None) -> tuple[dict, list[str]]:
@@ -1440,6 +1692,199 @@ def get_current_user():
     })
 
 
+@app.route('/api/bet-profiles', methods=['GET'])
+@login_required
+def get_bet_profiles():
+    user_id = get_current_user_id()
+    lottery_type = request.args.get('lottery_type')
+    items = db.list_bet_profiles(user_id, lottery_type=lottery_type)
+    return jsonify([_serialize_bet_profile(item) for item in items])
+
+
+@app.route('/api/bet-profiles', methods=['POST'])
+@login_required
+def create_bet_profile():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+    payload, errors = _validate_bet_profile_payload(data)
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+
+    profile_id = db.create_bet_profile(user_id=user_id, **payload)
+    profile = db.get_bet_profile(profile_id)
+    return jsonify({
+        'message': '下注策略创建成功',
+        'item': _serialize_bet_profile(profile)
+    })
+
+
+@app.route('/api/bet-profiles/<int:profile_id>', methods=['PUT'])
+@login_required
+def update_bet_profile(profile_id: int):
+    user_id = get_current_user_id()
+    existing = db.get_bet_profile(profile_id)
+    if not existing or int(existing.get('user_id') or 0) != int(user_id):
+        return jsonify({'error': '下注策略不存在'}), 404
+
+    data = request.get_json() or {}
+    payload, errors = _validate_bet_profile_payload(data, existing_profile=existing)
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+
+    db.update_bet_profile(profile_id, user_id, payload)
+    profile = db.get_bet_profile(profile_id)
+    return jsonify({
+        'message': '下注策略更新成功',
+        'item': _serialize_bet_profile(profile)
+    })
+
+
+@app.route('/api/bet-profiles/<int:profile_id>', methods=['DELETE'])
+@login_required
+def delete_bet_profile(profile_id: int):
+    user_id = get_current_user_id()
+    existing = db.get_bet_profile(profile_id)
+    if not existing or int(existing.get('user_id') or 0) != int(user_id):
+        return jsonify({'error': '下注策略不存在'}), 404
+    db.delete_bet_profile(profile_id, user_id)
+    return jsonify({'message': '下注策略已删除'})
+
+
+@app.route('/api/notification-endpoints', methods=['GET'])
+@login_required
+def get_notification_endpoints():
+    user_id = get_current_user_id()
+    items = db.list_notification_endpoints(user_id)
+    return jsonify([_serialize_notification_endpoint(item) for item in items])
+
+
+@app.route('/api/notification-endpoints', methods=['POST'])
+@login_required
+def create_notification_endpoint():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+    payload, errors = _validate_notification_endpoint_payload(data)
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+
+    try:
+        endpoint_id = db.create_notification_endpoint(user_id=user_id, **payload)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 400
+    item = db.get_notification_endpoint(endpoint_id)
+    return jsonify({
+        'message': '通知接收端创建成功',
+        'item': _serialize_notification_endpoint(item)
+    })
+
+
+@app.route('/api/notification-endpoints/<int:endpoint_id>', methods=['PUT'])
+@login_required
+def update_notification_endpoint(endpoint_id: int):
+    user_id = get_current_user_id()
+    existing = db.get_notification_endpoint(endpoint_id)
+    if not existing or int(existing.get('user_id') or 0) != int(user_id):
+        return jsonify({'error': '通知接收端不存在'}), 404
+
+    data = request.get_json() or {}
+    payload, errors = _validate_notification_endpoint_payload(data, existing_endpoint=existing)
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+
+    try:
+        db.update_notification_endpoint(endpoint_id, user_id, payload)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 400
+    item = db.get_notification_endpoint(endpoint_id)
+    return jsonify({
+        'message': '通知接收端更新成功',
+        'item': _serialize_notification_endpoint(item)
+    })
+
+
+@app.route('/api/notification-endpoints/<int:endpoint_id>', methods=['DELETE'])
+@login_required
+def delete_notification_endpoint(endpoint_id: int):
+    user_id = get_current_user_id()
+    existing = db.get_notification_endpoint(endpoint_id)
+    if not existing or int(existing.get('user_id') or 0) != int(user_id):
+        return jsonify({'error': '通知接收端不存在'}), 404
+    db.delete_notification_endpoint(endpoint_id, user_id)
+    return jsonify({'message': '通知接收端已删除'})
+
+
+@app.route('/api/notification-subscriptions', methods=['GET'])
+@login_required
+def get_notification_subscriptions():
+    user_id = get_current_user_id()
+    items = db.list_notification_subscriptions(user_id)
+    return jsonify([_serialize_notification_subscription(item) for item in items])
+
+
+@app.route('/api/notification-subscriptions', methods=['POST'])
+@login_required
+def create_notification_subscription():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+    payload, errors = _validate_notification_subscription_payload(user_id, data)
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+
+    try:
+        subscription_id = db.create_notification_subscription(user_id=user_id, **payload)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 400
+    item = db.get_notification_subscription(subscription_id)
+    return jsonify({
+        'message': '通知订阅创建成功',
+        'item': _serialize_notification_subscription(item)
+    })
+
+
+@app.route('/api/notification-subscriptions/<int:subscription_id>', methods=['PUT'])
+@login_required
+def update_notification_subscription(subscription_id: int):
+    user_id = get_current_user_id()
+    existing = db.get_notification_subscription(subscription_id)
+    if not existing or int(existing.get('user_id') or 0) != int(user_id):
+        return jsonify({'error': '通知订阅不存在'}), 404
+
+    data = request.get_json() or {}
+    payload, errors = _validate_notification_subscription_payload(user_id, data, existing_subscription=existing)
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+
+    try:
+        db.update_notification_subscription(subscription_id, user_id, payload)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 400
+    item = db.get_notification_subscription(subscription_id)
+    return jsonify({
+        'message': '通知订阅更新成功',
+        'item': _serialize_notification_subscription(item)
+    })
+
+
+@app.route('/api/notification-subscriptions/<int:subscription_id>', methods=['DELETE'])
+@login_required
+def delete_notification_subscription(subscription_id: int):
+    user_id = get_current_user_id()
+    existing = db.get_notification_subscription(subscription_id)
+    if not existing or int(existing.get('user_id') or 0) != int(user_id):
+        return jsonify({'error': '通知订阅不存在'}), 404
+    db.delete_notification_subscription(subscription_id, user_id)
+    return jsonify({'message': '通知订阅已删除'})
+
+
+@app.route('/api/notification-deliveries', methods=['GET'])
+@login_required
+def get_notification_deliveries():
+    user_id = get_current_user_id()
+    limit = max(1, min(int(request.args.get('limit', 50) or 50), 200))
+    items = db.list_notification_deliveries(user_id, limit=limit)
+    return jsonify([_serialize_notification_delivery(item) for item in items])
+
+
 # ============ PC28 Public APIs ============
 
 
@@ -1633,6 +2078,60 @@ def update_admin_prediction_guard_settings():
         'message': 'AI 故障保护设置已更新',
         'settings': settings
     })
+
+
+@app.route('/api/admin/settings/notifications', methods=['GET'])
+@admin_required
+def get_admin_notification_settings():
+    settings = notification_service.get_settings()
+    return jsonify({
+        'settings': {
+            **settings,
+            'telegram_bot_token_masked': mask_api_key(settings.get('telegram_bot_token'))
+        }
+    })
+
+
+@app.route('/api/admin/settings/notifications', methods=['POST'])
+@admin_required
+def update_admin_notification_settings():
+    data = request.get_json() or {}
+    enabled = _parse_bool(data.get('enabled'), False)
+    existing_settings = notification_service.get_settings()
+    telegram_bot_token = str(data.get('telegram_bot_token') or '').strip() or str(existing_settings.get('telegram_bot_token') or '')
+    telegram_bot_name = str(data.get('telegram_bot_name') or '').strip()
+    settings = notification_service.update_settings(
+        enabled=enabled,
+        telegram_bot_token=telegram_bot_token,
+        telegram_bot_name=telegram_bot_name
+    )
+    return jsonify({
+        'message': '通知设置已更新',
+        'settings': {
+            **settings,
+            'telegram_bot_token_masked': mask_api_key(settings.get('telegram_bot_token'))
+        }
+    })
+
+
+@app.route('/api/admin/settings/notifications/test', methods=['POST'])
+@admin_required
+def send_admin_notification_test():
+    data = request.get_json() or {}
+    chat_id = str(data.get('chat_id') or '').strip()
+    message = str(data.get('message') or '').strip()
+    try:
+        payload = notification_service.send_test_message(chat_id=chat_id, text=message)
+        return jsonify({
+            'message': '测试消息发送成功',
+            'result': payload
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except requests.RequestException as exc:
+        return jsonify({'error': f'Telegram 请求失败: {exc}'}), 502
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/api/admin/users/<int:user_id>/toggle-admin', methods=['POST'])
@@ -2005,10 +2504,23 @@ def get_predictor_simulation(predictor_id: int):
     profit_rule_id = request.args.get('profit_rule_id') or (predictor.get('profit_rule_id') if predictor else DEFAULT_PROFIT_RULE_ID)
     odds_profile = request.args.get('odds_profile', DEFAULT_ODDS_PROFILE)
     period_key = request.args.get('period_key') or profit_simulator.get_default_period_key(predictor)
+    bet_profile_id = request.args.get('bet_profile_id', type=int)
     bet_mode = request.args.get('bet_mode')
     base_stake = request.args.get('base_stake', type=float)
     multiplier = request.args.get('multiplier', type=float)
     max_steps = request.args.get('max_steps', type=int)
+    bet_profile = None
+
+    if bet_profile_id:
+        bet_profile = db.get_bet_profile(bet_profile_id)
+        if not bet_profile or int(bet_profile.get('user_id') or 0) != int(user_id):
+            return jsonify({'error': '下注策略不存在'}), 404
+        if normalize_lottery_type(bet_profile.get('lottery_type')) != lottery_type:
+            return jsonify({'error': '下注策略和彩种不匹配'}), 400
+        bet_mode = bet_profile.get('mode')
+        base_stake = bet_profile.get('base_stake')
+        multiplier = bet_profile.get('multiplier')
+        max_steps = bet_profile.get('max_steps')
 
     try:
         simulation = profit_simulator.build_profit_simulation(
@@ -2027,6 +2539,7 @@ def get_predictor_simulation(predictor_id: int):
             simulation = _apply_jingcai_simulation_sale_filter(predictor_id, simulation)
         return jsonify({
             'predictor_id': predictor_id,
+            'bet_profile': _serialize_bet_profile(bet_profile) if bet_profile_id and bet_profile else None,
             'simulation': _serialize_profit_simulation(simulation, include_records=True)
         })
     except ValueError as exc:
