@@ -90,6 +90,10 @@ NOTIFICATION_DELIVERY_MODE_LABELS = {
     'notify_only': '仅通知',
     'follow_bet': '通知 + 下注策略'
 }
+NOTIFICATION_SENDER_MODE_LABELS = {
+    'platform': '平台机器人',
+    'user_sender': '我的机器人'
+}
 
 
 @app.context_processor
@@ -887,6 +891,25 @@ def _serialize_bet_profile(item: dict) -> dict:
     }
 
 
+def _serialize_notification_sender_account(item: dict) -> dict:
+    channel_type = str(item.get('channel_type') or 'telegram').strip().lower()
+    status = str(item.get('status') or 'active').strip().lower()
+    return {
+        'id': item['id'],
+        'user_id': item['user_id'],
+        'channel_type': channel_type,
+        'channel_label': NOTIFICATION_CHANNEL_LABELS.get(channel_type, channel_type),
+        'sender_name': item.get('sender_name') or item.get('bot_name') or '',
+        'bot_name': item.get('bot_name') or '',
+        'status': status,
+        'status_label': NOTIFICATION_STATUS_LABELS.get(status, status),
+        'is_default': bool(item.get('is_default')),
+        'last_verified_at': utc_to_beijing(item['last_verified_at']) if item.get('last_verified_at') else None,
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None
+    }
+
+
 def _serialize_notification_endpoint(item: dict) -> dict:
     channel_type = str(item.get('channel_type') or 'telegram').strip().lower()
     status = str(item.get('status') or 'active').strip().lower()
@@ -923,6 +946,11 @@ def _serialize_notification_subscription(item: dict) -> dict:
         'channel_label': NOTIFICATION_CHANNEL_LABELS.get(item.get('channel_type') or 'telegram', item.get('channel_type') or 'telegram'),
         'endpoint_key': item.get('endpoint_key') or '',
         'endpoint_label': item.get('endpoint_label') or item.get('endpoint_key') or '',
+        'sender_mode': item.get('sender_mode') or 'platform',
+        'sender_mode_label': NOTIFICATION_SENDER_MODE_LABELS.get(item.get('sender_mode') or 'platform', item.get('sender_mode') or 'platform'),
+        'sender_account_id': item.get('sender_account_id'),
+        'sender_account_name': item.get('sender_account_name') or '',
+        'sender_bot_name': item.get('sender_bot_name') or '',
         'bet_profile_id': item.get('bet_profile_id'),
         'bet_profile_name': item.get('bet_profile_name') or '',
         'bet_profile_mode': item.get('bet_profile_mode'),
@@ -940,6 +968,7 @@ def _serialize_notification_subscription(item: dict) -> dict:
 
 def _serialize_notification_delivery(item: dict) -> dict:
     status = str(item.get('status') or 'pending').strip().lower()
+    can_retry = status in {'failed', 'skipped'} and (item.get('channel_type') or '') == 'telegram'
     return {
         'id': item['id'],
         'subscription_id': int(item.get('subscription_id') or 0),
@@ -949,11 +978,16 @@ def _serialize_notification_delivery(item: dict) -> dict:
         'channel_type': item.get('channel_type') or 'telegram',
         'channel_label': NOTIFICATION_CHANNEL_LABELS.get(item.get('channel_type') or 'telegram', item.get('channel_type') or 'telegram'),
         'endpoint_label': item.get('endpoint_label') or '',
+        'sender_mode': item.get('sender_mode') or 'platform',
+        'sender_mode_label': NOTIFICATION_SENDER_MODE_LABELS.get(item.get('sender_mode') or 'platform', item.get('sender_mode') or 'platform'),
+        'sender_account_id': item.get('sender_account_id'),
+        'sender_account_name': item.get('sender_account_name') or '',
         'event_type': item.get('event_type') or 'prediction_created',
         'event_label': NOTIFICATION_EVENT_LABELS.get(item.get('event_type') or 'prediction_created', item.get('event_type') or 'prediction_created'),
         'record_key': item.get('record_key') or '',
         'status': status,
         'status_label': status,
+        'can_retry': can_retry,
         'payload': item.get('payload') or {},
         'error_message': item.get('error_message'),
         'sent_at': utc_to_beijing(item['sent_at']) if item.get('sent_at') else None,
@@ -1214,6 +1248,37 @@ def _validate_notification_endpoint_payload(data: dict, existing_endpoint: dict 
     return payload, errors
 
 
+def _validate_notification_sender_account_payload(data: dict, existing_sender: dict | None = None) -> tuple[dict, list[str]]:
+    errors = []
+    channel_type = str(data.get('channel_type') or (existing_sender.get('channel_type') if existing_sender else 'telegram')).strip().lower()
+    sender_name = str(data.get('sender_name') or (existing_sender.get('sender_name') if existing_sender else '')).strip()
+    bot_name = str(data.get('bot_name') or (existing_sender.get('bot_name') if existing_sender else '')).strip()
+    bot_token = str(data.get('bot_token') or '').strip()
+    status = str(data.get('status') or (existing_sender.get('status') if existing_sender else 'active')).strip().lower()
+    is_default = _parse_bool(data.get('is_default'), bool(existing_sender.get('is_default')) if existing_sender else False)
+
+    if channel_type not in NOTIFICATION_CHANNEL_LABELS:
+        errors.append('当前仅支持 Telegram 发送方')
+    if not sender_name:
+        errors.append('发送方名称不能为空')
+    if existing_sender is None and not bot_token:
+        errors.append('Bot Token 不能为空')
+    if existing_sender is not None and not bot_token:
+        bot_token = existing_sender.get('bot_token') or ''
+    if status not in NOTIFICATION_STATUS_LABELS:
+        status = 'active'
+
+    payload = {
+        'channel_type': channel_type,
+        'sender_name': sender_name,
+        'bot_name': bot_name,
+        'bot_token': bot_token,
+        'status': status,
+        'is_default': is_default
+    }
+    return payload, errors
+
+
 def _validate_notification_subscription_payload(
     user_id: int,
     data: dict,
@@ -1222,6 +1287,8 @@ def _validate_notification_subscription_payload(
     errors = []
     predictor_id = _parse_optional_int(data.get('predictor_id', existing_subscription.get('predictor_id') if existing_subscription else None))
     endpoint_id = _parse_optional_int(data.get('endpoint_id', existing_subscription.get('endpoint_id') if existing_subscription else None))
+    sender_mode = str(data.get('sender_mode') or (existing_subscription.get('sender_mode') if existing_subscription else 'platform')).strip().lower()
+    sender_account_id = _parse_optional_int(data.get('sender_account_id', existing_subscription.get('sender_account_id') if existing_subscription else None))
     bet_profile_id = _parse_optional_int(data.get('bet_profile_id', existing_subscription.get('bet_profile_id') if existing_subscription else None))
     event_type = str(data.get('event_type') or (existing_subscription.get('event_type') if existing_subscription else 'prediction_created')).strip().lower()
     delivery_mode = str(data.get('delivery_mode') or (existing_subscription.get('delivery_mode') if existing_subscription else 'notify_only')).strip().lower()
@@ -1231,18 +1298,30 @@ def _validate_notification_subscription_payload(
 
     predictor = db.get_predictor(predictor_id, include_secret=False) if predictor_id else None
     endpoint = db.get_notification_endpoint(endpoint_id) if endpoint_id else None
+    sender_account = db.get_notification_sender_account(sender_account_id) if sender_account_id else None
     bet_profile = db.get_bet_profile(bet_profile_id) if bet_profile_id else None
 
     if not predictor_id or not predictor or int(predictor.get('user_id') or 0) != int(user_id):
         errors.append('订阅的预测方案不存在或无权访问')
     if not endpoint_id or not endpoint or int(endpoint.get('user_id') or 0) != int(user_id):
         errors.append('通知接收端不存在或无权访问')
+    if sender_mode not in NOTIFICATION_SENDER_MODE_LABELS:
+        sender_mode = 'platform'
+    if sender_mode == 'user_sender':
+        if not sender_account_id or not sender_account or int(sender_account.get('user_id') or 0) != int(user_id):
+            errors.append('通知发送方不存在或无权访问')
+        elif str(sender_account.get('status') or '').strip().lower() != 'active':
+            errors.append('通知发送方未启用')
+    else:
+        sender_account_id = None
     if bet_profile_id and (not bet_profile or int(bet_profile.get('user_id') or 0) != int(user_id)):
         errors.append('下注策略不存在或无权访问')
 
     predictor_lottery_type = normalize_lottery_type(predictor.get('lottery_type')) if predictor else 'pc28'
     if bet_profile and normalize_lottery_type(bet_profile.get('lottery_type')) != predictor_lottery_type:
         errors.append('下注策略和彩种必须保持一致')
+    if sender_account and str(sender_account.get('channel_type') or '').strip().lower() != str(endpoint.get('channel_type') or '').strip().lower():
+        errors.append('通知发送方和接收端渠道必须一致')
 
     if event_type not in NOTIFICATION_EVENT_LABELS:
         errors.append('当前仅支持预测生成通知事件')
@@ -1254,6 +1333,8 @@ def _validate_notification_subscription_payload(
     payload = {
         'predictor_id': predictor_id,
         'endpoint_id': endpoint_id,
+        'sender_mode': sender_mode,
+        'sender_account_id': sender_account_id,
         'bet_profile_id': bet_profile_id,
         'event_type': event_type,
         'delivery_mode': delivery_mode,
@@ -1750,6 +1831,101 @@ def delete_bet_profile(profile_id: int):
     return jsonify({'message': '下注策略已删除'})
 
 
+@app.route('/api/notification-senders', methods=['GET'])
+@login_required
+def get_notification_senders():
+    user_id = get_current_user_id()
+    items = db.list_notification_sender_accounts(user_id)
+    return jsonify([_serialize_notification_sender_account(item) for item in items])
+
+
+@app.route('/api/notification-senders', methods=['POST'])
+@login_required
+def create_notification_sender():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+    payload, errors = _validate_notification_sender_account_payload(data)
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+    sender_id = db.create_notification_sender_account(user_id=user_id, **payload)
+    item = db.get_notification_sender_account(sender_id)
+    return jsonify({
+        'message': '通知发送方创建成功',
+        'item': _serialize_notification_sender_account(item)
+    })
+
+
+@app.route('/api/notification-senders/<int:sender_id>', methods=['PUT'])
+@login_required
+def update_notification_sender(sender_id: int):
+    user_id = get_current_user_id()
+    existing = db.get_notification_sender_account(sender_id)
+    if not existing or int(existing.get('user_id') or 0) != int(user_id):
+        return jsonify({'error': '通知发送方不存在'}), 404
+    data = request.get_json() or {}
+    payload, errors = _validate_notification_sender_account_payload(data, existing_sender=existing)
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+    db.update_notification_sender_account(sender_id, user_id, payload)
+    item = db.get_notification_sender_account(sender_id)
+    return jsonify({
+        'message': '通知发送方更新成功',
+        'item': _serialize_notification_sender_account(item)
+    })
+
+
+@app.route('/api/notification-senders/<int:sender_id>', methods=['DELETE'])
+@login_required
+def delete_notification_sender(sender_id: int):
+    user_id = get_current_user_id()
+    existing = db.get_notification_sender_account(sender_id)
+    if not existing or int(existing.get('user_id') or 0) != int(user_id):
+        return jsonify({'error': '通知发送方不存在'}), 404
+    db.delete_notification_sender_account(sender_id, user_id)
+    return jsonify({'message': '通知发送方已删除'})
+
+
+@app.route('/api/notification-senders/test', methods=['POST'])
+@login_required
+def test_notification_sender():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+    sender_id = _parse_optional_int(data.get('sender_id'))
+    bot_token = str(data.get('bot_token') or '').strip()
+    payload, errors = _validate_notification_sender_account_payload(
+        data,
+        existing_sender=db.get_notification_sender_account(sender_id) if sender_id else None
+    )
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+    if sender_id:
+        sender = db.get_notification_sender_account(sender_id)
+        if not sender or int(sender.get('user_id') or 0) != int(user_id):
+            return jsonify({'error': '通知发送方不存在'}), 404
+    chat_id = str(data.get('chat_id') or '').strip()
+    message = str(data.get('message') or '').strip()
+    try:
+        result = notification_service.send_test_message(
+            chat_id=chat_id,
+            text=message,
+            sender_mode='user_sender',
+            sender_account=payload if not sender_id else None,
+            bot_token_override=bot_token if not sender_id else None,
+            existing_sender_id=sender_id,
+            user_id=user_id
+        )
+        return jsonify({
+            'message': '测试消息发送成功',
+            'result': result
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except requests.RequestException as exc:
+        return jsonify({'error': f'Telegram 请求失败: {exc}'}), 502
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 @app.route('/api/notification-endpoints', methods=['GET'])
 @login_required
 def get_notification_endpoints():
@@ -1811,6 +1987,30 @@ def delete_notification_endpoint(endpoint_id: int):
         return jsonify({'error': '通知接收端不存在'}), 404
     db.delete_notification_endpoint(endpoint_id, user_id)
     return jsonify({'message': '通知接收端已删除'})
+
+
+@app.route('/api/notification-endpoints/test', methods=['POST'])
+@login_required
+def test_notification_endpoint():
+    data = request.get_json() or {}
+    payload, errors = _validate_notification_endpoint_payload(data)
+    if errors:
+        return jsonify({'error': '；'.join(errors)}), 400
+
+    endpoint_key = str(payload.get('endpoint_key') or '').strip()
+    message = str(data.get('message') or '').strip()
+    try:
+        result = notification_service.send_test_message(chat_id=endpoint_key, text=message)
+        return jsonify({
+            'message': '测试消息发送成功',
+            'result': result
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except requests.RequestException as exc:
+        return jsonify({'error': f'Telegram 请求失败: {exc}'}), 502
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/api/notification-subscriptions', methods=['GET'])
@@ -1883,6 +2083,24 @@ def get_notification_deliveries():
     limit = max(1, min(int(request.args.get('limit', 50) or 50), 200))
     items = db.list_notification_deliveries(user_id, limit=limit)
     return jsonify([_serialize_notification_delivery(item) for item in items])
+
+
+@app.route('/api/notification-deliveries/<int:delivery_id>/retry', methods=['POST'])
+@login_required
+def retry_notification_delivery(delivery_id: int):
+    user_id = get_current_user_id()
+    try:
+        item = notification_service.retry_delivery(delivery_id, user_id)
+        return jsonify({
+            'message': '通知已重新发送',
+            'item': _serialize_notification_delivery(item)
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except requests.RequestException as exc:
+        return jsonify({'error': f'Telegram 请求失败: {exc}'}), 502
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
 
 
 # ============ PC28 Public APIs ============

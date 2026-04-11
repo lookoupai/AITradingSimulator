@@ -56,19 +56,79 @@ class NotificationService:
         })
         return self.get_settings()
 
-    def send_test_message(self, chat_id: str, text: str) -> dict:
-        settings = self.get_settings()
-        bot_token = str(settings.get('telegram_bot_token') or '').strip()
-        if not bot_token:
-            raise ValueError('平台尚未配置 Telegram Bot Token')
+    def send_test_message(
+        self,
+        chat_id: str,
+        text: str,
+        sender_mode: str = 'platform',
+        sender_account: dict | None = None,
+        bot_token_override: str | None = None,
+        existing_sender_id: int | None = None,
+        user_id: int | None = None
+    ) -> dict:
         if not str(chat_id or '').strip():
             raise ValueError('测试接收端标识不能为空')
+        resolved_sender = self._resolve_sender_context(
+            sender_mode=sender_mode,
+            sender_account=sender_account,
+            existing_sender_id=existing_sender_id,
+            user_id=user_id,
+            bot_token_override=bot_token_override
+        )
         message_text = str(text or '').strip() or 'AITradingSimulator Telegram 测试消息'
         return self._send_telegram_message(
-            bot_token=bot_token,
+            bot_token=resolved_sender['bot_token'],
             chat_id=str(chat_id).strip(),
             text=message_text
         )
+
+    def retry_delivery(self, delivery_id: int, user_id: int) -> dict:
+        delivery = self.db.get_notification_delivery_by_id(delivery_id, user_id=user_id)
+        if not delivery:
+            raise ValueError('通知投递记录不存在')
+
+        resolved_sender = self._resolve_sender_context(
+            sender_mode=str(delivery.get('sender_mode') or 'platform'),
+            sender_account=delivery if delivery.get('sender_mode') == 'user_sender' else None,
+            existing_sender_id=int(delivery.get('sender_account_id') or 0) if delivery.get('sender_account_id') else None,
+            user_id=user_id
+        )
+        if str(delivery.get('channel_type') or '').strip().lower() != 'telegram':
+            raise ValueError('当前仅支持 Telegram 渠道重发')
+        if not delivery.get('subscription_enabled'):
+            raise ValueError('关联通知订阅已停用，无法重发')
+        if str(delivery.get('endpoint_status') or '').strip().lower() != 'active':
+            raise ValueError('通知接收端未启用，无法重发')
+
+        payload = delivery.get('payload') or {}
+        message_text = str(payload.get('message_text') or '').strip()
+        if not message_text:
+            message_text = self._build_message_text(delivery, payload, settings)
+
+        response_payload = self._send_telegram_message(
+            bot_token=resolved_sender['bot_token'],
+            chat_id=str(delivery.get('endpoint_key') or '').strip(),
+            text=message_text
+        )
+        update_payload = {
+            'subscription_id': int(delivery['subscription_id']),
+            'user_id': int(delivery['user_id']),
+            'predictor_id': int(delivery['predictor_id']),
+            'endpoint_id': int(delivery['endpoint_id']),
+            'event_type': str(delivery.get('event_type') or delivery.get('subscription_event_type') or 'prediction_created'),
+            'record_key': str(delivery.get('record_key') or ''),
+            'status': 'delivered',
+            'payload': {
+                **payload,
+                'message_text': message_text,
+                'telegram_response': response_payload,
+                'manual_retry': True
+            },
+            'error_message': None,
+            'sent_at': self._utc_now_str()
+        }
+        self.db.upsert_notification_delivery(update_payload)
+        return self.db.get_notification_delivery_by_id(delivery_id, user_id=user_id) or update_payload
 
     def notify_prediction_created(self, predictor: dict, prediction: dict, lottery_type: str, detail_builder=None) -> list[dict]:
         settings = self.get_settings()
@@ -151,7 +211,6 @@ class NotificationService:
             self.db.upsert_notification_delivery(payload)
             return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or payload
 
-        bot_token = str(settings.get('telegram_bot_token') or '').strip()
         if str(subscription.get('channel_type') or '').strip().lower() != 'telegram':
             payload = self.build_delivery_payload(subscription, event_payload, record_key)
             payload.update({
@@ -160,20 +219,27 @@ class NotificationService:
             })
             self.db.upsert_notification_delivery(payload)
             return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or payload
-        if not bot_token:
+        try:
+            resolved_sender = self._resolve_sender_context(
+                sender_mode=str(subscription.get('sender_mode') or 'platform'),
+                sender_account=subscription if str(subscription.get('sender_mode') or 'platform') == 'user_sender' else None,
+                existing_sender_id=int(subscription.get('sender_account_id') or 0) if subscription.get('sender_account_id') else None,
+                user_id=int(subscription.get('user_id') or 0)
+            )
+        except ValueError as exc:
             payload = self.build_delivery_payload(subscription, event_payload, record_key)
             payload.update({
                 'status': 'failed',
-                'error_message': '平台尚未配置 Telegram Bot Token'
+                'error_message': str(exc)
             })
             self.db.upsert_notification_delivery(payload)
             return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or payload
 
-        message_text = self._build_message_text(subscription, event_payload, settings)
+        message_text = self._build_message_text(subscription, event_payload, settings, resolved_sender)
         payload = self.build_delivery_payload(subscription, event_payload, record_key)
         try:
             response_payload = self._send_telegram_message(
-                bot_token=bot_token,
+                bot_token=resolved_sender['bot_token'],
                 chat_id=endpoint_key,
                 text=message_text
             )
@@ -240,8 +306,8 @@ class NotificationService:
             'summary': str(prediction.get('reasoning_summary') or '').strip()
         }
 
-    def _build_message_text(self, subscription: dict, event_payload: dict, settings: dict) -> str:
-        bot_name = str(settings.get('telegram_bot_name') or 'AITradingSimulator').strip() or 'AITradingSimulator'
+    def _build_message_text(self, subscription: dict, event_payload: dict, settings: dict, sender_context: dict | None = None) -> str:
+        bot_name = str((sender_context or {}).get('bot_name') or settings.get('telegram_bot_name') or 'AITradingSimulator').strip() or 'AITradingSimulator'
         lines = [f'[{bot_name}] 新预测通知']
         lottery_type = str(event_payload.get('lottery_type') or '').strip().lower()
         lines.append(f"方案：{event_payload.get('predictor_name') or '--'}")
@@ -308,6 +374,63 @@ class NotificationService:
         if not payload.get('ok'):
             raise ValueError(str(payload.get('description') or 'Telegram 发送失败'))
         return payload
+
+    def _resolve_sender_context(
+        self,
+        sender_mode: str,
+        sender_account: dict | None = None,
+        existing_sender_id: int | None = None,
+        user_id: int | None = None,
+        bot_token_override: str | None = None
+    ) -> dict:
+        normalized_mode = str(sender_mode or 'platform').strip().lower() or 'platform'
+        if normalized_mode == 'user_sender':
+            resolved_sender = dict(sender_account or {})
+            if existing_sender_id and not resolved_sender.get('bot_token') and not resolved_sender.get('sender_bot_token'):
+                resolved_sender = self.db.get_notification_sender_account(existing_sender_id) or {}
+            if not resolved_sender:
+                raise ValueError('通知发送方不存在')
+            if user_id is not None and resolved_sender.get('user_id') is not None and int(resolved_sender.get('user_id') or 0) != int(user_id):
+                raise ValueError('通知发送方不存在或无权访问')
+            if resolved_sender.get('status') is not None and str(resolved_sender.get('status') or '').strip().lower() != 'active':
+                raise ValueError('通知发送方未启用')
+            bot_token = str(
+                bot_token_override
+                or resolved_sender.get('bot_token')
+                or resolved_sender.get('sender_bot_token')
+                or ''
+            ).strip()
+            if not bot_token:
+                raise ValueError('用户机器人缺少 Bot Token')
+            return {
+                'mode': 'user_sender',
+                'bot_token': bot_token,
+                'bot_name': str(
+                    resolved_sender.get('bot_name')
+                    or resolved_sender.get('sender_bot_name')
+                    or resolved_sender.get('sender_name')
+                    or resolved_sender.get('sender_account_name')
+                    or ''
+                ).strip(),
+                'sender_name': str(
+                    resolved_sender.get('sender_name')
+                    or resolved_sender.get('sender_account_name')
+                    or resolved_sender.get('bot_name')
+                    or resolved_sender.get('sender_bot_name')
+                    or ''
+                ).strip()
+            }
+
+        settings = self.get_settings()
+        bot_token = str(bot_token_override or settings.get('telegram_bot_token') or '').strip()
+        if not bot_token:
+            raise ValueError('平台尚未配置 Telegram Bot Token')
+        return {
+            'mode': 'platform',
+            'bot_token': bot_token,
+            'bot_name': str(settings.get('telegram_bot_name') or '').strip(),
+            'sender_name': str(settings.get('telegram_bot_name') or '').strip() or '平台机器人'
+        }
 
     def _format_confidence(self, value) -> str:
         parsed = self._parse_float(value)

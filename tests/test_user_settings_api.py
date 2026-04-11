@@ -146,6 +146,65 @@ class UserSettingsApiTests(unittest.TestCase):
             self.assertEqual(delete_response.status_code, 200)
             self.assertEqual(client.get('/api/notification-subscriptions').get_json(), [])
 
+    def test_notification_sender_crud_and_test_route(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+
+            create_response = client.post(
+                '/api/notification-senders',
+                json={
+                    'channel_type': 'telegram',
+                    'sender_name': '我的快彩 Bot',
+                    'bot_name': 'my_fast_bot',
+                    'bot_token': '999999:sender-token',
+                    'is_default': True
+                }
+            )
+            create_payload = create_response.get_json()
+            self.assertEqual(create_response.status_code, 200)
+            sender_id = create_payload['item']['id']
+
+            list_response = client.get('/api/notification-senders')
+            list_payload = list_response.get_json()
+            self.assertEqual(list_response.status_code, 200)
+            self.assertEqual(len(list_payload), 1)
+            self.assertEqual(list_payload[0]['sender_name'], '我的快彩 Bot')
+
+            response_payload = {'ok': True, 'result': {'message_id': 789}}
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = response_payload
+            with patch('services.notification_service.requests.post', return_value=response) as mocked_post:
+                test_response = client.post(
+                    '/api/notification-senders/test',
+                    json={
+                        'sender_id': sender_id,
+                        'chat_id': '123456789',
+                        'message': '用户发送方测试'
+                    }
+                )
+            test_payload = test_response.get_json()
+            self.assertEqual(test_response.status_code, 200)
+            self.assertEqual(test_payload['message'], '测试消息发送成功')
+            self.assertEqual(mocked_post.call_count, 1)
+
+            update_response = client.put(
+                f'/api/notification-senders/{sender_id}',
+                json={
+                    'sender_name': '我的备用 Bot',
+                    'bot_name': 'my_backup_bot',
+                    'bot_token': '',
+                    'status': 'active'
+                }
+            )
+            update_payload = update_response.get_json()
+            self.assertEqual(update_response.status_code, 200)
+            self.assertEqual(update_payload['item']['sender_name'], '我的备用 Bot')
+
+            delete_response = client.delete(f'/api/notification-senders/{sender_id}')
+            self.assertEqual(delete_response.status_code, 200)
+            self.assertEqual(client.get('/api/notification-senders').get_json(), [])
+
     def test_admin_notification_settings_crud(self):
         with fresh_app_harness() as harness:
             client, _ = harness.make_client(username='admin', is_admin=True)
@@ -207,6 +266,96 @@ class UserSettingsApiTests(unittest.TestCase):
                     json={
                         'chat_id': '123456789',
                         'message': '后台测试消息'
+                    }
+                )
+            test_payload = test_response.get_json()
+            self.assertEqual(test_response.status_code, 200)
+            self.assertEqual(test_payload['message'], '测试消息发送成功')
+            self.assertEqual(test_payload['result'], response_payload)
+            self.assertEqual(mocked_post.call_count, 1)
+
+    def test_user_can_retry_failed_notification_delivery(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28', prediction_targets=['big_small'])
+            endpoint_id = harness.db.create_notification_endpoint(
+                user_id=user_id,
+                channel_type='telegram',
+                endpoint_key='123456789',
+                endpoint_label='我的 TG',
+                config={'chat_type': 'private'},
+                status='active',
+                is_default=True
+            )
+            subscription_id = harness.db.create_notification_subscription(
+                user_id=user_id,
+                predictor_id=predictor_id,
+                endpoint_id=endpoint_id,
+                sender_mode='platform',
+                sender_account_id=None,
+                bet_profile_id=None,
+                event_type='prediction_created',
+                delivery_mode='notify_only',
+                filters={},
+                enabled=True
+            )
+            harness.module.notification_service.update_settings(
+                enabled=True,
+                telegram_bot_token='123456:abcdef',
+                telegram_bot_name='predictor_bot'
+            )
+            delivery_id = harness.db.upsert_notification_delivery({
+                'subscription_id': subscription_id,
+                'user_id': user_id,
+                'predictor_id': predictor_id,
+                'endpoint_id': endpoint_id,
+                'event_type': 'prediction_created',
+                'record_key': '20260411003',
+                'status': 'failed',
+                'payload': {
+                    'lottery_type': 'pc28',
+                    'predictor_name': 'pc28-predictor',
+                    'record_key': '20260411003',
+                    'message_text': '测试重发消息'
+                },
+                'error_message': 'network error',
+                'sent_at': None
+            })
+
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = {'ok': True, 'result': {'message_id': 321}}
+
+            with patch('services.notification_service.requests.post', return_value=response) as mocked_post:
+                retry_response = client.post(f'/api/notification-deliveries/{delivery_id}/retry')
+            retry_payload = retry_response.get_json()
+            self.assertEqual(retry_response.status_code, 200)
+            self.assertEqual(retry_payload['item']['status'], 'delivered')
+            self.assertEqual(mocked_post.call_count, 1)
+
+    def test_user_can_test_notification_endpoint(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+            harness.module.notification_service.update_settings(
+                enabled=True,
+                telegram_bot_token='123456:abcdef',
+                telegram_bot_name='predictor_bot'
+            )
+
+            response_payload = {'ok': True, 'result': {'message_id': 456}}
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = response_payload
+
+            with patch('services.notification_service.requests.post', return_value=response) as mocked_post:
+                test_response = client.post(
+                    '/api/notification-endpoints/test',
+                    json={
+                        'channel_type': 'telegram',
+                        'endpoint_key': '123456789',
+                        'endpoint_label': '我的 Telegram',
+                        'config': {'chat_type': 'private'},
+                        'message': '用户侧测试消息'
                     }
                 )
             test_payload = test_response.get_json()

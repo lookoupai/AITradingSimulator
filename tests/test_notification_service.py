@@ -34,6 +34,8 @@ class NotificationServiceTests(unittest.TestCase):
                 user_id=user_id,
                 predictor_id=predictor_id,
                 endpoint_id=endpoint_id,
+                sender_mode='platform',
+                sender_account_id=None,
                 bet_profile_id=None,
                 event_type='prediction_created',
                 delivery_mode='notify_only',
@@ -98,6 +100,8 @@ class NotificationServiceTests(unittest.TestCase):
                 user_id=user_id,
                 predictor_id=predictor_id,
                 endpoint_id=endpoint_id,
+                sender_mode='platform',
+                sender_account_id=None,
                 bet_profile_id=None,
                 event_type='prediction_created',
                 delivery_mode='notify_only',
@@ -130,6 +134,70 @@ class NotificationServiceTests(unittest.TestCase):
             deliveries = harness.db.list_notification_deliveries(user_id)
             self.assertEqual(deliveries[0]['status'], 'skipped')
 
+    def test_prediction_notification_can_use_user_sender_account(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28', prediction_targets=['big_small'])
+            predictor = harness.db.get_predictor(predictor_id, include_secret=True)
+            endpoint_id = harness.db.create_notification_endpoint(
+                user_id=user_id,
+                channel_type='telegram',
+                endpoint_key='123456789',
+                endpoint_label='我的 TG',
+                config={'chat_type': 'private'},
+                status='active',
+                is_default=True
+            )
+            sender_id = harness.db.create_notification_sender_account(
+                user_id=user_id,
+                channel_type='telegram',
+                sender_name='我的机器人',
+                bot_name='my_fast_bot',
+                bot_token='999999:sender-token',
+                status='active',
+                is_default=True
+            )
+            harness.db.create_notification_subscription(
+                user_id=user_id,
+                predictor_id=predictor_id,
+                endpoint_id=endpoint_id,
+                sender_mode='user_sender',
+                sender_account_id=sender_id,
+                bet_profile_id=None,
+                event_type='prediction_created',
+                delivery_mode='notify_only',
+                filters={},
+                enabled=True
+            )
+            harness.module.notification_service.update_settings(
+                enabled=True,
+                telegram_bot_token='123456:platform-token',
+                telegram_bot_name='predictor_bot'
+            )
+
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = {'ok': True, 'result': {'message_id': 1002}}
+
+            with patch('services.notification_service.requests.post', return_value=response) as mocked_post:
+                results = harness.module.notification_service.notify_prediction_created(
+                    predictor=predictor,
+                    prediction={
+                        'predictor_id': predictor_id,
+                        'lottery_type': 'pc28',
+                        'issue_no': '20260411004',
+                        'requested_targets': ['big_small'],
+                        'prediction_big_small': '大',
+                        'confidence': 0.91,
+                        'status': 'pending'
+                    },
+                    lottery_type='pc28'
+                )
+
+            self.assertEqual(results[0]['status'], 'delivered')
+            self.assertEqual(mocked_post.call_args.kwargs['json']['chat_id'], '123456789')
+            self.assertIn('999999:sender-token', mocked_post.call_args.args[0])
+
     def test_football_prediction_notification_uses_run_view_model(self):
         with fresh_app_harness() as harness:
             _, user_id = harness.make_client()
@@ -156,6 +224,8 @@ class NotificationServiceTests(unittest.TestCase):
                 user_id=user_id,
                 predictor_id=predictor_id,
                 endpoint_id=endpoint_id,
+                sender_mode='platform',
+                sender_account_id=None,
                 bet_profile_id=None,
                 event_type='prediction_created',
                 delivery_mode='notify_only',

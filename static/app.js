@@ -174,6 +174,7 @@ class PredictionApp {
         this.currentPredictor = null;
         this.predictors = [];
         this.betProfiles = [];
+        this.notificationSenders = [];
         this.notificationEndpoints = [];
         this.notificationSubscriptions = [];
         this.notificationDeliveries = [];
@@ -310,7 +311,16 @@ class PredictionApp {
         if (betProfileCards) {
             betProfileCards.addEventListener('click', (event) => this.handleBetProfileTableClick(event));
         }
+        document.getElementById('saveNotificationSenderBtn').addEventListener('click', () => this.submitNotificationSender());
+        document.getElementById('testNotificationSenderBtn').addEventListener('click', () => this.testNotificationSender());
+        document.getElementById('resetSenderFormBtn').addEventListener('click', () => this.resetNotificationSenderForm());
+        document.getElementById('notificationSendersBody').addEventListener('click', (event) => this.handleNotificationSenderTableClick(event));
+        const notificationSenderCards = document.getElementById('notificationSendersCards');
+        if (notificationSenderCards) {
+            notificationSenderCards.addEventListener('click', (event) => this.handleNotificationSenderTableClick(event));
+        }
         document.getElementById('saveNotificationEndpointBtn').addEventListener('click', () => this.submitNotificationEndpoint());
+        document.getElementById('testNotificationEndpointBtn').addEventListener('click', () => this.testNotificationEndpoint());
         document.getElementById('resetEndpointFormBtn').addEventListener('click', () => this.resetNotificationEndpointForm());
         document.getElementById('notificationEndpointsBody').addEventListener('click', (event) => this.handleNotificationEndpointTableClick(event));
         const notificationEndpointCards = document.getElementById('notificationEndpointsCards');
@@ -320,11 +330,17 @@ class PredictionApp {
         document.getElementById('saveNotificationSubscriptionBtn').addEventListener('click', () => this.submitNotificationSubscription());
         document.getElementById('resetSubscriptionFormBtn').addEventListener('click', () => this.resetNotificationSubscriptionForm());
         document.getElementById('notificationSubscriptionPredictorId').addEventListener('change', () => this.syncSubscriptionBetProfileOptions());
+        document.getElementById('notificationSubscriptionSenderMode').addEventListener('change', () => this.syncSubscriptionSenderState());
         document.getElementById('notificationSubscriptionDeliveryMode').addEventListener('change', () => this.syncSubscriptionBetProfileState());
         document.getElementById('notificationSubscriptionsBody').addEventListener('click', (event) => this.handleNotificationSubscriptionTableClick(event));
         const notificationSubscriptionCards = document.getElementById('notificationSubscriptionsCards');
         if (notificationSubscriptionCards) {
             notificationSubscriptionCards.addEventListener('click', (event) => this.handleNotificationSubscriptionTableClick(event));
+        }
+        document.getElementById('notificationDeliveriesBody').addEventListener('click', (event) => this.handleNotificationDeliveryTableClick(event));
+        const notificationDeliveryCards = document.getElementById('notificationDeliveriesCards');
+        if (notificationDeliveryCards) {
+            notificationDeliveryCards.addEventListener('click', (event) => this.handleNotificationDeliveryTableClick(event));
         }
         document.getElementById('publicSharePanel').addEventListener('click', (event) => {
             const button = event.target.closest('[data-action="copy-public-url"]');
@@ -350,6 +366,7 @@ class PredictionApp {
         this.enforceNumberTarget();
         this.updateLotteryForm();
         this.resetBetProfileForm();
+        this.resetNotificationSenderForm();
         this.resetNotificationEndpointForm();
         this.resetNotificationSubscriptionForm();
         const footballReplayDate = document.getElementById('footballReplayDate');
@@ -802,29 +819,34 @@ class PredictionApp {
         try {
             const [betProfilesResponse, endpointsResponse, subscriptionsResponse, deliveriesResponse] = await Promise.all([
                 fetch('/api/bet-profiles', { credentials: 'include' }),
+                fetch('/api/notification-senders', { credentials: 'include' }),
                 fetch('/api/notification-endpoints', { credentials: 'include' }),
                 fetch('/api/notification-subscriptions', { credentials: 'include' }),
                 fetch('/api/notification-deliveries', { credentials: 'include' })
             ]);
-            const responses = [betProfilesResponse, endpointsResponse, subscriptionsResponse, deliveriesResponse];
+            const responses = [betProfilesResponse, sendersResponse, endpointsResponse, subscriptionsResponse, deliveriesResponse];
             if (responses.some((item) => item.status === 401)) {
                 window.location.href = '/login';
                 return;
             }
-            const [betProfiles, endpoints, subscriptions, deliveries] = await Promise.all(
+            const [betProfiles, senders, endpoints, subscriptions, deliveries] = await Promise.all(
                 responses.map((item) => this.parseJsonSafely(item))
             );
             this.betProfiles = Array.isArray(betProfiles) ? betProfiles : [];
+            this.notificationSenders = Array.isArray(senders) ? senders : [];
             this.notificationEndpoints = Array.isArray(endpoints) ? endpoints : [];
             this.notificationSubscriptions = Array.isArray(subscriptions) ? subscriptions : [];
             this.notificationDeliveries = Array.isArray(deliveries) ? deliveries : [];
             this.renderBetProfiles(this.betProfiles);
+            this.renderNotificationSenders(this.notificationSenders);
             this.renderNotificationEndpoints(this.notificationEndpoints);
             this.renderNotificationSubscriptions(this.notificationSubscriptions);
             this.renderNotificationDeliveries(this.notificationDeliveries);
             this.renderSubscriptionPredictorOptions();
+            this.renderNotificationSenderOptions();
             this.renderNotificationEndpointOptions();
             this.syncSubscriptionBetProfileOptions();
+            this.syncSubscriptionSenderState();
             this.syncBetProfileModeState();
         } catch (error) {
             console.error('Failed to load user settings:', error);
@@ -993,6 +1015,177 @@ class PredictionApp {
         }
     }
 
+    resetNotificationSenderForm() {
+        document.getElementById('notificationSenderId').value = '';
+        document.getElementById('notificationSenderChannelType').value = 'telegram';
+        document.getElementById('notificationSenderName').value = '';
+        document.getElementById('notificationSenderBotName').value = '';
+        document.getElementById('notificationSenderBotToken').value = '';
+        document.getElementById('notificationSenderStatus').value = 'active';
+        document.getElementById('notificationSenderIsDefault').value = 'false';
+        document.getElementById('notificationSenderTestChatId').value = '';
+    }
+
+    renderNotificationSenders(items) {
+        const tbody = document.getElementById('notificationSendersBody');
+        const cards = document.getElementById('notificationSendersCards');
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">暂无通知发送方</td></tr>';
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">暂无通知发送方</div>';
+            }
+            return;
+        }
+        tbody.innerHTML = items.map((item) => `
+            <tr>
+                <td>
+                    <div class="result-stack">
+                        <strong>${this.escapeHtml(item.sender_name || '--')}</strong>
+                        <span class="result-meta-text">${item.is_default ? '默认发送方' : '普通发送方'}</span>
+                    </div>
+                </td>
+                <td>${this.escapeHtml(item.channel_label || '--')}</td>
+                <td>${this.escapeHtml(item.bot_name || '--')}</td>
+                <td><span class="status-chip ${item.status === 'active' ? 'enabled' : 'disabled'}">${this.escapeHtml(item.status_label || '--')}</span></td>
+                <td>
+                    <div class="predictor-actions">
+                        <button class="icon-btn" data-action="edit-sender" data-id="${item.id}" title="编辑通知发送方"><i class="bi bi-pencil"></i></button>
+                        <button class="icon-btn danger" data-action="delete-sender" data-id="${item.id}" title="删除通知发送方"><i class="bi bi-trash"></i></button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+        if (cards) {
+            cards.innerHTML = items.map((item) => this.renderMobileDataCard({
+                title: this.escapeHtml(item.sender_name || '--'),
+                badgeHtml: `<span class="status-chip ${item.status === 'active' ? 'enabled' : 'disabled'}">${this.escapeHtml(item.status_label || '--')}</span>`,
+                sections: [
+                    { label: '渠道', content: this.escapeHtml(item.channel_label || '--') },
+                    { label: 'Bot 名称', content: this.escapeHtml(item.bot_name || '--') },
+                    { label: '默认', content: this.escapeHtml(item.is_default ? '是' : '否') }
+                ],
+                footer: `
+                    <div class="predictor-actions">
+                        <button class="icon-btn" data-action="edit-sender" data-id="${item.id}" title="编辑通知发送方"><i class="bi bi-pencil"></i></button>
+                        <button class="icon-btn danger" data-action="delete-sender" data-id="${item.id}" title="删除通知发送方"><i class="bi bi-trash"></i></button>
+                    </div>
+                `
+            })).join('');
+        }
+    }
+
+    handleNotificationSenderTableClick(event) {
+        const button = event.target.closest('[data-action]');
+        if (!button) {
+            return;
+        }
+        const senderId = Number(button.dataset.id);
+        if (!senderId) {
+            return;
+        }
+        if (button.dataset.action === 'edit-sender') {
+            this.populateNotificationSenderForm(senderId);
+            return;
+        }
+        if (button.dataset.action === 'delete-sender') {
+            this.deleteNotificationSender(senderId);
+        }
+    }
+
+    populateNotificationSenderForm(senderId) {
+        const item = (this.notificationSenders || []).find((row) => row.id === senderId);
+        if (!item) {
+            return;
+        }
+        document.getElementById('notificationSenderId').value = String(item.id);
+        document.getElementById('notificationSenderChannelType').value = item.channel_type || 'telegram';
+        document.getElementById('notificationSenderName').value = item.sender_name || '';
+        document.getElementById('notificationSenderBotName').value = item.bot_name || '';
+        document.getElementById('notificationSenderBotToken').value = '';
+        document.getElementById('notificationSenderStatus').value = item.status || 'active';
+        document.getElementById('notificationSenderIsDefault').value = item.is_default ? 'true' : 'false';
+    }
+
+    async submitNotificationSender() {
+        const senderId = document.getElementById('notificationSenderId').value;
+        const payload = {
+            channel_type: document.getElementById('notificationSenderChannelType').value || 'telegram',
+            sender_name: document.getElementById('notificationSenderName').value.trim(),
+            bot_name: document.getElementById('notificationSenderBotName').value.trim(),
+            bot_token: document.getElementById('notificationSenderBotToken').value.trim(),
+            status: document.getElementById('notificationSenderStatus').value || 'active',
+            is_default: document.getElementById('notificationSenderIsDefault').value === 'true'
+        };
+        const url = senderId ? `/api/notification-senders/${senderId}` : '/api/notification-senders';
+        const method = senderId ? 'PUT' : 'POST';
+        try {
+            const response = await fetch(url, {
+                method,
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '保存通知发送方失败');
+            }
+            this.resetNotificationSenderForm();
+            await this.loadUserSettings();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async testNotificationSender() {
+        const senderId = document.getElementById('notificationSenderId').value;
+        const payload = {
+            sender_id: senderId ? Number(senderId) : null,
+            channel_type: document.getElementById('notificationSenderChannelType').value || 'telegram',
+            sender_name: document.getElementById('notificationSenderName').value.trim(),
+            bot_name: document.getElementById('notificationSenderBotName').value.trim(),
+            bot_token: document.getElementById('notificationSenderBotToken').value.trim(),
+            status: document.getElementById('notificationSenderStatus').value || 'active',
+            is_default: document.getElementById('notificationSenderIsDefault').value === 'true',
+            chat_id: document.getElementById('notificationSenderTestChatId').value.trim(),
+            message: 'AITradingSimulator 用户自有机器人测试消息'
+        };
+        try {
+            const response = await fetch('/api/notification-senders/test', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '测试通知发送方失败');
+            }
+            alert(data.message || '测试消息发送成功');
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async deleteNotificationSender(senderId) {
+        if (!window.confirm('确定删除这个通知发送方吗？相关订阅会回退到平台机器人。')) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/notification-senders/${senderId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '删除通知发送方失败');
+            }
+            this.resetNotificationSenderForm();
+            await this.loadUserSettings();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
     resetNotificationEndpointForm() {
         document.getElementById('notificationEndpointId').value = '';
         document.getElementById('notificationEndpointChannelType').value = 'telegram';
@@ -1115,6 +1308,35 @@ class PredictionApp {
         }
     }
 
+    async testNotificationEndpoint() {
+        const payload = {
+            channel_type: document.getElementById('notificationEndpointChannelType').value || 'telegram',
+            endpoint_key: document.getElementById('notificationEndpointKey').value.trim(),
+            endpoint_label: document.getElementById('notificationEndpointLabel').value.trim(),
+            config: {
+                chat_type: document.getElementById('notificationEndpointChatType').value || 'private'
+            },
+            status: document.getElementById('notificationEndpointStatus').value || 'active',
+            is_default: document.getElementById('notificationEndpointIsDefault').value === 'true',
+            message: 'AITradingSimulator 用户侧接收端测试消息'
+        };
+        try {
+            const response = await fetch('/api/notification-endpoints/test', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '测试通知接收端失败');
+            }
+            alert(data.message || '测试消息发送成功');
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
     async deleteNotificationEndpoint(endpointId) {
         if (!window.confirm('确定删除这个通知接收端吗？关联订阅和投递记录会同时清理。')) {
             return;
@@ -1171,9 +1393,30 @@ class PredictionApp {
         select.value = nextValue;
     }
 
+    renderNotificationSenderOptions() {
+        const select = document.getElementById('notificationSubscriptionSenderAccountId');
+        const currentValue = select.value;
+        const items = this.getCurrentSenderOptions();
+        select.innerHTML = ['<option value="">请选择我的机器人</option>'].concat(
+            items.map((item) => `<option value="${item.id}">${this.escapeHtml(item.sender_name || '--')} · ${this.escapeHtml(item.bot_name || '--')}</option>`)
+        ).join('');
+        if (currentValue && items.some((item) => String(item.id) === String(currentValue))) {
+            select.value = currentValue;
+        } else {
+            const defaultItem = items.find((item) => item.is_default) || null;
+            select.value = defaultItem ? String(defaultItem.id) : '';
+        }
+    }
+
+    getCurrentSenderOptions() {
+        return (this.notificationSenders || []).filter((item) => (item.channel_type || 'telegram') === 'telegram' && item.status === 'active');
+    }
+
     resetNotificationSubscriptionForm() {
         document.getElementById('notificationSubscriptionId').value = '';
         this.renderSubscriptionPredictorOptions();
+        document.getElementById('notificationSubscriptionSenderMode').value = 'platform';
+        this.renderNotificationSenderOptions();
         this.renderNotificationEndpointOptions();
         document.getElementById('notificationSubscriptionEventType').value = 'prediction_created';
         document.getElementById('notificationSubscriptionDeliveryMode').value = 'notify_only';
@@ -1181,6 +1424,7 @@ class PredictionApp {
         document.getElementById('notificationSubscriptionEnabled').value = 'true';
         this.syncSubscriptionBetProfileOptions();
         this.syncSubscriptionBetProfileState();
+        this.syncSubscriptionSenderState();
     }
 
     syncSubscriptionBetProfileOptions() {
@@ -1216,6 +1460,22 @@ class PredictionApp {
         }
     }
 
+    syncSubscriptionSenderState() {
+        const mode = document.getElementById('notificationSubscriptionSenderMode').value || 'platform';
+        const senderSelect = document.getElementById('notificationSubscriptionSenderAccountId');
+        senderSelect.disabled = mode !== 'user_sender';
+        if (mode !== 'user_sender') {
+            senderSelect.value = '';
+            return;
+        }
+        if (!senderSelect.value) {
+            const firstAvailable = Array.from(senderSelect.options).find((item) => item.value);
+            if (firstAvailable) {
+                senderSelect.value = firstAvailable.value;
+            }
+        }
+    }
+
     renderNotificationSubscriptions(items) {
         const tbody = document.getElementById('notificationSubscriptionsBody');
         const cards = document.getElementById('notificationSubscriptionsCards');
@@ -1235,6 +1495,7 @@ class PredictionApp {
                     </div>
                 </td>
                 <td>${this.escapeHtml(item.endpoint_label || '--')}</td>
+                <td>${this.escapeHtml(item.sender_mode === 'user_sender' ? (item.sender_account_name || '--') : '平台机器人')}</td>
                 <td>${this.escapeHtml(item.delivery_mode_label || '--')}</td>
                 <td>${this.escapeHtml(item.bet_profile_name || '--')}</td>
                 <td><span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span></td>
@@ -1252,6 +1513,7 @@ class PredictionApp {
                 badgeHtml: `<span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span>`,
                 sections: [
                     { label: '接收端', content: this.escapeHtml(item.endpoint_label || '--') },
+                    { label: '发送方', content: this.escapeHtml(item.sender_mode === 'user_sender' ? (item.sender_account_name || '--') : '平台机器人') },
                     { label: '模式', content: this.escapeHtml(item.delivery_mode_label || '--') },
                     { label: '下注策略', content: this.escapeHtml(item.bet_profile_name || '--') },
                     { label: '最低置信度', content: this.escapeHtml(String((item.filter || {}).confidence_gte ?? '--')) }
@@ -1292,6 +1554,9 @@ class PredictionApp {
         document.getElementById('notificationSubscriptionId').value = String(item.id);
         this.renderSubscriptionPredictorOptions();
         document.getElementById('notificationSubscriptionPredictorId').value = String(item.predictor_id);
+        document.getElementById('notificationSubscriptionSenderMode').value = item.sender_mode || 'platform';
+        this.renderNotificationSenderOptions();
+        document.getElementById('notificationSubscriptionSenderAccountId').value = item.sender_account_id ? String(item.sender_account_id) : '';
         this.renderNotificationEndpointOptions();
         document.getElementById('notificationSubscriptionEndpointId').value = String(item.endpoint_id);
         document.getElementById('notificationSubscriptionEventType').value = item.event_type || 'prediction_created';
@@ -1301,6 +1566,7 @@ class PredictionApp {
         this.syncSubscriptionBetProfileOptions();
         document.getElementById('notificationSubscriptionBetProfileId').value = item.bet_profile_id ? String(item.bet_profile_id) : '';
         this.syncSubscriptionBetProfileState();
+        this.syncSubscriptionSenderState();
     }
 
     async submitNotificationSubscription() {
@@ -1309,6 +1575,10 @@ class PredictionApp {
         const payload = {
             predictor_id: Number(document.getElementById('notificationSubscriptionPredictorId').value || 0),
             endpoint_id: Number(document.getElementById('notificationSubscriptionEndpointId').value || 0),
+            sender_mode: document.getElementById('notificationSubscriptionSenderMode').value || 'platform',
+            sender_account_id: document.getElementById('notificationSubscriptionSenderAccountId').value
+                ? Number(document.getElementById('notificationSubscriptionSenderAccountId').value)
+                : null,
             bet_profile_id: document.getElementById('notificationSubscriptionBetProfileId').value
                 ? Number(document.getElementById('notificationSubscriptionBetProfileId').value)
                 : null,
@@ -1377,7 +1647,13 @@ class PredictionApp {
                 <td>${this.escapeHtml(item.event_label || '--')}</td>
                 <td>${this.escapeHtml(item.record_key || '--')}</td>
                 <td><span class="status-chip ${item.status === 'delivered' ? 'enabled' : item.status === 'failed' ? 'failed' : 'pending'}">${this.escapeHtml(item.status_label || '--')}</span></td>
-                <td>${this.escapeHtml(item.sent_at || item.created_at || '--')}</td>
+                <td>
+                    <div class="result-stack">
+                        <span>${this.escapeHtml(item.sent_at || item.created_at || '--')}</span>
+                        ${item.error_message ? `<span class="result-meta-text">${this.escapeHtml(item.error_message)}</span>` : ''}
+                        ${item.can_retry ? `<div class="predictor-actions"><button class="btn ghost compact" data-action="retry-delivery" data-id="${item.id}">重发</button></div>` : ''}
+                    </div>
+                </td>
             </tr>
         `).join('');
         if (cards) {
@@ -1388,9 +1664,41 @@ class PredictionApp {
                     { label: '接收端', content: this.escapeHtml(item.endpoint_label || '--') },
                     { label: '事件', content: this.escapeHtml(item.event_label || '--') },
                     { label: '记录键', content: this.escapeHtml(item.record_key || '--') },
-                    { label: '时间', content: this.escapeHtml(item.sent_at || item.created_at || '--') }
-                ]
+                    { label: '时间', content: this.escapeHtml(item.sent_at || item.created_at || '--') },
+                    { label: '错误', content: this.escapeHtml(item.error_message || '--') }
+                ],
+                footer: item.can_retry
+                    ? `<div class="predictor-actions"><button class="btn ghost compact" data-action="retry-delivery" data-id="${item.id}">重发</button></div>`
+                    : ''
             })).join('');
+        }
+    }
+
+    handleNotificationDeliveryTableClick(event) {
+        const button = event.target.closest('[data-action="retry-delivery"]');
+        if (!button) {
+            return;
+        }
+        const deliveryId = Number(button.dataset.id);
+        if (!deliveryId) {
+            return;
+        }
+        this.retryNotificationDelivery(deliveryId);
+    }
+
+    async retryNotificationDelivery(deliveryId) {
+        try {
+            const response = await fetch(`/api/notification-deliveries/${deliveryId}/retry`, {
+                method: 'POST',
+                credentials: 'include'
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '通知重发失败');
+            }
+            await this.loadUserSettings();
+        } catch (error) {
+            alert(error.message);
         }
     }
 
@@ -1495,6 +1803,7 @@ class PredictionApp {
             this.currentPredictor = data.predictor;
             this.currentLotteryType = data.predictor?.lottery_type || 'pc28';
             this.renderSubscriptionPredictorOptions();
+            this.renderNotificationSenderOptions();
             this.syncSubscriptionBetProfileOptions();
             document.getElementById('profitPanel').style.display = data.predictor?.capabilities?.supports_profit_simulation ? '' : 'none';
             this.currentStats = data.stats || null;
@@ -3002,6 +3311,7 @@ class PredictionApp {
         this.currentPredictions = [];
         this.updatePredictorActionState(null);
         this.renderSubscriptionPredictorOptions();
+        this.renderNotificationSenderOptions();
         this.syncSubscriptionBetProfileOptions();
         this.renderPredictorGuardPanel(null);
         document.getElementById('currentPrediction').className = 'prediction-summary empty-panel';
