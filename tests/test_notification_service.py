@@ -69,15 +69,19 @@ class NotificationServiceTests(unittest.TestCase):
                     prediction=prediction,
                     lottery_type='pc28'
                 )
+                process_result = harness.module.notification_service.process_delivery_jobs()
                 second_results = harness.module.notification_service.notify_prediction_created(
                     predictor=predictor,
                     prediction=prediction,
                     lottery_type='pc28'
                 )
+                second_process_result = harness.module.notification_service.process_delivery_jobs()
 
             self.assertEqual(mocked_post.call_count, 1)
-            self.assertEqual(first_results[0]['status'], 'delivered')
+            self.assertEqual(first_results[0]['status'], 'pending')
+            self.assertEqual(process_result['delivered_count'], 1)
             self.assertEqual(second_results[0]['status'], 'delivered')
+            self.assertEqual(second_process_result['delivered_count'], 0)
             deliveries = harness.db.list_notification_deliveries(user_id)
             self.assertEqual(len(deliveries), 1)
             self.assertEqual(deliveries[0]['status'], 'delivered')
@@ -128,9 +132,11 @@ class NotificationServiceTests(unittest.TestCase):
                     },
                     lottery_type='pc28'
                 )
+                process_result = harness.module.notification_service.process_delivery_jobs()
 
             self.assertEqual(mocked_post.call_count, 0)
             self.assertEqual(results[0]['status'], 'skipped')
+            self.assertEqual(process_result['processed_count'], 0)
             deliveries = harness.db.list_notification_deliveries(user_id)
             self.assertEqual(deliveries[0]['status'], 'skipped')
 
@@ -193,8 +199,10 @@ class NotificationServiceTests(unittest.TestCase):
                     },
                     lottery_type='pc28'
                 )
+                process_result = harness.module.notification_service.process_delivery_jobs()
 
-            self.assertEqual(results[0]['status'], 'delivered')
+            self.assertEqual(results[0]['status'], 'pending')
+            self.assertEqual(process_result['delivered_count'], 1)
             self.assertEqual(mocked_post.call_args.kwargs['json']['chat_id'], '123456789')
             self.assertIn('999999:sender-token', mocked_post.call_args.args[0])
 
@@ -308,9 +316,11 @@ class NotificationServiceTests(unittest.TestCase):
                     lottery_type='jingcai_football',
                     detail_builder=lambda saved_run: harness.module.jingcai_football_service.build_run_view_model(harness.db, saved_run)
                 )
+                process_result = harness.module.notification_service.process_delivery_jobs()
 
             self.assertEqual(mocked_post.call_count, 1)
-            self.assertEqual(results[0]['status'], 'delivered')
+            self.assertEqual(results[0]['status'], 'pending')
+            self.assertEqual(process_result['delivered_count'], 1)
             deliveries = harness.db.list_notification_deliveries(user_id)
             self.assertEqual(len(deliveries), 1)
             self.assertEqual(deliveries[0]['status'], 'delivered')

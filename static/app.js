@@ -817,7 +817,7 @@ class PredictionApp {
 
     async loadUserSettings() {
         try {
-            const [betProfilesResponse, endpointsResponse, subscriptionsResponse, deliveriesResponse] = await Promise.all([
+            const [betProfilesResponse, sendersResponse, endpointsResponse, subscriptionsResponse, deliveriesResponse] = await Promise.all([
                 fetch('/api/bet-profiles', { credentials: 'include' }),
                 fetch('/api/notification-senders', { credentials: 'include' }),
                 fetch('/api/notification-endpoints', { credentials: 'include' }),
@@ -1480,7 +1480,7 @@ class PredictionApp {
         const tbody = document.getElementById('notificationSubscriptionsBody');
         const cards = document.getElementById('notificationSubscriptionsCards');
         if (!items.length) {
-            tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">暂无通知订阅</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-cell">暂无通知订阅</td></tr>';
             if (cards) {
                 cards.innerHTML = '<div class="empty-panel">暂无通知订阅</div>';
             }

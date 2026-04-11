@@ -3,11 +3,14 @@
 """
 from __future__ import annotations
 
+import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 
 import requests
 
+import config
 from services.bet_strategy import build_bet_strategy_label
 
 
@@ -15,6 +18,12 @@ NOTIFICATION_ENABLED_KEY = 'notifications.enabled'
 TELEGRAM_BOT_TOKEN_KEY = 'notifications.telegram_bot_token'
 TELEGRAM_BOT_NAME_KEY = 'notifications.telegram_bot_name'
 DEFAULT_NOTIFICATION_ENABLED = False
+
+
+class TelegramRateLimitError(Exception):
+    def __init__(self, message: str, retry_after: int = 1):
+        super().__init__(message)
+        self.retry_after = max(1, int(retry_after or 1))
 
 
 @dataclass
@@ -35,6 +44,8 @@ class NotificationService:
     def __init__(self, db, timeout: int = 15):
         self.db = db
         self.timeout = max(3, int(timeout or 15))
+        self._global_send_times = deque()
+        self._last_chat_send_at: dict[str, float] = {}
 
     def get_settings(self) -> dict:
         raw_settings = self.db.get_system_settings([
@@ -87,6 +98,7 @@ class NotificationService:
         if not delivery:
             raise ValueError('通知投递记录不存在')
 
+        settings = self.get_settings()
         resolved_sender = self._resolve_sender_context(
             sender_mode=str(delivery.get('sender_mode') or 'platform'),
             sender_account=delivery if delivery.get('sender_mode') == 'user_sender' else None,
@@ -158,10 +170,9 @@ class NotificationService:
 
         results = []
         for subscription in subscriptions:
-            result = self._deliver_prediction_created(
+            result = self._enqueue_prediction_created(
                 subscription=subscription,
-                event_payload=event_payload,
-                settings=settings
+                event_payload=event_payload
             )
             results.append(result)
         return results
@@ -180,7 +191,7 @@ class NotificationService:
             'sent_at': None
         }
 
-    def _deliver_prediction_created(self, subscription: dict, event_payload: dict, settings: dict) -> dict:
+    def _enqueue_prediction_created(self, subscription: dict, event_payload: dict) -> dict:
         record_key = str(event_payload.get('record_key') or '')
         delivery = self.db.get_notification_delivery(
             int(subscription['id']),
@@ -198,8 +209,11 @@ class NotificationService:
                 'status': 'skipped',
                 'error_message': f'置信度 {confidence:.2f} 低于阈值 {confidence_gte:.2f}'
             })
-            self.db.upsert_notification_delivery(payload)
-            return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or payload
+            delivery_id = self.db.upsert_notification_delivery(payload)
+            return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or {
+                **payload,
+                'id': delivery_id
+            }
 
         endpoint_key = str(subscription.get('endpoint_key') or '').strip()
         if not endpoint_key:
@@ -208,8 +222,11 @@ class NotificationService:
                 'status': 'failed',
                 'error_message': '通知接收端缺少 endpoint_key'
             })
-            self.db.upsert_notification_delivery(payload)
-            return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or payload
+            delivery_id = self.db.upsert_notification_delivery(payload)
+            return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or {
+                **payload,
+                'id': delivery_id
+            }
 
         if str(subscription.get('channel_type') or '').strip().lower() != 'telegram':
             payload = self.build_delivery_payload(subscription, event_payload, record_key)
@@ -217,53 +234,172 @@ class NotificationService:
                 'status': 'failed',
                 'error_message': '当前仅支持 Telegram 渠道'
             })
-            self.db.upsert_notification_delivery(payload)
-            return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or payload
+        payload = self.build_delivery_payload(subscription, event_payload, record_key)
+        payload.update({'status': 'pending'})
+        delivery_id = self.db.upsert_notification_delivery(payload)
+        self.db.upsert_notification_delivery_job({
+            'delivery_id': delivery_id,
+            'subscription_id': payload['subscription_id'],
+            'user_id': payload['user_id'],
+            'predictor_id': payload['predictor_id'],
+            'endpoint_id': payload['endpoint_id'],
+            'sender_mode': subscription.get('sender_mode') or 'platform',
+            'sender_account_id': subscription.get('sender_account_id'),
+            'channel_type': subscription.get('channel_type') or 'telegram',
+            'status': 'queued',
+            'attempt_count': 0,
+            'available_at': self._utc_now_str(),
+            'locked_at': None,
+            'last_error_message': None,
+            'last_response': {}
+        })
+        return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or {
+            **payload,
+            'id': delivery_id
+        }
+
+    def process_delivery_jobs(self, limit: int | None = None) -> dict:
+        batch_size = max(1, int(limit or config.NOTIFICATION_WORKER_BATCH_SIZE))
+        jobs = self.db.claim_notification_delivery_jobs(limit=batch_size)
+        processed = 0
+        delivered = 0
+        retrying = 0
+        failed = 0
+        for job in jobs:
+            processed += 1
+            result = self._process_delivery_job(job)
+            status = str(result.get('status') or '').strip().lower()
+            if status == 'delivered':
+                delivered += 1
+            elif status == 'retrying':
+                retrying += 1
+            elif status == 'failed':
+                failed += 1
+        return {
+            'processed_count': processed,
+            'delivered_count': delivered,
+            'retrying_count': retrying,
+            'failed_count': failed
+        }
+
+    def _process_delivery_job(self, job: dict) -> dict:
+        delivery = self.db.get_notification_delivery_by_id(int(job['delivery_id']))
+        if not delivery:
+            self.db.update_notification_delivery_job(int(job['id']), {
+                'status': 'failed',
+                'last_error_message': '关联投递记录不存在'
+            })
+            return {'status': 'failed'}
+
+        payload = delivery.get('payload') or {}
         try:
             resolved_sender = self._resolve_sender_context(
-                sender_mode=str(subscription.get('sender_mode') or 'platform'),
-                sender_account=subscription if str(subscription.get('sender_mode') or 'platform') == 'user_sender' else None,
-                existing_sender_id=int(subscription.get('sender_account_id') or 0) if subscription.get('sender_account_id') else None,
-                user_id=int(subscription.get('user_id') or 0)
+                sender_mode=str(job.get('sender_mode') or 'platform'),
+                sender_account=delivery if str(job.get('sender_mode') or 'platform') == 'user_sender' else None,
+                existing_sender_id=int(job.get('sender_account_id') or 0) if job.get('sender_account_id') else None,
+                user_id=int(delivery.get('user_id') or 0)
             )
-        except ValueError as exc:
-            payload = self.build_delivery_payload(subscription, event_payload, record_key)
-            payload.update({
-                'status': 'failed',
-                'error_message': str(exc)
-            })
-            self.db.upsert_notification_delivery(payload)
-            return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or payload
-
-        message_text = self._build_message_text(subscription, event_payload, settings, resolved_sender)
-        payload = self.build_delivery_payload(subscription, event_payload, record_key)
-        try:
+            settings = self.get_settings()
+            message_text = str(payload.get('message_text') or '').strip()
+            if not message_text:
+                message_text = self._build_message_text(delivery, payload, settings, resolved_sender)
+            chat_id = str(delivery.get('endpoint_key') or '').strip()
+            self._respect_rate_limits(chat_id)
             response_payload = self._send_telegram_message(
                 bot_token=resolved_sender['bot_token'],
-                chat_id=endpoint_key,
+                chat_id=chat_id,
                 text=message_text
             )
-            payload.update({
+            self.db.upsert_notification_delivery({
+                'subscription_id': int(delivery['subscription_id']),
+                'user_id': int(delivery['user_id']),
+                'predictor_id': int(delivery['predictor_id']),
+                'endpoint_id': int(delivery['endpoint_id']),
+                'event_type': str(delivery.get('event_type') or delivery.get('subscription_event_type') or 'prediction_created'),
+                'record_key': str(delivery.get('record_key') or ''),
                 'status': 'delivered',
                 'payload': {
-                    **(event_payload or {}),
+                    **payload,
                     'message_text': message_text,
                     'telegram_response': response_payload
                 },
+                'error_message': None,
                 'sent_at': self._utc_now_str()
             })
-        except Exception as exc:
-            payload.update({
-                'status': 'failed',
-                'payload': {
-                    **(event_payload or {}),
-                    'message_text': message_text
-                },
-                'error_message': str(exc)
+            self.db.update_notification_delivery_job(int(job['id']), {
+                'status': 'delivered',
+                'locked_at': None,
+                'last_error_message': None,
+                'last_response': response_payload
             })
+            return {'status': 'delivered'}
+        except TelegramRateLimitError as exc:
+            next_time = self._utc_after_seconds(exc.retry_after)
+            self.db.upsert_notification_delivery({
+                'subscription_id': int(delivery['subscription_id']),
+                'user_id': int(delivery['user_id']),
+                'predictor_id': int(delivery['predictor_id']),
+                'endpoint_id': int(delivery['endpoint_id']),
+                'event_type': str(delivery.get('event_type') or delivery.get('subscription_event_type') or 'prediction_created'),
+                'record_key': str(delivery.get('record_key') or ''),
+                'status': 'pending',
+                'payload': payload,
+                'error_message': str(exc),
+                'sent_at': delivery.get('sent_at')
+            })
+            self.db.update_notification_delivery_job(int(job['id']), {
+                'status': 'retrying',
+                'locked_at': None,
+                'available_at': next_time,
+                'last_error_message': str(exc)
+            })
+            return {'status': 'retrying'}
+        except Exception as exc:
+            attempt_count = int(job.get('attempt_count') or 1)
+            max_attempts = max(1, int(config.NOTIFICATION_MAX_RETRY_ATTEMPTS))
+            if attempt_count >= max_attempts:
+                self.db.upsert_notification_delivery({
+                    'subscription_id': int(delivery['subscription_id']),
+                    'user_id': int(delivery['user_id']),
+                    'predictor_id': int(delivery['predictor_id']),
+                    'endpoint_id': int(delivery['endpoint_id']),
+                    'event_type': str(delivery.get('event_type') or delivery.get('subscription_event_type') or 'prediction_created'),
+                    'record_key': str(delivery.get('record_key') or ''),
+                    'status': 'failed',
+                    'payload': payload,
+                    'error_message': str(exc),
+                    'sent_at': delivery.get('sent_at')
+                })
+                self.db.update_notification_delivery_job(int(job['id']), {
+                    'status': 'failed',
+                    'locked_at': None,
+                    'last_error_message': str(exc)
+                })
+                return {'status': 'failed'}
 
-        self.db.upsert_notification_delivery(payload)
-        return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or payload
+            retry_seconds = min(
+                max(1, int(config.NOTIFICATION_RETRY_BASE_SECONDS)) * (2 ** max(0, attempt_count - 1)),
+                max(1, int(config.NOTIFICATION_RETRY_MAX_SECONDS))
+            )
+            self.db.upsert_notification_delivery({
+                'subscription_id': int(delivery['subscription_id']),
+                'user_id': int(delivery['user_id']),
+                'predictor_id': int(delivery['predictor_id']),
+                'endpoint_id': int(delivery['endpoint_id']),
+                'event_type': str(delivery.get('event_type') or delivery.get('subscription_event_type') or 'prediction_created'),
+                'record_key': str(delivery.get('record_key') or ''),
+                'status': 'pending',
+                'payload': payload,
+                'error_message': str(exc),
+                'sent_at': delivery.get('sent_at')
+            })
+            self.db.update_notification_delivery_job(int(job['id']), {
+                'status': 'retrying',
+                'locked_at': None,
+                'available_at': self._utc_after_seconds(retry_seconds),
+                'last_error_message': str(exc)
+            })
+            return {'status': 'retrying'}
 
     def _build_prediction_event_payload(self, predictor: dict, prediction: dict, lottery_type: str, detail_builder=None) -> dict:
         normalized_lottery = str(lottery_type or predictor.get('lottery_type') or 'pc28').strip().lower()
@@ -360,6 +496,23 @@ class NotificationService:
             'max_steps': subscription.get('bet_profile_max_steps')
         }
 
+    def _respect_rate_limits(self, chat_id: str):
+        global_rate = max(1.0, float(config.NOTIFICATION_GLOBAL_MESSAGES_PER_SECOND))
+        min_chat_interval = max(0.0, float(config.NOTIFICATION_CHAT_MIN_INTERVAL_SECONDS))
+        now = time.monotonic()
+        cutoff = now - 1.0
+        while self._global_send_times and self._global_send_times[0] < cutoff:
+            self._global_send_times.popleft()
+        if len(self._global_send_times) >= int(global_rate):
+            sleep_seconds = max(0.0, 1.0 - (now - self._global_send_times[0]))
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+        last_chat_at = self._last_chat_send_at.get(str(chat_id))
+        if last_chat_at is not None:
+            remaining = min_chat_interval - (time.monotonic() - last_chat_at)
+            if remaining > 0:
+                time.sleep(remaining)
+
     def _send_telegram_message(self, bot_token: str, chat_id: str, text: str) -> dict:
         response = requests.post(
             f'https://api.telegram.org/bot{bot_token}/sendMessage',
@@ -369,10 +522,27 @@ class NotificationService:
             },
             timeout=self.timeout
         )
+        if response.status_code == 429:
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {}
+            retry_after = (
+                ((payload.get('parameters') or {}).get('retry_after'))
+                or payload.get('retry_after')
+                or 1
+            )
+            raise TelegramRateLimitError(
+                str(payload.get('description') or 'Telegram 限流'),
+                retry_after=int(retry_after)
+            )
         response.raise_for_status()
         payload = response.json()
         if not payload.get('ok'):
             raise ValueError(str(payload.get('description') or 'Telegram 发送失败'))
+        now = time.monotonic()
+        self._global_send_times.append(now)
+        self._last_chat_send_at[str(chat_id)] = now
         return payload
 
     def _resolve_sender_context(
@@ -392,7 +562,10 @@ class NotificationService:
                 raise ValueError('通知发送方不存在')
             if user_id is not None and resolved_sender.get('user_id') is not None and int(resolved_sender.get('user_id') or 0) != int(user_id):
                 raise ValueError('通知发送方不存在或无权访问')
-            if resolved_sender.get('status') is not None and str(resolved_sender.get('status') or '').strip().lower() != 'active':
+            sender_status = resolved_sender.get('sender_account_status')
+            if sender_status is None:
+                sender_status = resolved_sender.get('status')
+            if sender_status is not None and str(sender_status or '').strip().lower() != 'active':
                 raise ValueError('通知发送方未启用')
             bot_token = str(
                 bot_token_override
@@ -458,3 +631,6 @@ class NotificationService:
 
     def _utc_now_str(self) -> str:
         return datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+    def _utc_after_seconds(self, seconds: int) -> str:
+        return datetime.utcfromtimestamp(time.time() + max(1, int(seconds or 1))).strftime('%Y-%m-%d %H:%M:%S')

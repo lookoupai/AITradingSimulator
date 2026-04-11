@@ -74,8 +74,10 @@ profit_simulator = ProfitSimulator(db)
 _init_lock = threading.Lock()
 _app_initialized = False
 _scheduler_started = False
+_notification_worker_started = False
 _scheduler_owner_id = f'{os.getpid()}-{uuid.uuid4().hex}'
 AUTO_PREDICTION_SCHEDULER = 'lottery-auto-prediction'
+NOTIFICATION_DELIVERY_SCHEDULER = 'notification-delivery-worker'
 NOTIFICATION_CHANNEL_LABELS = {
     'telegram': 'Telegram'
 }
@@ -116,7 +118,7 @@ def after_request(response):
 
 
 def initialize_application():
-    global _app_initialized, _scheduler_started
+    global _app_initialized, _scheduler_started, _notification_worker_started
 
     with _init_lock:
         if not _app_initialized:
@@ -127,6 +129,11 @@ def initialize_application():
             scheduler_thread = threading.Thread(target=prediction_loop, daemon=True)
             scheduler_thread.start()
             _scheduler_started = True
+
+        if config.NOTIFICATION_WORKER_ENABLED and not _notification_worker_started:
+            notification_thread = threading.Thread(target=notification_delivery_loop, daemon=True)
+            notification_thread.start()
+            _notification_worker_started = True
 
 
 def prediction_loop():
@@ -181,6 +188,33 @@ def prediction_loop():
         except Exception as exc:
             print(f'[ERROR] 自动预测线程异常: {exc}')
             time.sleep(10)
+
+
+def notification_delivery_loop():
+    print(f'[INFO] 通知投递线程启动，进程={os.getpid()}')
+    scheduler_name = NOTIFICATION_DELIVERY_SCHEDULER
+    stale_after_seconds = max(int(config.NOTIFICATION_RETRY_MAX_SECONDS), 60)
+    while True:
+        try:
+            acquired = db.try_acquire_scheduler(
+                scheduler_name,
+                _scheduler_owner_id,
+                stale_after_seconds=stale_after_seconds
+            )
+            if acquired:
+                db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
+                result = notification_service.process_delivery_jobs(limit=config.NOTIFICATION_WORKER_BATCH_SIZE)
+                db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
+                if int(result.get('processed_count') or 0) > 0:
+                    print(
+                        f"[NOTIFY] {get_current_beijing_time_str()} processed={result.get('processed_count')} "
+                        f"delivered={result.get('delivered_count')} retrying={result.get('retrying_count')} "
+                        f"failed={result.get('failed_count')}"
+                    )
+            time.sleep(max(0.2, float(config.NOTIFICATION_WORKER_POLL_INTERVAL)))
+        except Exception as exc:
+            print(f'[ERROR] 通知投递线程异常: {exc}')
+            time.sleep(2)
 
 
 def _resolve_predictor_runtime_status(predictor: dict) -> tuple[str, str]:

@@ -216,6 +216,36 @@ class Database:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS notification_delivery_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                delivery_id INTEGER NOT NULL UNIQUE,
+                subscription_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                predictor_id INTEGER NOT NULL,
+                endpoint_id INTEGER NOT NULL,
+                sender_mode TEXT NOT NULL DEFAULT 'platform',
+                sender_account_id INTEGER,
+                channel_type TEXT NOT NULL DEFAULT 'telegram',
+                status TEXT NOT NULL DEFAULT 'queued',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                available_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                locked_at TIMESTAMP,
+                last_error_message TEXT,
+                last_response_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (delivery_id) REFERENCES notification_deliveries(id),
+                FOREIGN KEY (subscription_id) REFERENCES notification_subscriptions(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (predictor_id) REFERENCES predictors(id),
+                FOREIGN KEY (endpoint_id) REFERENCES notification_endpoints(id),
+                FOREIGN KEY (sender_account_id) REFERENCES notification_sender_accounts(id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS lottery_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lottery_type TEXT NOT NULL,
@@ -397,6 +427,7 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_endpoints_user ON notification_endpoints(user_id, channel_type, status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, predictor_id, enabled)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_deliveries_subscription ON notification_deliveries(subscription_id, created_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_delivery_jobs_status ON notification_delivery_jobs(status, available_at)')
 
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
@@ -2435,8 +2466,179 @@ class Database:
         )
         conn.commit()
         delivery_id = cursor.lastrowid or 0
+        if not delivery_id:
+            cursor.execute(
+                '''
+                SELECT id FROM notification_deliveries
+                WHERE subscription_id = ? AND event_type = ? AND record_key = ?
+                LIMIT 1
+                ''',
+                (payload['subscription_id'], payload['event_type'], payload['record_key'])
+            )
+            row = cursor.fetchone()
+            delivery_id = int(row['id']) if row and row['id'] is not None else 0
         conn.close()
         return int(delivery_id)
+
+    def upsert_notification_delivery_job(self, payload: dict) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO notification_delivery_jobs (
+                delivery_id, subscription_id, user_id, predictor_id, endpoint_id,
+                sender_mode, sender_account_id, channel_type, status, attempt_count,
+                available_at, locked_at, last_error_message, last_response_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(delivery_id) DO UPDATE SET
+                subscription_id = excluded.subscription_id,
+                user_id = excluded.user_id,
+                predictor_id = excluded.predictor_id,
+                endpoint_id = excluded.endpoint_id,
+                sender_mode = excluded.sender_mode,
+                sender_account_id = excluded.sender_account_id,
+                channel_type = excluded.channel_type,
+                status = excluded.status,
+                available_at = excluded.available_at,
+                locked_at = excluded.locked_at,
+                last_error_message = excluded.last_error_message,
+                last_response_json = excluded.last_response_json,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (
+                payload['delivery_id'],
+                payload['subscription_id'],
+                payload['user_id'],
+                payload['predictor_id'],
+                payload['endpoint_id'],
+                payload.get('sender_mode', 'platform'),
+                payload.get('sender_account_id'),
+                payload.get('channel_type', 'telegram'),
+                payload.get('status', 'queued'),
+                int(payload.get('attempt_count') or 0),
+                payload.get('available_at'),
+                payload.get('locked_at'),
+                payload.get('last_error_message'),
+                json.dumps(payload.get('last_response') or {}, ensure_ascii=False)
+            )
+        )
+        conn.commit()
+        job_id = cursor.lastrowid or 0
+        if not job_id:
+            cursor.execute(
+                '''
+                SELECT id FROM notification_delivery_jobs
+                WHERE delivery_id = ?
+                LIMIT 1
+                ''',
+                (payload['delivery_id'],)
+            )
+            row = cursor.fetchone()
+            job_id = int(row['id']) if row and row['id'] is not None else 0
+        conn.close()
+        return int(job_id)
+
+    def claim_notification_delivery_jobs(self, limit: int = 20, stale_after_seconds: int = 120) -> list[dict]:
+        conn = self.get_connection()
+        conn.isolation_level = None
+        cursor = conn.cursor()
+        now = datetime.utcnow()
+        jobs: list[dict] = []
+        try:
+            cursor.execute('BEGIN IMMEDIATE')
+            cursor.execute(
+                '''
+                SELECT id
+                FROM notification_delivery_jobs
+                WHERE (
+                    status IN ('queued', 'retrying')
+                    AND datetime(COALESCE(available_at, CURRENT_TIMESTAMP)) <= CURRENT_TIMESTAMP
+                )
+                OR (
+                    status = 'processing'
+                    AND locked_at IS NOT NULL
+                    AND datetime(locked_at, '+' || ? || ' seconds') <= CURRENT_TIMESTAMP
+                )
+                ORDER BY datetime(COALESCE(available_at, created_at)) ASC, id ASC
+                LIMIT ?
+                ''',
+                (int(stale_after_seconds), int(limit))
+            )
+            job_ids = [int(row['id']) for row in cursor.fetchall()]
+            if job_ids:
+                placeholders = ','.join('?' for _ in job_ids)
+                cursor.execute(
+                    f'''
+                    UPDATE notification_delivery_jobs
+                    SET status = 'processing',
+                        locked_at = CURRENT_TIMESTAMP,
+                        attempt_count = attempt_count + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({placeholders})
+                    ''',
+                    job_ids
+                )
+                cursor.execute(
+                    f'''
+                    SELECT * FROM notification_delivery_jobs
+                    WHERE id IN ({placeholders})
+                    ORDER BY id ASC
+                    ''',
+                    job_ids
+                )
+                jobs = [self._prepare_notification_delivery_job(row) for row in cursor.fetchall()]
+            cursor.execute('COMMIT')
+        except Exception:
+            try:
+                cursor.execute('ROLLBACK')
+            except Exception:
+                pass
+            jobs = []
+        finally:
+            conn.close()
+        return jobs
+
+    def get_notification_delivery_job(self, job_id: int) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM notification_delivery_jobs
+            WHERE id = ?
+            LIMIT 1
+            ''',
+            (job_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_notification_delivery_job(row) if row else None
+
+    def update_notification_delivery_job(self, job_id: int, fields: dict):
+        if not fields:
+            return
+        updates = []
+        values = []
+        for key, value in fields.items():
+            if key == 'last_response':
+                key = 'last_response_json'
+                value = json.dumps(value or {}, ensure_ascii=False)
+            updates.append(f'{key} = ?')
+            values.append(value)
+        updates.append('updated_at = CURRENT_TIMESTAMP')
+        values.append(job_id)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            UPDATE notification_delivery_jobs
+            SET {', '.join(updates)}
+            WHERE id = ?
+            ''',
+            values
+        )
+        conn.commit()
+        conn.close()
 
     def get_notification_delivery(self, subscription_id: int, event_type: str, record_key: str) -> Optional[dict]:
         conn = self.get_connection()
@@ -2856,6 +3058,17 @@ class Database:
         data.pop('payload_json', None)
         data.pop('endpoint_config_json', None)
         data.pop('filter_json', None)
+        return data
+
+    def _prepare_notification_delivery_job(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+        data = dict(row)
+        data['sender_mode'] = str(data.get('sender_mode') or 'platform').strip().lower()
+        data['channel_type'] = str(data.get('channel_type') or 'telegram').strip().lower()
+        data['attempt_count'] = int(data.get('attempt_count') or 0)
+        data['last_response'] = self._decode_json_object(data.get('last_response_json'))
+        data.pop('last_response_json', None)
         return data
 
     def _prepare_lottery_event(self, row) -> dict:
