@@ -653,8 +653,8 @@ class JingcaiFootballService:
             'predictions': prediction_results
         }
 
-    def get_recent_prediction_items(self, db, predictor_id: int, limit: int = 100) -> list[dict]:
-        items = db.get_recent_prediction_items(predictor_id, lottery_type=self.lottery_type, limit=limit)
+    def get_recent_prediction_items(self, db, predictor_id: int, limit: int | None = 100, offset: int = 0) -> list[dict]:
+        items = db.get_recent_prediction_items(predictor_id, lottery_type=self.lottery_type, limit=limit, offset=offset)
         items = self._decorate_prediction_items(db, items)
         for item in items:
             item['score_percentage'] = self._compute_score_percentage(item)

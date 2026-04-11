@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import uuid
+import math
 from datetime import datetime
 
 import requests
@@ -46,7 +47,15 @@ from utils.auth import (
     set_current_user_with_role,
     verify_password
 )
-from utils.pc28 import DEFAULT_PROFIT_RULE_ID, mask_api_key, normalize_api_mode, normalize_injection_mode, normalize_share_level
+from utils.pc28 import (
+    DEFAULT_PROFIT_RULE_ID,
+    derive_double_group,
+    derive_kill_group,
+    mask_api_key,
+    normalize_api_mode,
+    normalize_injection_mode,
+    normalize_share_level
+)
 from utils.timezone import get_current_beijing_time_str, utc_to_beijing
 
 
@@ -291,7 +300,7 @@ def _serialize_predictor(predictor: dict) -> dict:
     return data
 
 
-def _serialize_prediction(prediction: dict) -> dict:
+def _serialize_prediction(prediction: dict, include_raw: bool = True) -> dict:
     lottery_type = normalize_lottery_type(prediction.get('lottery_type'))
     score_values = [
         prediction.get('hit_number'),
@@ -309,6 +318,9 @@ def _serialize_prediction(prediction: dict) -> dict:
         'settled_at': utc_to_beijing(prediction['settled_at']) if prediction.get('settled_at') else None,
         'score_percentage': round(sum(effective_scores) / len(effective_scores) * 100, 2) if effective_scores else None
     }
+    if not include_raw:
+        data.pop('raw_response', None)
+        data.pop('prompt_snapshot', None)
     return data
 
 
@@ -355,8 +367,8 @@ def _serialize_lottery_event(event: dict) -> dict:
     }
 
 
-def _serialize_prediction_item_group(item: dict) -> dict:
-    return {
+def _serialize_prediction_item_group(item: dict, include_raw: bool = True) -> dict:
+    data = {
         **item,
         'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
         'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None,
@@ -366,6 +378,10 @@ def _serialize_prediction_item_group(item: dict) -> dict:
         'actual_spf_label': item.get('actual_spf_label') or '--',
         'actual_rqspf_label': item.get('actual_rqspf_label') or '--'
     }
+    if not include_raw:
+        data.pop('raw_response', None)
+        data.pop('run_raw_response', None)
+    return data
 
 
 def _serialize_prediction_run(run: dict | None) -> dict | None:
@@ -1218,6 +1234,64 @@ def _parse_optional_int(value):
         return None
 
 
+def _parse_positive_int(value, default: int, minimum: int = 1, maximum: int = 500) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _build_pagination_payload(page: int, page_size: int, total: int) -> dict:
+    safe_total = max(0, int(total or 0))
+    safe_page_size = max(1, int(page_size or 1))
+    total_pages = max(1, math.ceil(safe_total / safe_page_size)) if safe_total else 1
+    safe_page = max(1, min(int(page or 1), total_pages))
+    return {
+        'page': safe_page,
+        'page_size': safe_page_size,
+        'total': safe_total,
+        'total_pages': total_pages,
+        'has_prev': safe_page > 1,
+        'has_next': safe_page < total_pages
+    }
+
+
+def _prediction_matches_outcome_filter(prediction: dict, outcome: str) -> bool:
+    normalized = str(outcome or 'all').strip().lower()
+    if normalized == 'all':
+        return True
+    lottery_type = normalize_lottery_type(prediction.get('lottery_type'))
+    hit_values: list[int] = []
+    if lottery_type == 'jingcai_football':
+        hit_payload = prediction.get('hit_payload') or {}
+        for key in ('spf', 'rqspf'):
+            value = hit_payload.get(key)
+            if value is not None:
+                hit_values.append(int(value))
+    else:
+        for key in ('hit_number', 'hit_big_small', 'hit_odd_even', 'hit_combo'):
+            value = prediction.get(key)
+            if value is not None:
+                hit_values.append(int(value))
+        predicted_combo = prediction.get('prediction_combo')
+        actual_combo = prediction.get('actual_combo')
+        predicted_group = derive_double_group(predicted_combo)
+        actual_group = derive_double_group(actual_combo)
+        if predicted_group and actual_group:
+            hit_values.append(1 if predicted_group == actual_group else 0)
+        kill_group = derive_kill_group(predicted_combo)
+        if kill_group and actual_combo:
+            hit_values.append(1 if actual_combo != kill_group else 0)
+    if not hit_values:
+        return False
+    if normalized == 'hit':
+        return any(value == 1 for value in hit_values)
+    if normalized == 'miss':
+        return all(value == 0 for value in hit_values)
+    return True
+
+
 def _validate_bet_profile_payload(data: dict, existing_profile: dict | None = None) -> tuple[dict, list[str]]:
     errors = []
     lottery_type = normalize_lottery_type(data.get('lottery_type') or (existing_profile.get('lottery_type') if existing_profile else 'pc28'))
@@ -1496,28 +1570,109 @@ def _get_predictor_dashboard_data(predictor_id: int) -> dict:
     return _get_pc28_predictor_dashboard_data(predictor_id)
 
 
-def _get_predictor_history_data(predictor_id: int) -> dict:
+def _get_predictor_history_data(
+    predictor_id: int,
+    tab: str = 'predictions',
+    page: int = 1,
+    page_size: int | None = None,
+    status: str = 'all',
+    outcome: str = 'all'
+) -> dict:
     predictor = db.get_predictor(predictor_id, include_secret=True)
     if not predictor:
         raise ValueError('预测方案不存在')
 
     lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
     serialized_predictor = _serialize_predictor(predictor)
+    normalized_tab = str(tab or 'predictions').strip().lower()
+    if normalized_tab not in {'predictions', 'draws', 'ai'}:
+        normalized_tab = 'predictions'
+    normalized_status = str(status or 'all').strip().lower()
+    normalized_outcome = str(outcome or 'all').strip().lower()
+    default_page_sizes = {'predictions': 50, 'draws': 50, 'ai': 20}
+    safe_page_size = _parse_positive_int(page_size, default_page_sizes[normalized_tab], minimum=10, maximum=100)
     if lottery_type == 'jingcai_football':
         handler = lottery_runtime.get_handler(lottery_type)
-        prediction_items = handler.get_recent_prediction_items(db, predictor_id, limit=None) if handler else []
-        draws = db.get_recent_lottery_events(lottery_type, limit=None)
+        include_raw = normalized_tab == 'ai'
+        if normalized_tab in {'predictions', 'ai'}:
+            if normalized_tab == 'predictions':
+                all_items = handler.get_recent_prediction_items(db, predictor_id, limit=None) if handler else []
+                filtered_items = [
+                    item for item in all_items
+                    if (normalized_status == 'all' or item.get('status') == normalized_status)
+                    and _prediction_matches_outcome_filter(item, normalized_outcome)
+                ]
+                pagination = _build_pagination_payload(page, safe_page_size, len(filtered_items))
+                start = (pagination['page'] - 1) * pagination['page_size']
+                prediction_items = filtered_items[start:start + pagination['page_size']]
+            else:
+                total = db.count_prediction_items(predictor_id, lottery_type=lottery_type)
+                pagination = _build_pagination_payload(page, safe_page_size, total)
+                offset = (pagination['page'] - 1) * pagination['page_size']
+                prediction_items = handler.get_recent_prediction_items(db, predictor_id, limit=pagination['page_size'], offset=offset) if handler else []
+        else:
+            prediction_items = []
+            pagination = _build_pagination_payload(page, safe_page_size, db.count_lottery_events(lottery_type))
+        draws = (
+            db.get_recent_lottery_events(
+                lottery_type,
+                limit=pagination['page_size'],
+                offset=(pagination['page'] - 1) * pagination['page_size']
+            )
+            if normalized_tab == 'draws'
+            else []
+        )
         return {
             'predictor': serialized_predictor,
-            'recent_predictions': [_serialize_prediction_item_group(item) for item in prediction_items],
+            'active_tab': normalized_tab,
+            'filters': {
+                'status': normalized_status,
+                'outcome': normalized_outcome
+            },
+            'pagination': pagination,
+            'recent_predictions': [_serialize_prediction_item_group(item, include_raw=include_raw) for item in prediction_items],
             'recent_draws': [_serialize_lottery_event(item) for item in draws]
         }
 
-    recent_predictions = db.get_recent_predictions(predictor_id, limit=None)
-    draws = db.get_recent_draws(lottery_type, limit=None)
+    include_raw = normalized_tab == 'ai'
+    if normalized_tab in {'predictions', 'ai'}:
+        if normalized_tab == 'predictions':
+            all_predictions = db.get_recent_predictions(predictor_id, limit=None)
+            filtered_predictions = [
+                item for item in all_predictions
+                if (normalized_status == 'all' or item.get('status') == normalized_status)
+                and _prediction_matches_outcome_filter(item, normalized_outcome)
+            ]
+            pagination = _build_pagination_payload(page, safe_page_size, len(filtered_predictions))
+            start = (pagination['page'] - 1) * pagination['page_size']
+            recent_predictions = filtered_predictions[start:start + pagination['page_size']]
+        else:
+            total = db.count_predictions(predictor_id)
+            pagination = _build_pagination_payload(page, safe_page_size, total)
+            offset = (pagination['page'] - 1) * pagination['page_size']
+            recent_predictions = db.get_recent_predictions(predictor_id, limit=pagination['page_size'], offset=offset)
+    else:
+        total = db.count_draws(lottery_type)
+        pagination = _build_pagination_payload(page, safe_page_size, total)
+        recent_predictions = []
+    draws = (
+        db.get_recent_draws(
+            lottery_type,
+            limit=pagination['page_size'],
+            offset=(pagination['page'] - 1) * pagination['page_size']
+        )
+        if normalized_tab == 'draws'
+        else []
+    )
     return {
         'predictor': serialized_predictor,
-        'recent_predictions': [_serialize_prediction(item) for item in recent_predictions],
+        'active_tab': normalized_tab,
+        'filters': {
+            'status': normalized_status,
+            'outcome': normalized_outcome
+        },
+        'pagination': pagination,
+        'recent_predictions': [_serialize_prediction(item, include_raw=include_raw) for item in recent_predictions],
         'recent_draws': [_serialize_draw(draw) for draw in draws]
     }
 
@@ -2786,7 +2941,19 @@ def get_predictor_history(predictor_id: int):
     if not db.predictor_exists_for_user(predictor_id, user_id):
         return jsonify({'error': '无权访问此预测方案'}), 403
 
-    return jsonify(_get_predictor_history_data(predictor_id))
+    requested_tab = request.args.get('tab', 'predictions')
+    requested_page = _parse_positive_int(request.args.get('page'), 1, minimum=1, maximum=100000)
+    requested_page_size = _parse_optional_int(request.args.get('page_size'))
+    requested_status = request.args.get('status', 'all')
+    requested_outcome = request.args.get('outcome', 'all')
+    return jsonify(_get_predictor_history_data(
+        predictor_id,
+        tab=requested_tab,
+        page=requested_page,
+        page_size=requested_page_size,
+        status=requested_status,
+        outcome=requested_outcome
+    ))
 
 
 @app.route('/api/predictors/<int:predictor_id>/stats', methods=['GET'])

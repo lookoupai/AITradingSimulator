@@ -900,7 +900,7 @@ class Database:
         conn.commit()
         conn.close()
 
-    def get_recent_draws(self, lottery_type: str = 'pc28', limit: Optional[int] = 20) -> list[dict]:
+    def get_recent_draws(self, lottery_type: str = 'pc28', limit: Optional[int] = 20, offset: int = 0) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
         if limit is None:
@@ -919,12 +919,27 @@ class Database:
                 WHERE lottery_type = ?
                 ORDER BY CAST(issue_no AS INTEGER) DESC
                 LIMIT ?
+                OFFSET ?
                 ''',
-                (lottery_type, limit)
+                (lottery_type, limit, max(0, int(offset or 0)))
             )
         rows = cursor.fetchall()
         conn.close()
         return [self._prepare_draw(row) for row in rows]
+
+    def count_draws(self, lottery_type: str = 'pc28') -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT COUNT(*) AS total FROM lottery_draws
+            WHERE lottery_type = ?
+            ''',
+            (normalize_lottery_type(lottery_type),)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return int(row['total'] or 0) if row else 0
 
     def get_draw_by_issue(self, lottery_type: str, issue_no: str) -> Optional[dict]:
         conn = self.get_connection()
@@ -1044,6 +1059,7 @@ class Database:
         self,
         lottery_type: str,
         limit: int | None = 20,
+        offset: int = 0,
         batch_key: str | None = None,
         source_provider: str | None = None
     ) -> list[dict]:
@@ -1062,12 +1078,37 @@ class Database:
             values.append(source_provider)
         query += ' ORDER BY event_time DESC, updated_at DESC'
         if limit is not None:
-            query += ' LIMIT ?'
+            query += ' LIMIT ? OFFSET ?'
             values.append(limit)
+            values.append(max(0, int(offset or 0)))
         cursor.execute(query, values)
         rows = cursor.fetchall()
         conn.close()
         return [self._prepare_lottery_event(row) for row in rows]
+
+    def count_lottery_events(
+        self,
+        lottery_type: str,
+        batch_key: str | None = None,
+        source_provider: str | None = None
+    ) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        query = '''
+            SELECT COUNT(*) AS total FROM lottery_events
+            WHERE lottery_type = ?
+        '''
+        values: list[object] = [normalize_lottery_type(lottery_type)]
+        if batch_key:
+            query += ' AND batch_key = ?'
+            values.append(batch_key)
+        if source_provider:
+            query += ' AND source_provider = ?'
+            values.append(source_provider)
+        cursor.execute(query, values)
+        row = cursor.fetchone()
+        conn.close()
+        return int(row['total'] or 0) if row else 0
 
     def get_lottery_event_by_key(
         self,
@@ -1379,7 +1420,7 @@ class Database:
         conn.close()
         return [self._prepare_prediction_item(row) for row in rows]
 
-    def get_recent_prediction_items(self, predictor_id: int, lottery_type: str | None = None, limit: int | None = 100) -> list[dict]:
+    def get_recent_prediction_items(self, predictor_id: int, lottery_type: str | None = None, limit: int | None = 100, offset: int = 0) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
         if lottery_type:
@@ -1413,8 +1454,9 @@ class Database:
                     WHERE i.predictor_id = ? AND i.lottery_type = ?
                     ORDER BY i.created_at DESC, i.id DESC
                     LIMIT ?
+                    OFFSET ?
                     ''',
-                    (predictor_id, normalize_lottery_type(lottery_type), limit)
+                    (predictor_id, normalize_lottery_type(lottery_type), limit, max(0, int(offset or 0)))
                 )
         else:
             if limit is None:
@@ -1447,12 +1489,38 @@ class Database:
                     WHERE i.predictor_id = ?
                     ORDER BY i.created_at DESC, i.id DESC
                     LIMIT ?
+                    OFFSET ?
                     ''',
-                    (predictor_id, limit)
+                    (predictor_id, limit, max(0, int(offset or 0)))
                 )
         rows = cursor.fetchall()
         conn.close()
         return [self._prepare_prediction_item(row) for row in rows]
+
+    def count_prediction_items(self, predictor_id: int, lottery_type: str | None = None) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if lottery_type:
+            cursor.execute(
+                '''
+                SELECT COUNT(*) AS total
+                FROM prediction_items
+                WHERE predictor_id = ? AND lottery_type = ?
+                ''',
+                (predictor_id, normalize_lottery_type(lottery_type))
+            )
+        else:
+            cursor.execute(
+                '''
+                SELECT COUNT(*) AS total
+                FROM prediction_items
+                WHERE predictor_id = ?
+                ''',
+                (predictor_id,)
+            )
+        row = cursor.fetchone()
+        conn.close()
+        return int(row['total'] or 0) if row else 0
 
     def upsert_prediction(self, payload: dict):
         conn = self.get_connection()
@@ -1551,7 +1619,7 @@ class Database:
         conn.close()
         return self._prepare_prediction(row) if row else None
 
-    def get_recent_predictions(self, predictor_id: int, limit: Optional[int] = 20) -> list[dict]:
+    def get_recent_predictions(self, predictor_id: int, limit: Optional[int] = 20, offset: int = 0) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
         if limit is None:
@@ -1570,12 +1638,28 @@ class Database:
                 WHERE predictor_id = ?
                 ORDER BY CAST(issue_no AS INTEGER) DESC
                 LIMIT ?
+                OFFSET ?
                 ''',
-                (predictor_id, limit)
+                (predictor_id, limit, max(0, int(offset or 0)))
             )
         rows = cursor.fetchall()
         conn.close()
         return [self._prepare_prediction(row) for row in rows]
+
+    def count_predictions(self, predictor_id: int) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT COUNT(*) AS total
+            FROM predictions
+            WHERE predictor_id = ?
+            ''',
+            (predictor_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return int(row['total'] or 0) if row else 0
 
     def get_pending_predictions(self, lottery_type: str = 'pc28') -> list[dict]:
         conn = self.get_connection()

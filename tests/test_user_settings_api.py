@@ -47,6 +47,50 @@ class UserSettingsApiTests(unittest.TestCase):
             self.assertIn('全部官方开奖', history_html)
             self.assertIn('全部 AI 原始输出', history_html)
             self.assertEqual(history_payload['predictor']['id'], predictor_id)
+            self.assertEqual(history_payload['active_tab'], 'predictions')
+
+    def test_predictor_history_api_splits_payload_by_tab(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28')
+            base_rows = [('1012', 'settled', 1), ('1011', 'settled', 0), ('1010', 'pending', None)]
+            extra_rows = [(str(1000 + index), 'pending', None) for index in range(1, 10)]
+            for issue_no, status, hit_big_small in base_rows + extra_rows:
+                harness.db.upsert_prediction({
+                    'predictor_id': predictor_id,
+                    'issue_no': issue_no,
+                    'lottery_type': 'pc28',
+                    'prediction_number': 10,
+                    'prediction_big_small': '小',
+                    'prediction_odd_even': '双',
+                    'prediction_combo': '小双',
+                    'confidence': 0.72,
+                    'reasoning_summary': 'test',
+                    'raw_response': 'x' * 5000,
+                    'prompt_snapshot': 'prompt',
+                    'requested_targets': ['number', 'big_small', 'odd_even', 'combo'],
+                    'status': status,
+                    'hit_big_small': hit_big_small
+                })
+
+            predictions_payload = client.get(f'/api/predictors/{predictor_id}/history?tab=predictions').get_json()
+            ai_payload = client.get(f'/api/predictors/{predictor_id}/history?tab=ai').get_json()
+            draws_payload = client.get(f'/api/predictors/{predictor_id}/history?tab=draws').get_json()
+            paged_payload = client.get(f'/api/predictors/{predictor_id}/history?tab=predictions&page=2&page_size=10').get_json()
+            filtered_payload = client.get(f'/api/predictors/{predictor_id}/history?tab=predictions&status=settled&outcome=hit&page_size=10').get_json()
+
+            self.assertEqual(predictions_payload['active_tab'], 'predictions')
+            self.assertEqual(ai_payload['active_tab'], 'ai')
+            self.assertEqual(draws_payload['active_tab'], 'draws')
+            self.assertTrue(predictions_payload['recent_predictions'])
+            self.assertNotIn('raw_response', predictions_payload['recent_predictions'][0])
+            self.assertIn('raw_response', ai_payload['recent_predictions'][0])
+            self.assertEqual(draws_payload['recent_predictions'], [])
+            self.assertEqual(paged_payload['pagination']['page'], 2)
+            self.assertEqual(paged_payload['pagination']['page_size'], 10)
+            self.assertEqual(len(paged_payload['recent_predictions']), 2)
+            self.assertEqual(filtered_payload['pagination']['total'], 1)
+            self.assertEqual(filtered_payload['recent_predictions'][0]['issue_no'], '1012')
 
     def test_bet_profile_crud_and_simulation_supports_bet_profile(self):
         with fresh_app_harness() as harness:

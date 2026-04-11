@@ -990,6 +990,28 @@ a {
     margin-bottom: 18px;
 }
 
+.history-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.history-pagination-info {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.history-pagination-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
 .tab-btn {
     border: 1px solid var(--border);
     background: var(--panel-soft);
@@ -1672,7 +1694,8 @@ a {
     .summary-foot,
     .metric-hint-head,
     .prediction-section-head,
-    .share-panel-actions {
+    .share-panel-actions,
+    .history-pagination {
         flex-direction: column;
     }
 

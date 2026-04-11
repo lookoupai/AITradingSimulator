@@ -172,6 +172,12 @@ class PredictionApp {
         this.pageMode = document.body?.dataset?.page || 'dashboard';
         this.historyPredictorId = Number(document.body?.dataset?.predictorId || 0);
         this.activeContentTab = document.body?.dataset?.initialTab || 'predictions';
+        this.historyDataCache = {};
+        this.historyState = {
+            predictions: { page: 1, pageSize: 50, status: 'all', outcome: 'all', pagination: null },
+            draws: { page: 1, pageSize: 50, pagination: null },
+            ai: { page: 1, pageSize: 20, pagination: null }
+        };
         this.currentUser = null;
         this.currentPredictorId = null;
         this.currentPredictor = null;
@@ -242,6 +248,7 @@ class PredictionApp {
             return;
         }
         if (this.isHistoryPage()) {
+            this.showHistoryLoading(this.activeContentTab || 'predictions');
             await this.loadPredictorHistory();
             return;
         }
@@ -298,10 +305,22 @@ class PredictionApp {
         this.bindEvent('profitDefaultMetric', 'change', () => this.saveCurrentFormState());
         this.bindEvent('predictionStatusFilter', 'change', (event) => {
             this.predictionStatusFilter = event.target.value;
+            if (this.isHistoryPage()) {
+                this.historyState.predictions.page = 1;
+                this.historyState.predictions.status = this.predictionStatusFilter;
+                this.loadPredictorHistoryTab('predictions', true);
+                return;
+            }
             this.renderPredictionsTable(this.currentPredictions || []);
         });
         this.bindEvent('predictionOutcomeFilter', 'change', (event) => {
             this.predictionOutcomeFilter = event.target.value;
+            if (this.isHistoryPage()) {
+                this.historyState.predictions.page = 1;
+                this.historyState.predictions.outcome = this.predictionOutcomeFilter;
+                this.loadPredictorHistoryTab('predictions', true);
+                return;
+            }
             this.renderPredictionsTable(this.currentPredictions || []);
         });
         this.bindEvent('profitRuleView', 'change', (event) => {
@@ -397,6 +416,10 @@ class PredictionApp {
 
         document.querySelectorAll('.tab-btn').forEach((button) => {
             button.addEventListener('click', (event) => this.switchTab(event.currentTarget.dataset.tab));
+        });
+        ['predictions', 'draws', 'ai'].forEach((tabName) => {
+            this.bindEvent(`${tabName}PrevPageBtn`, 'click', () => this.changeHistoryPage(tabName, -1));
+            this.bindEvent(`${tabName}NextPageBtn`, 'click', () => this.changeHistoryPage(tabName, 1));
         });
         if (this.isDashboardPage()) {
             window.addEventListener('resize', this.handleChartResizeBound);
@@ -747,11 +770,23 @@ class PredictionApp {
     }
 
     async loadPredictorHistory() {
+        this.historyDataCache = {};
+        await this.loadPredictorHistoryTab(this.activeContentTab || 'predictions', true);
+    }
+
+    async loadPredictorHistoryTab(tabName, forceReload = false) {
         if (!this.historyPredictorId) {
             return;
         }
+        const normalizedTab = ['predictions', 'draws', 'ai'].includes(tabName) ? tabName : 'predictions';
+        const queryKey = this.buildHistoryCacheKey(normalizedTab);
+        if (!forceReload && this.historyDataCache[queryKey]) {
+            this.applyPredictorHistoryPayload(this.historyDataCache[queryKey], normalizedTab);
+            return;
+        }
+        this.showHistoryLoading(normalizedTab);
         try {
-            const response = await fetch(`/api/predictors/${this.historyPredictorId}/history`, {
+            const response = await fetch(this.buildHistoryRequestUrl(normalizedTab), {
                 credentials: 'include'
             });
             if (response.status === 401) {
@@ -762,17 +797,132 @@ class PredictionApp {
             if (!response.ok) {
                 throw new Error(data.error || '加载方案完整记录失败');
             }
-            this.currentPredictorId = this.historyPredictorId;
-            this.currentPredictor = data.predictor || null;
-            this.currentLotteryType = data.predictor?.lottery_type || 'pc28';
-            this.currentPredictions = data.recent_predictions || [];
-            this.renderPredictionsTable(this.currentPredictions);
-            this.renderDrawsTable(data.recent_draws || []);
-            this.renderAILogs(this.currentPredictions);
-            this.updateHistoryLinks();
-            this.switchTab(this.activeContentTab || 'predictions');
+            this.historyDataCache[queryKey] = data;
+            this.applyPredictorHistoryPayload(data, normalizedTab);
         } catch (error) {
             console.error('Failed to load predictor history:', error);
+        }
+    }
+
+    buildHistoryRequestUrl(tabName) {
+        const state = this.historyState[tabName] || {};
+        const params = new URLSearchParams({
+            tab: tabName,
+            page: String(state.page || 1),
+            page_size: String(state.pageSize || (tabName === 'ai' ? 20 : 50))
+        });
+        if (tabName === 'predictions') {
+            params.set('status', state.status || 'all');
+            params.set('outcome', state.outcome || 'all');
+        }
+        return `/api/predictors/${this.historyPredictorId}/history?${params.toString()}`;
+    }
+
+    buildHistoryCacheKey(tabName) {
+        const state = this.historyState[tabName] || {};
+        if (tabName === 'predictions') {
+            return `${tabName}:${state.page || 1}:${state.pageSize || 50}:${state.status || 'all'}:${state.outcome || 'all'}`;
+        }
+        return `${tabName}:${state.page || 1}:${state.pageSize || (tabName === 'ai' ? 20 : 50)}`;
+    }
+
+    applyPredictorHistoryPayload(data, tabName) {
+        this.currentPredictorId = this.historyPredictorId;
+        this.currentPredictor = data.predictor || null;
+        this.currentLotteryType = data.predictor?.lottery_type || 'pc28';
+        this.updateHistoryLinks();
+        this.historyState[tabName].pagination = data.pagination || null;
+        this.historyState[tabName].page = data.pagination?.page || this.historyState[tabName].page;
+        this.historyState[tabName].pageSize = data.pagination?.page_size || this.historyState[tabName].pageSize;
+        if (tabName === 'predictions' && data.filters) {
+            this.historyState.predictions.status = data.filters.status || 'all';
+            this.historyState.predictions.outcome = data.filters.outcome || 'all';
+            const statusFilter = this.getElement('predictionStatusFilter');
+            const outcomeFilter = this.getElement('predictionOutcomeFilter');
+            if (statusFilter) {
+                statusFilter.value = this.historyState.predictions.status;
+            }
+            if (outcomeFilter) {
+                outcomeFilter.value = this.historyState.predictions.outcome;
+            }
+        }
+        if (tabName === 'draws') {
+            this.renderDrawsTable(data.recent_draws || []);
+            this.renderHistoryPagination('draws', data.pagination);
+            return;
+        }
+        this.currentPredictions = data.recent_predictions || [];
+        if (tabName === 'ai') {
+            this.renderAILogs(this.currentPredictions);
+            this.renderHistoryPagination('ai', data.pagination);
+            return;
+        }
+        this.renderPredictionsTable(this.currentPredictions);
+        this.renderHistoryPagination('predictions', data.pagination);
+    }
+
+    changeHistoryPage(tabName, direction) {
+        const state = this.historyState[tabName];
+        if (!state?.pagination) {
+            return;
+        }
+        const nextPage = state.page + direction;
+        if (nextPage < 1 || nextPage > (state.pagination.total_pages || 1)) {
+            return;
+        }
+        state.page = nextPage;
+        this.loadPredictorHistoryTab(tabName, true);
+    }
+
+    renderHistoryPagination(tabName, pagination) {
+        const info = this.getElement(`${tabName}PaginationInfo`);
+        const prevButton = this.getElement(`${tabName}PrevPageBtn`);
+        const nextButton = this.getElement(`${tabName}NextPageBtn`);
+        if (!info || !prevButton || !nextButton) {
+            return;
+        }
+        const payload = pagination || { page: 1, total_pages: 1, total: 0, page_size: this.historyState[tabName]?.pageSize || 0, has_prev: false, has_next: false };
+        info.textContent = `第 ${payload.page} / ${payload.total_pages} 页，共 ${payload.total} 条`;
+        prevButton.disabled = !payload.has_prev;
+        nextButton.disabled = !payload.has_next;
+    }
+
+    showHistoryLoading(tabName) {
+        if (!this.isHistoryPage()) {
+            return;
+        }
+        this.renderHistoryPagination(tabName, {
+            page: this.historyState[tabName]?.page || 1,
+            total_pages: this.historyState[tabName]?.pagination?.total_pages || 1,
+            total: this.historyState[tabName]?.pagination?.total || 0,
+            has_prev: false,
+            has_next: false
+        });
+        if (tabName === 'predictions') {
+            const tbody = this.getElement('predictionsBody');
+            const cards = this.getElement('predictionsCards');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">加载中...</td></tr>';
+            }
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">加载中...</div>';
+            }
+            return;
+        }
+        if (tabName === 'draws') {
+            const tbody = this.getElement('drawsBody');
+            const cards = this.getElement('drawsCards');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">加载中...</td></tr>';
+            }
+            if (cards) {
+                cards.innerHTML = '<div class="empty-panel">加载中...</div>';
+            }
+            return;
+        }
+        const container = this.getElement('aiLogs');
+        if (container) {
+            container.innerHTML = '<div class="empty-panel">加载中...</div>';
         }
     }
 
@@ -3656,6 +3806,9 @@ class PredictionApp {
         document.querySelectorAll('.tab-panel').forEach((panel) => {
             panel.classList.toggle('active', panel.id === `${tabName}Tab`);
         });
+        if (this.isHistoryPage()) {
+            this.loadPredictorHistoryTab(tabName);
+        }
         this.handleChartResize();
     }
 
