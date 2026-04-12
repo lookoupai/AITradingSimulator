@@ -591,6 +591,8 @@ class AIPredictor:
             'temperature': self.temperature,
             'stream': False
         }
+        if json_output:
+            payload['response_format'] = {'type': 'json_object'}
         payload.update(self._build_provider_extra_body(resolved_api_mode))
         return payload
 
@@ -1369,7 +1371,10 @@ class AIPredictor:
             except json.JSONDecodeError:
                 pass
 
-        return self._extract_from_text(text, expected_issue_no, requested_targets)
+        prediction = self._extract_from_text(text, expected_issue_no, requested_targets)
+        if not self._has_effective_prediction(prediction, requested_targets):
+            raise ValueError('AI 返回未包含可用预测字段，请只输出最终 JSON 结果')
+        return prediction
 
     def _normalize_prediction(self, payload: dict, expected_issue_no: Optional[str], requested_targets) -> dict:
         if 'prediction' in payload and isinstance(payload['prediction'], dict):
@@ -1430,14 +1435,27 @@ class AIPredictor:
         }
 
     def _extract_from_text(self, text: str, expected_issue_no: Optional[str], requested_targets) -> dict:
-        number_match = re.search(r'(?:号码|number|num)[^\d]{0,8}(\d{1,2})', text, re.IGNORECASE)
-        number = parse_pc28_number(number_match.group(1)) if number_match else None
+        if self._looks_like_schema_description(text):
+            raise ValueError('AI 返回的是字段说明文本，未给出最终预测结果')
 
-        big_small_match = re.search(r'(?:大小|big[_\s-]*small)[^大小单双]{0,8}(大|小|big|small)', text, re.IGNORECASE)
-        odd_even_match = re.search(r'(?:单双|odd[_\s-]*even)[^大小单双]{0,8}(单|双|odd|even)', text, re.IGNORECASE)
-        combo_match = re.search(r'(?:组合|combo)[^大小单双]{0,8}(大单|大双|小单|小双|big\s*odd|big\s*even|small\s*odd|small\s*even)', text, re.IGNORECASE)
+        number = self._extract_number_from_text(text)
+        big_small_match = re.search(
+            r'(?:predicted_big_small|预测大小|大小|big[_\s-]*small)\s*[:：=是为]?\s*(大|小|big|small)(?!\s*(?:/|、|或|and|,|，))',
+            text,
+            re.IGNORECASE
+        )
+        odd_even_match = re.search(
+            r'(?:predicted_odd_even|预测单双|单双|odd[_\s-]*even)\s*[:：=是为]?\s*(单|双|odd|even)(?!\s*(?:/|、|或|and|,|，))',
+            text,
+            re.IGNORECASE
+        )
+        combo_match = re.search(
+            r'(?:predicted_combo|预测组合|组合|combo)\s*[:：=是为]?\s*(大单|大双|小单|小双|big\s*odd|big\s*even|small\s*odd|small\s*even)(?!\s*(?:/|、|或|and|,|，))',
+            text,
+            re.IGNORECASE
+        )
 
-        return self._normalize_prediction(
+        prediction = self._normalize_prediction(
             {
                 'issue_no': expected_issue_no,
                 'predicted_number': number,
@@ -1450,9 +1468,73 @@ class AIPredictor:
             expected_issue_no,
             requested_targets
         )
+        if not self._has_effective_prediction(prediction, requested_targets):
+            raise ValueError('无法从文本中提取有效预测，请返回最终 JSON 结果')
+        return prediction
+
+    def _extract_number_from_text(self, text: str) -> Optional[int]:
+        patterns = [
+            r'(?:predicted_number|prediction_number|预测号码|推荐号码|预测和值|和值预测|号码预测|号码|number|num)\s*[:：=是为]?\s*(\d{1,2})(?!\s*(?:[-~～]|到|至|/)\s*\d)'
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                number = parse_pc28_number(match.group(1))
+                if number is not None:
+                    return number
+        return None
+
+    def _looks_like_schema_description(self, text: str) -> bool:
+        lowered = str(text or '').lower()
+        if not lowered:
+            return False
+
+        meta_contract_signals = [
+            '输出 json',
+            '输出json',
+            'json 字段',
+            '字段如下',
+            '返回字段',
+            'json schema',
+            '字段示例'
+        ]
+        schema_keywords = [
+            'predicted_number',
+            'predicted_big_small',
+            'predicted_odd_even',
+            'predicted_combo',
+            'reasoning_summary',
+        ]
+        schema_hits = sum(1 for keyword in schema_keywords if keyword in lowered)
+        has_field_contract = (
+            'predicted_number' in lowered
+            and 'predicted_big_small' in lowered
+            and 'predicted_odd_even' in lowered
+        )
+        has_meta_contract_signal = any(signal in lowered for signal in meta_contract_signals)
+        has_value_range_hint = any(
+            hint in lowered
+            for hint in ['0-27', '0~27', '0到27', '0 至 27', '0-1', '0~1', '0到1', '0 至 1']
+        )
+        has_concrete_field_values = any(
+            re.search(pattern, lowered, re.IGNORECASE)
+            for pattern in [
+                r'predicted_number\s*[:：=]\s*\d{1,2}(?!\s*(?:[-~～]|到|至|/)\s*\d)',
+                r'predicted_big_small\s*[:：=]\s*(大|小|big|small)(?!\s*(?:/|、|或|and|,|，))',
+                r'predicted_odd_even\s*[:：=]\s*(单|双|odd|even)(?!\s*(?:/|、|或|and|,|，))',
+                r'predicted_combo\s*[:：=]\s*(大单|大双|小单|小双|big\s*odd|big\s*even|small\s*odd|small\s*even)(?!\s*(?:/|、|或|and|,|，))',
+                r'confidence\s*[:：=]\s*[0-9]+(?:\.[0-9]+)?(?!\s*(?:[-~～]|到|至|/)\s*[0-9])'
+            ]
+        )
+        if has_concrete_field_values:
+            return False
+        return (has_meta_contract_signal and (has_field_contract or has_value_range_hint)) or (schema_hits >= 3 and has_value_range_hint)
 
     def _extract_confidence(self, text: str) -> Optional[float]:
-        match = re.search(r'(?:confidence|置信度)[^0-9]{0,8}([0-9]+(?:\.[0-9]+)?)', text, re.IGNORECASE)
+        match = re.search(
+            r'(?:confidence|置信度)\s*[:：=为]?\s*([0-9]+(?:\.[0-9]+)?)(?!\s*(?:[-~～]|到|至|/)\s*[0-9])',
+            text,
+            re.IGNORECASE
+        )
         if not match:
             return None
         return self._normalize_confidence(match.group(1))

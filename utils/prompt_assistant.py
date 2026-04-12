@@ -122,6 +122,54 @@ FOOTBALL_PLACEHOLDER_DEFINITIONS = [
 
 KNOWN_PLACEHOLDERS = {item['name'] for item in [*PC28_PLACEHOLDER_DEFINITIONS, *FOOTBALL_PLACEHOLDER_DEFINITIONS]}
 
+PC28_FINAL_JSON_FIELDS = (
+    'issue_no',
+    'predicted_number',
+    'predicted_big_small',
+    'predicted_odd_even',
+    'predicted_combo',
+    'confidence',
+    'reasoning_summary'
+)
+
+PC28_SCHEMA_CONFLICT_FIELDS = {
+    'target',
+    'missing_rate',
+    'suggestion',
+    'next_issue',
+    'countdown'
+}
+
+PC28_PROTOCOL_OVERRIDE_SIGNAL_PATTERNS = (
+    (r'输出\s*(以下|如下)?\s*json', '输出以下 JSON'),
+    (r'输出格式如下', '输出格式如下'),
+    (r'字段\s*(如下|如下所示|为)', '字段如下'),
+    (r'只返回上述字段', '只返回上述字段'),
+    (r'请输出以下字段', '请输出以下字段'),
+    (r'返回字段', '返回字段')
+)
+
+PC28_NUMBER_OUTPUT_CONFLICT_PATTERNS = (
+    (r'不强行预测精确和值', '不强行预测精确和值'),
+    (r'不预测号码', '不预测号码'),
+    (r'不追和值', '不追和值'),
+    (r'不追精确和值', '不追精确和值'),
+    (r'不要写死具体号码', '不要写死具体号码'),
+    (r'不要输出(具体)?(号码|和值)', '不要输出号码/和值'),
+    (r'predicted_number\s*可以\s*为空', 'predicted_number 可以为空')
+)
+
+PC28_META_STYLE_SIGNAL_PATTERNS = (
+    (r'输出格式如下', '输出格式如下'),
+    (r'字段如下', '字段如下'),
+    (r'第一部分', '第一部分'),
+    (r'第二部分', '第二部分'),
+    (r'预测过程[:：]', '预测过程'),
+    (r'说明[:：]', '说明'),
+    (r'规则[:：]', '规则'),
+    (r'步骤[1一二三四五六七八九十]', '步骤列表')
+)
+
 
 def get_prompt_placeholder_catalog(lottery_type: str = 'all') -> list[dict]:
     if lottery_type == 'pc28':
@@ -188,6 +236,24 @@ def _analyze_pc28_prompt(
     if _has_fixed_output_example(prompt_text):
         issues.append(_issue('error', '存在固定答案示例', '提示词里检测到固定号码、大小、单双或置信度示例，模型可能机械照抄。', '只保留字段名和输出结构，不要写死具体号码和概率。'))
 
+    schema_conflict_fields = _detect_pc28_schema_conflict_fields(prompt_text)
+    if schema_conflict_fields:
+        issues.append(_issue(
+            'error',
+            '自定义JSON字段与平台协议冲突',
+            f'检测到疑似自定义输出字段：{", ".join(schema_conflict_fields)}，这会与平台固定输出字段冲突。',
+            '删除自定义输出 schema，只保留平台字段：issue_no、predicted_number、predicted_big_small、predicted_odd_even、predicted_combo、confidence、reasoning_summary。'
+        ))
+
+    protocol_override_signals = _collect_pattern_labels(prompt_text, PC28_PROTOCOL_OVERRIDE_SIGNAL_PATTERNS)
+    if protocol_override_signals:
+        issues.append(_issue(
+            'error',
+            '提示词覆盖平台输出协议',
+            f'检测到覆盖平台协议的语句：{", ".join(protocol_override_signals)}。',
+            '自定义提示词只写分析指令，不要重新定义最终 JSON 字段或回复协议。'
+        ))
+
     if 'json' not in prompt_text.lower() and '结构化' not in prompt_text and '字段' not in prompt_text:
         issues.append(_issue('warning', '缺少结构化输出约束', '提示词里没有明显要求输出 JSON 或结构化字段。', '补上“只输出 JSON”以及字段说明，减少解析失败。'))
 
@@ -203,8 +269,15 @@ def _analyze_pc28_prompt(
     if 'number' not in targets and _mentions_number_prediction(prompt_text):
         issues.append(_issue('warning', '提示词与目标玩法不一致', '当前没有勾选“号码”，但提示词里要求主号、和值或精确数字预测。', '如果你只看大小单双，请删掉精确和值要求；否则勾选“号码”。'))
 
-    if 'number' in targets and any(keyword in prompt_text for keyword in ['不强行预测精确和值', '不预测号码', '不追和值', '不追精确和值']):
-        issues.append(_issue('warning', '提示词弱化了号码输出', '当前方案要求包含号码预测，但提示词里存在弱化或回避和值/号码输出的表达。', '建议改成“号码必须输出，但尽量保守，不追极端号”。'))
+    if 'number' in targets:
+        number_conflict_signals = _collect_pattern_labels(prompt_text, PC28_NUMBER_OUTPUT_CONFLICT_PATTERNS)
+        if number_conflict_signals:
+            issues.append(_issue(
+                'error',
+                '号码输出要求冲突',
+                f'当前方案要求输出 predicted_number，但提示词存在冲突表达：{", ".join(number_conflict_signals)}。',
+                '改成“号码必须输出，可保守但不能省略 predicted_number”。'
+            ))
 
     if 'combo' not in targets and _mentions_combo_prediction(prompt_text):
         issues.append(_issue('warning', '提示词与目标玩法不一致', '当前没有勾选“组合”，但提示词里要求输出大单/大双/小单/小双。', '如果确实要看组合，请勾选“组合”目标。'))
@@ -214,6 +287,15 @@ def _analyze_pc28_prompt(
 
     if not placeholders:
         issues.append(_issue('info', '未使用变量占位符', '当前提示词完全依赖平台默认注入数据。', '这不是错误；如果你想精确控制输入格式，可手动加入变量占位符。'))
+
+    meta_style_signals = _collect_pattern_labels(prompt_text, PC28_META_STYLE_SIGNAL_PATTERNS)
+    if len(meta_style_signals) >= 2:
+        issues.append(_issue(
+            'warning',
+            '说明文/元说明风格风险',
+            f'检测到说明文或元说明结构：{", ".join(meta_style_signals[:4])}。这类写法容易让模型输出讲解文本而非最终结果。',
+            '请改写为可执行工作指令，把步骤自然融入指令句，不要写“输出格式如下/第一部分/第二部分”等元说明。'
+        ))
 
     recommendations = _build_variable_recommendations(prompt_text, placeholders, injection_mode)
     risk_level = _risk_level(issues)
@@ -317,6 +399,7 @@ def _build_pc28_optimizer_prompt(
 
     placeholders_text = ', '.join(item['token'] for item in get_prompt_placeholder_catalog('pc28'))
     targets_text = ', '.join(TARGET_LABELS.get(item, item) for item in analysis.get('prediction_targets', []))
+    guardrail_text = '\n'.join(f"- {line}" for line in _pc28_prompt_protocol_guardrails())
 
     return f"""你是 PC28 提示词优化助手。你的任务是帮助新手把提示词改得更稳定、更容易命中目标玩法。
 
@@ -348,7 +431,11 @@ def _build_pc28_optimizer_prompt(
 2. 不要写死具体号码、概率或开奖结果示例。
 3. 尽量保留原有方法论风格，例如统计、小六壬、回归等。
 4. 如果适合，主动使用变量占位符。
-5. 只输出 JSON。"""
+5. 如果当前提示词存在字段冲突、说明文结构或半成品描述，优先重写为可执行指令，不要继承原结构和措辞。
+6. 只输出 JSON。
+
+强约束（必须满足）：
+{guardrail_text}"""
 
 
 def _build_football_optimizer_prompt(
@@ -470,6 +557,24 @@ def _build_pc28_external_prompt_template(predictor_payload: dict) -> str:
     )
 
     recommendations_text = '\n'.join(recommendation_lines)
+    guardrails = _pc28_prompt_protocol_guardrails()
+    requirements = [
+        '最终提示词必须服务于加拿大28（PC28）下一期预测，不要写成通用聊天助手。',
+        '必须兼容当前预测目标；不要要求输出未勾选的玩法。',
+        '只允许使用上面列出的变量名；不需要时可以不用，但不要自造变量。',
+        '不要写死具体和值、号码、大小单双、组合、概率、置信度或开奖结果示例。',
+        '提示词尽量简洁、稳定、可执行，避免空泛套话和重复要求。',
+        '如果适合，明确告诉模型先看什么、再看什么、如何权衡冲突信号。',
+        '如果我补充的方法偏统计、小六壬、回归、遗漏回补、趋势判断等，请保留该风格，但仍要保持基本风控。',
+        '输出内容请使用中文简体。',
+        f'涉及历史窗口时，优先使用 {_placeholder_token("history_window")}，不要写死 60/80/100 这类数字。',
+        '如果使用贝叶斯、回归、概率统计等方法，请把它写成可执行的分析框架，不要伪造训练过程、参数、公式、样本量或实验结果。',
+        '如果我补充的个性化需求很短，请主动补全成完整、可执行的提示词，不要只是机械复述我的原话。',
+        *guardrails,
+        '如果个性化需求与当前数据注入模式或主玩法冲突，请自动改写为兼容当前方案配置的版本，不要照抄冲突要求。',
+        '默认把我的个性化需求理解为“口语化偏好”，哪怕我只写一句大白话，也要帮我翻译成专业、完整、可执行的提示词要求，不要要求我提供专业术语。'
+    ]
+    requirements_text = '\n'.join(f'{index}. {item}' for index, item in enumerate(requirements, start=1))
 
     return f"""你是一个资深提示词工程师。请帮我为“AITradingSimulator”的 PC28 预测项目编写一版可直接使用的“自定义提示词”。
 
@@ -494,22 +599,7 @@ def _build_pc28_external_prompt_template(predictor_payload: dict) -> str:
 {recommendations_text}
 
 编写要求：
-1. 最终提示词必须服务于加拿大28（PC28）下一期预测，不要写成通用聊天助手。
-2. 必须兼容当前预测目标；不要要求输出未勾选的玩法。
-3. 只允许使用上面列出的变量名；不需要时可以不用，但不要自造变量。
-4. 不要写死具体和值、号码、大小单双、组合、概率、置信度或开奖结果示例。
-5. 提示词尽量简洁、稳定、可执行，避免空泛套话和重复要求。
-6. 如果适合，明确告诉模型先看什么、再看什么、如何权衡冲突信号。
-7. 如果我补充的方法偏统计、小六壬、回归、遗漏回补、趋势判断等，请保留该风格，但仍要保持基本风控。
-8. 输出内容请使用中文简体。
-9. 涉及历史窗口时，优先使用 {_placeholder_token('history_window')}，不要写死 60/80/100 这类数字。
-10. 如果使用贝叶斯、回归、概率统计等方法，请把它写成可执行的分析框架，不要伪造训练过程、参数、公式、样本量或实验结果。
-11. 如果我补充的个性化需求很短，请主动补全成完整、可执行的提示词，不要只是机械复述我的原话。
-12. 最终提示词正文里不要包含变量释义、项目背景、回复格式说明或“第一部分/第二部分”字样。
-13. 请在最终提示词正文里主动写明：只输出 JSON，不要 Markdown，不要额外解释，不确定的字段输出 null。
-14. 请在最终提示词正文里主动限定 JSON 字段为：issue_no、predicted_number、predicted_big_small、predicted_odd_even、predicted_combo、confidence、reasoning_summary。
-15. 如果个性化需求与当前数据注入模式或主玩法冲突，请自动改写为兼容当前方案配置的版本，不要照抄冲突要求。
-16. 默认把我的个性化需求理解为“口语化偏好”，哪怕我只写一句大白话，也要帮我翻译成专业、完整、可执行的提示词要求，不要要求我提供专业术语。
+{requirements_text}
 
 请按以下方式回复：
 - 第一段：仅输出可直接粘贴到项目里的最终提示词正文；不要标题、不要编号、不要代码块、不要“第一部分/第二部分”等标签，也不要额外开场。
@@ -756,6 +846,49 @@ def _build_football_variable_recommendations(prompt: str, placeholders: list[str
 
 def _placeholder_token(name: str) -> str:
     return f'{{{{{name}}}}}'
+
+
+def _collect_pattern_labels(
+    prompt: str,
+    patterns: tuple[tuple[str, str], ...]
+) -> list[str]:
+    if not prompt:
+        return []
+    labels = []
+    for pattern, label in patterns:
+        if re.search(pattern, prompt, re.IGNORECASE):
+            labels.append(label)
+    return labels
+
+
+def _detect_pc28_schema_conflict_fields(prompt: str) -> list[str]:
+    if not prompt:
+        return []
+    protocol_signals = _collect_pattern_labels(prompt, PC28_PROTOCOL_OVERRIDE_SIGNAL_PATTERNS)
+    if not protocol_signals:
+        return []
+    candidate_fields = {
+        field.lower()
+        for field in re.findall(r'["\']([a-zA-Z_][a-zA-Z0-9_]*)["\']\s*[:：]', prompt)
+    }
+    final_fields = {field.lower() for field in PC28_FINAL_JSON_FIELDS}
+    conflicts = [
+        field
+        for field in sorted(candidate_fields)
+        if field in PC28_SCHEMA_CONFLICT_FIELDS and field not in final_fields
+    ]
+    return conflicts
+
+
+def _pc28_prompt_protocol_guardrails() -> list[str]:
+    fields_text = '、'.join(PC28_FINAL_JSON_FIELDS)
+    return [
+        '自定义提示词不能重定义平台最终输出协议，不要新增或替换平台固定输出字段。',
+        '最终提示词正文里不要包含变量释义、项目背景、回复格式说明或“第一部分/第二部分”等元说明结构。',
+        '最终提示词正文里必须写明：只输出 JSON，不要 Markdown，不要额外解释，不确定的字段输出 null。',
+        f'最终提示词正文里必须限定 JSON 字段为：{fields_text}。',
+        '如果当前已有提示词是说明文、半成品、字段冲突或低质量结构，必须重写为可执行指令，不要沿用原结构和措辞。'
+    ]
 
 
 def _primary_metric_focus(metric: str) -> str:

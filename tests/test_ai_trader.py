@@ -135,6 +135,19 @@ class AIPredictorEncodingTests(unittest.TestCase):
             ]
         )
 
+    def test_build_compatible_payload_for_chat_completions_includes_response_format_when_json_output(self):
+        payload = self.predictor._build_compatible_payload(
+            resolved_api_mode='chat_completions',
+            prompt='PROMPT',
+            system_prompt='SYSTEM',
+            max_output_tokens=None,
+            json_output=True
+        )
+
+        self.assertEqual(payload['response_format'], {'type': 'json_object'})
+        self.assertEqual(payload['messages'][0]['content'], 'SYSTEM')
+        self.assertEqual(payload['messages'][1]['content'], 'PROMPT')
+
     def test_call_with_token_limit_fallback_retries_on_unsupported_parameter(self):
         attempts = []
 
@@ -531,6 +544,85 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(getattr(cm.exception, 'prompt_snapshot', ''), 'PROMPT')
         self.assertEqual(getattr(cm.exception, 'finish_reason', ''), 'length')
         self.assertIn('原始响应', str(cm.exception))
+
+    def test_parse_response_rejects_schema_description_text(self):
+        with self.assertRaises(ValueError):
+            self.predictor._parse_response(
+                raw_response=(
+                    '请输出 JSON 字段：predicted_number(0-27), predicted_big_small(大/小), '
+                    'predicted_odd_even(单/双), predicted_combo(大单/大双/小单/小双), confidence(0-1)'
+                ),
+                expected_issue_no='3419001',
+                requested_targets=['number', 'big_small', 'odd_even', 'combo']
+            )
+
+    def test_parse_response_rejects_thinking_plus_schema_without_final_answer(self):
+        with self.assertRaises(ValueError):
+            self.predictor._parse_response(
+                raw_response=(
+                    '<think>先分析遗漏与走势，再决定候选号码</think>\n'
+                    '输出 JSON 字段：predicted_number: 0-27, confidence: 0-1'
+                ),
+                expected_issue_no='3419002',
+                requested_targets=['number', 'big_small', 'odd_even', 'combo']
+            )
+
+    def test_parse_response_accepts_plain_text_prediction(self):
+        prediction = self.predictor._parse_response(
+            raw_response='预测号码: 12，预测大小: 小，预测单双: 双，预测组合: 小双，置信度: 0.71',
+            expected_issue_no='3419003',
+            requested_targets=['number', 'big_small', 'odd_even', 'combo']
+        )
+
+        self.assertEqual(prediction['issue_no'], '3419003')
+        self.assertEqual(prediction['prediction_number'], 12)
+        self.assertEqual(prediction['prediction_big_small'], '小')
+        self.assertEqual(prediction['prediction_odd_even'], '双')
+        self.assertEqual(prediction['prediction_combo'], '小双')
+        self.assertEqual(prediction['confidence'], 0.71)
+
+    def test_parse_response_accepts_field_style_plain_text_prediction(self):
+        prediction = self.predictor._parse_response(
+            raw_response=(
+                'predicted_number: 12, predicted_big_small: 小, predicted_odd_even: 双, '
+                'predicted_combo: 小双, confidence: 0.71'
+            ),
+            expected_issue_no='3419003',
+            requested_targets=['number', 'big_small', 'odd_even', 'combo']
+        )
+
+        self.assertEqual(prediction['prediction_number'], 12)
+        self.assertEqual(prediction['prediction_big_small'], '小')
+        self.assertEqual(prediction['prediction_odd_even'], '双')
+        self.assertEqual(prediction['prediction_combo'], '小双')
+        self.assertEqual(prediction['confidence'], 0.71)
+
+    def test_predict_next_issue_treats_schema_text_as_parse_failure(self):
+        predictor_config = {
+            'prediction_targets': ['number', 'big_small', 'odd_even', 'combo']
+        }
+        raw_response = (
+            '输出 JSON 字段：predicted_number: 0-27, predicted_big_small: 大/小, '
+            'predicted_odd_even: 单/双, predicted_combo: 大单/大双/小单/小双, confidence: 0-1'
+        )
+
+        with patch.object(self.predictor, '_build_prompt', return_value='PROMPT'), patch.object(
+            self.predictor,
+            '_call_llm_with_metadata',
+            return_value={
+                'raw_response': raw_response,
+                'finish_reason': 'stop'
+            }
+        ):
+            with self.assertRaises(AIPredictionError) as cm:
+                self.predictor.predict_next_issue(
+                    context={'next_issue_no': '3419004'},
+                    predictor_config=predictor_config
+                )
+
+        self.assertEqual(getattr(cm.exception, 'raw_response', ''), raw_response)
+        self.assertEqual(getattr(cm.exception, 'prompt_snapshot', ''), 'PROMPT')
+        self.assertEqual(getattr(cm.exception, 'finish_reason', ''), 'stop')
 
 
 if __name__ == '__main__':
