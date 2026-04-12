@@ -49,75 +49,6 @@
         {% if predictor %}
         <section class="stats-grid" id="publicStatsGrid"></section>
 
-        {% if predictor.can_subscribe_public %}
-        <section class="panel" id="publicSubscriptionPanel">
-            <div class="panel-header">
-                <div>
-                    <h3>订阅这个方案</h3>
-                    <p class="panel-subtitle">使用你自己的通知接收端，把这个公开方案的预测结果发送给自己。</p>
-                </div>
-                <div class="panel-actions">
-                    <a href="/settings" class="btn ghost compact">
-                        <i class="bi bi-sliders"></i>
-                        管理通知设置
-                    </a>
-                </div>
-            </div>
-            <div id="publicSubscriptionState" class="metric-hint empty-panel">
-                登录后可订阅这个公开方案，并使用你自己的通知接收端接收预测结果。
-            </div>
-            <div id="publicSubscriptionEditor" style="display: none;">
-                <div class="form-grid">
-                    <input type="hidden" id="publicSubscriptionId">
-                    <label class="form-field">
-                        <span>通知接收端</span>
-                        <select id="publicSubscriptionEndpointId" class="form-input"></select>
-                    </label>
-                    <label class="form-field">
-                        <span>发送模式</span>
-                        <select id="publicSubscriptionSenderMode" class="form-input">
-                            <option value="platform">平台机器人</option>
-                            <option value="user_sender">我的机器人</option>
-                        </select>
-                    </label>
-                    <label class="form-field">
-                        <span>通知发送方</span>
-                        <select id="publicSubscriptionSenderAccountId" class="form-input"></select>
-                    </label>
-                    <label class="form-field">
-                        <span>投递模式</span>
-                        <select id="publicSubscriptionDeliveryMode" class="form-input">
-                            <option value="notify_only">仅通知</option>
-                            <option value="follow_bet">通知 + 下注策略</option>
-                        </select>
-                    </label>
-                    <label class="form-field">
-                        <span>下注策略</span>
-                        <select id="publicSubscriptionBetProfileId" class="form-input"></select>
-                    </label>
-                    <label class="form-field">
-                        <span>最低置信度</span>
-                        <input type="number" id="publicSubscriptionConfidenceGte" class="form-input" min="0" max="1" step="0.01" placeholder="例如：0.6">
-                    </label>
-                    <label class="form-field">
-                        <span>订阅状态</span>
-                        <select id="publicSubscriptionEnabled" class="form-input">
-                            <option value="true">启用</option>
-                            <option value="false">停用</option>
-                        </select>
-                    </label>
-                </div>
-                <div class="panel-actions" style="margin-top: 16px;">
-                    <button class="btn primary compact" id="savePublicSubscriptionBtn">保存订阅</button>
-                    <button class="btn ghost compact" id="resetPublicSubscriptionBtn">清空表单</button>
-                </div>
-            </div>
-            <div id="publicSubscriptionList" class="mobile-card-list" style="margin-top: 16px;">
-                <div class="empty-panel">当前还没有订阅记录</div>
-            </div>
-        </section>
-        {% endif %}
-
         <section class="panel">
             <div class="panel-header">
                 <div>
@@ -237,6 +168,75 @@
                 <div class="empty-panel">暂无收益模拟数据</div>
             </div>
         </section>
+
+        {% if predictor.can_subscribe_public %}
+        <section class="panel" id="publicSubscriptionPanel">
+            <div class="panel-header">
+                <div>
+                    <h3>订阅这个方案</h3>
+                    <p class="panel-subtitle">使用你自己的通知接收端，把这个公开方案的预测结果发送给自己。</p>
+                </div>
+                <div class="panel-actions">
+                    <a href="/settings" class="btn ghost compact">
+                        <i class="bi bi-sliders"></i>
+                        管理通知设置
+                    </a>
+                </div>
+            </div>
+            <div id="publicSubscriptionState" class="metric-hint empty-panel">
+                登录后可订阅这个公开方案，并使用你自己的通知接收端接收预测结果。
+            </div>
+            <div id="publicSubscriptionEditor" style="display: none;">
+                <div class="form-grid">
+                    <input type="hidden" id="publicSubscriptionId">
+                    <label class="form-field">
+                        <span>通知接收端</span>
+                        <select id="publicSubscriptionEndpointId" class="form-input"></select>
+                    </label>
+                    <label class="form-field">
+                        <span>发送模式</span>
+                        <select id="publicSubscriptionSenderMode" class="form-input">
+                            <option value="platform">平台机器人</option>
+                            <option value="user_sender">我的机器人</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>通知发送方</span>
+                        <select id="publicSubscriptionSenderAccountId" class="form-input"></select>
+                    </label>
+                    <label class="form-field">
+                        <span>投递模式</span>
+                        <select id="publicSubscriptionDeliveryMode" class="form-input">
+                            <option value="notify_only">仅通知</option>
+                            <option value="follow_bet">通知 + 下注策略</option>
+                        </select>
+                    </label>
+                    <label class="form-field">
+                        <span>下注策略</span>
+                        <select id="publicSubscriptionBetProfileId" class="form-input"></select>
+                    </label>
+                    <label class="form-field">
+                        <span>最低置信度</span>
+                        <input type="number" id="publicSubscriptionConfidenceGte" class="form-input" min="0" max="1" step="0.01" placeholder="例如：0.6">
+                    </label>
+                    <label class="form-field">
+                        <span>订阅状态</span>
+                        <select id="publicSubscriptionEnabled" class="form-input">
+                            <option value="true">启用</option>
+                            <option value="false">停用</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="panel-actions" style="margin-top: 16px;">
+                    <button class="btn primary compact" id="savePublicSubscriptionBtn">保存订阅</button>
+                    <button class="btn ghost compact" id="resetPublicSubscriptionBtn">清空表单</button>
+                </div>
+            </div>
+            <div id="publicSubscriptionList" class="mobile-card-list" style="margin-top: 16px;">
+                <div class="empty-panel">当前还没有订阅记录</div>
+            </div>
+        </section>
+        {% endif %}
         {% endif %}
     </div>
 

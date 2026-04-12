@@ -2993,6 +2993,7 @@ class PredictionApp {
         const periodOptions = predictor?.profit_period_options || [];
         const oddsProfiles = predictor?.odds_profiles || [];
         const profileOptions = (this.betProfiles || []).filter((item) => item.lottery_type === (predictor?.lottery_type || 'pc28'));
+        const hasSavedBetProfiles = profileOptions.length > 0;
 
         if (!metrics.length || !rules.length) {
             ruleSelect.innerHTML = '<option value="">暂无规则</option>';
@@ -3001,7 +3002,8 @@ class PredictionApp {
             metricSelect.disabled = true;
             periodSelect.innerHTML = '<option value="">暂无区间</option>';
             periodSelect.disabled = true;
-            betProfileSelect.innerHTML = '<option value="">临时参数</option>';
+            betProfileSelect.hidden = true;
+            betProfileSelect.innerHTML = '<option value="">手动输入参数</option>';
             betProfileSelect.disabled = true;
             betModeSelect.disabled = true;
             baseStakeInput.disabled = true;
@@ -3069,11 +3071,12 @@ class PredictionApp {
         `).join('');
         periodSelect.value = this.selectedProfitPeriodKey;
         periodSelect.disabled = periodOptions.length <= 1;
-        betProfileSelect.innerHTML = ['<option value="">临时参数</option>'].concat(
+        betProfileSelect.hidden = !hasSavedBetProfiles;
+        betProfileSelect.innerHTML = ['<option value="">手动输入参数</option>'].concat(
             profileOptions.map((item) => `<option value="${item.id}">${this.escapeHtml(item.name)} · ${this.escapeHtml(item.strategy_label || '--')}</option>`)
         ).join('');
         betProfileSelect.value = this.selectedProfitBetProfileId || '';
-        betProfileSelect.disabled = false;
+        betProfileSelect.disabled = !hasSavedBetProfiles;
         betModeSelect.value = this.selectedProfitBetMode;
         betModeSelect.disabled = false;
         baseStakeInput.value = String(this.selectedProfitBaseStake);
@@ -3768,7 +3771,8 @@ class PredictionApp {
         document.getElementById('profitMetricView').disabled = true;
         document.getElementById('profitPeriodView').innerHTML = '<option value="">暂无区间</option>';
         document.getElementById('profitPeriodView').disabled = true;
-        document.getElementById('profitBetProfileView').innerHTML = '<option value="">临时参数</option>';
+        document.getElementById('profitBetProfileView').hidden = true;
+        document.getElementById('profitBetProfileView').innerHTML = '<option value="">手动输入参数</option>';
         document.getElementById('profitBetProfileView').disabled = true;
         document.getElementById('profitBetModeView').value = this.selectedProfitBetMode;
         document.getElementById('profitBetModeView').disabled = true;
