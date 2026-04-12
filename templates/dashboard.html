@@ -77,160 +77,6 @@
             <main class="pc28-main">
                 <section class="stats-grid" id="statsGrid"></section>
 
-                <section class="panel" id="notification-entry">
-                    <div class="panel-header">
-                        <div>
-                            <h3>通知与自动化入口</h3>
-                            <p class="panel-subtitle">低频的通知发送方、接收端、下注策略和投递排查已迁移到独立设置页，方案页只保留和当前方案直接相关的订阅绑定。</p>
-                        </div>
-                        <div class="panel-actions">
-                            <a class="btn primary" href="/settings">
-                                <i class="bi bi-sliders"></i>
-                                打开设置页
-                            </a>
-                        </div>
-                    </div>
-                    <div class="summary-grid settings-summary-grid">
-                        <article class="stat-card">
-                            <span class="stat-label">下注策略</span>
-                            <strong class="stat-value" id="settingsSummaryBetProfiles">0</strong>
-                        </article>
-                        <article class="stat-card">
-                            <span class="stat-label">通知发送方</span>
-                            <strong class="stat-value" id="settingsSummarySenders">0</strong>
-                        </article>
-                        <article class="stat-card">
-                            <span class="stat-label">通知接收端</span>
-                            <strong class="stat-value" id="settingsSummaryEndpoints">0</strong>
-                        </article>
-                        <article class="stat-card">
-                            <span class="stat-label">启用中订阅</span>
-                            <strong class="stat-value" id="settingsSummarySubscriptions">0</strong>
-                        </article>
-                    </div>
-                </section>
-
-                <section class="panel" id="notification-subscriptions">
-                    <div class="panel-header">
-                        <div>
-                            <h3>通知订阅</h3>
-                            <p class="panel-subtitle">把某个预测方案订阅到某个接收端，并可选择是否绑定下注策略。</p>
-                        </div>
-                        <div class="panel-actions mobile-stack">
-                            <button class="btn ghost compact" id="resetSubscriptionFormBtn">清空表单</button>
-                        </div>
-                    </div>
-                    <div class="metric-hint">
-                        <div class="metric-hint-head">
-                            <div>
-                                <strong>这里仅处理方案级绑定</strong>
-                                <span class="metric-hint-alias">发送方、接收端、下注策略本身请到独立设置页维护。</span>
-                            </div>
-                            <a class="btn ghost compact" href="/settings">
-                                <i class="bi bi-box-arrow-up-right"></i>
-                                去设置页
-                            </a>
-                        </div>
-                    </div>
-                    <div class="summary-grid settings-summary-grid">
-                        <article class="stat-card">
-                            <span class="stat-label">当前方案订阅数</span>
-                            <strong class="stat-value" id="currentPredictorSubscriptionCount">0</strong>
-                        </article>
-                        <article class="stat-card">
-                            <span class="stat-label">仅通知</span>
-                            <strong class="stat-value" id="currentPredictorNotifyOnlyCount">0</strong>
-                        </article>
-                        <article class="stat-card">
-                            <span class="stat-label">通知 + 下注</span>
-                            <strong class="stat-value" id="currentPredictorFollowBetCount">0</strong>
-                        </article>
-                        <article class="stat-card">
-                            <span class="stat-label">启用中</span>
-                            <strong class="stat-value" id="currentPredictorEnabledSubscriptionCount">0</strong>
-                        </article>
-                    </div>
-                    <div id="currentPredictorSubscriptionSummary" class="prediction-summary empty-panel">
-                        当前方案暂无通知订阅。
-                    </div>
-                    <div class="form-grid">
-                        <input type="hidden" id="notificationSubscriptionId">
-                        <label class="form-field">
-                            <span>预测方案</span>
-                            <select id="notificationSubscriptionPredictorId" class="form-input"></select>
-                        </label>
-                        <label class="form-field">
-                            <span>接收端</span>
-                            <select id="notificationSubscriptionEndpointId" class="form-input"></select>
-                        </label>
-                        <label class="form-field">
-                            <span>发送模式</span>
-                            <select id="notificationSubscriptionSenderMode" class="form-input">
-                                <option value="platform">平台机器人</option>
-                                <option value="user_sender">我的机器人</option>
-                            </select>
-                        </label>
-                        <label class="form-field">
-                            <span>通知发送方</span>
-                            <select id="notificationSubscriptionSenderAccountId" class="form-input"></select>
-                            <small class="field-hint">选择“我的机器人”时必须绑定一个已启用发送方。</small>
-                        </label>
-                        <label class="form-field">
-                            <span>通知事件</span>
-                            <select id="notificationSubscriptionEventType" class="form-input">
-                                <option value="prediction_created">预测生成</option>
-                            </select>
-                        </label>
-                        <label class="form-field">
-                            <span>投递模式</span>
-                            <select id="notificationSubscriptionDeliveryMode" class="form-input">
-                                <option value="notify_only">仅通知</option>
-                                <option value="follow_bet">通知 + 下注策略</option>
-                            </select>
-                        </label>
-                        <label class="form-field">
-                            <span>下注策略</span>
-                            <select id="notificationSubscriptionBetProfileId" class="form-input"></select>
-                            <small class="field-hint">选择“通知 + 下注策略”时必须绑定与彩种一致的下注策略。</small>
-                        </label>
-                        <label class="form-field">
-                            <span>最低置信度</span>
-                            <input type="number" id="notificationSubscriptionConfidenceGte" class="form-input" min="0" max="1" step="0.01" placeholder="例如：0.6">
-                        </label>
-                        <label class="form-field">
-                            <span>订阅状态</span>
-                            <select id="notificationSubscriptionEnabled" class="form-input">
-                                <option value="true">启用</option>
-                                <option value="false">停用</option>
-                            </select>
-                        </label>
-                    </div>
-                    <div class="panel-actions">
-                        <button class="btn primary compact" id="saveNotificationSubscriptionBtn">保存通知订阅</button>
-                    </div>
-                    <div class="table-wrap scroll-table-wrap desktop-only">
-                        <table class="data-table compact-table">
-                            <thead>
-                                <tr>
-                                    <th>方案</th>
-                                    <th>接收端</th>
-                                    <th>发送方</th>
-                                    <th>模式</th>
-                                    <th>下注策略</th>
-                                    <th>状态</th>
-                                    <th>操作</th>
-                                </tr>
-                            </thead>
-                            <tbody id="notificationSubscriptionsBody">
-                                <tr><td colspan="7" class="empty-cell">暂无通知订阅</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <div id="notificationSubscriptionsCards" class="mobile-only mobile-card-list">
-                        <div class="empty-panel">暂无通知订阅</div>
-                    </div>
-                </section>
-
                 <section class="panel">
                     <div class="panel-header">
                         <div>
@@ -512,6 +358,160 @@
                         <div id="aiLogs" class="ai-log-list">
                             <div class="empty-panel">暂无 AI 输出记录</div>
                         </div>
+                    </div>
+                </section>
+
+                <section class="panel" id="notification-entry">
+                    <div class="panel-header">
+                        <div>
+                            <h3>通知与自动化入口</h3>
+                            <p class="panel-subtitle">低频的通知发送方、接收端、下注策略和投递排查已迁移到独立设置页，方案页只保留和当前方案直接相关的订阅绑定。</p>
+                        </div>
+                        <div class="panel-actions">
+                            <a class="btn primary" href="/settings">
+                                <i class="bi bi-sliders"></i>
+                                打开设置页
+                            </a>
+                        </div>
+                    </div>
+                    <div class="summary-grid settings-summary-grid">
+                        <article class="stat-card">
+                            <span class="stat-label">下注策略</span>
+                            <strong class="stat-value" id="settingsSummaryBetProfiles">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">通知发送方</span>
+                            <strong class="stat-value" id="settingsSummarySenders">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">通知接收端</span>
+                            <strong class="stat-value" id="settingsSummaryEndpoints">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">启用中订阅</span>
+                            <strong class="stat-value" id="settingsSummarySubscriptions">0</strong>
+                        </article>
+                    </div>
+                </section>
+
+                <section class="panel" id="notification-subscriptions">
+                    <div class="panel-header">
+                        <div>
+                            <h3>通知订阅</h3>
+                            <p class="panel-subtitle">把某个预测方案订阅到某个接收端，并可选择是否绑定下注策略。</p>
+                        </div>
+                        <div class="panel-actions mobile-stack">
+                            <button class="btn ghost compact" id="resetSubscriptionFormBtn">清空表单</button>
+                        </div>
+                    </div>
+                    <div class="metric-hint">
+                        <div class="metric-hint-head">
+                            <div>
+                                <strong>这里仅处理方案级绑定</strong>
+                                <span class="metric-hint-alias">发送方、接收端、下注策略本身请到独立设置页维护。</span>
+                            </div>
+                            <a class="btn ghost compact" href="/settings">
+                                <i class="bi bi-box-arrow-up-right"></i>
+                                去设置页
+                            </a>
+                        </div>
+                    </div>
+                    <div class="summary-grid settings-summary-grid">
+                        <article class="stat-card">
+                            <span class="stat-label">当前方案订阅数</span>
+                            <strong class="stat-value" id="currentPredictorSubscriptionCount">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">仅通知</span>
+                            <strong class="stat-value" id="currentPredictorNotifyOnlyCount">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">通知 + 下注</span>
+                            <strong class="stat-value" id="currentPredictorFollowBetCount">0</strong>
+                        </article>
+                        <article class="stat-card">
+                            <span class="stat-label">启用中</span>
+                            <strong class="stat-value" id="currentPredictorEnabledSubscriptionCount">0</strong>
+                        </article>
+                    </div>
+                    <div id="currentPredictorSubscriptionSummary" class="prediction-summary empty-panel">
+                        当前方案暂无通知订阅。
+                    </div>
+                    <div class="form-grid">
+                        <input type="hidden" id="notificationSubscriptionId">
+                        <label class="form-field">
+                            <span>预测方案</span>
+                            <select id="notificationSubscriptionPredictorId" class="form-input"></select>
+                        </label>
+                        <label class="form-field">
+                            <span>接收端</span>
+                            <select id="notificationSubscriptionEndpointId" class="form-input"></select>
+                        </label>
+                        <label class="form-field">
+                            <span>发送模式</span>
+                            <select id="notificationSubscriptionSenderMode" class="form-input">
+                                <option value="platform">平台机器人</option>
+                                <option value="user_sender">我的机器人</option>
+                            </select>
+                        </label>
+                        <label class="form-field">
+                            <span>通知发送方</span>
+                            <select id="notificationSubscriptionSenderAccountId" class="form-input"></select>
+                            <small class="field-hint">选择“我的机器人”时必须绑定一个已启用发送方。</small>
+                        </label>
+                        <label class="form-field">
+                            <span>通知事件</span>
+                            <select id="notificationSubscriptionEventType" class="form-input">
+                                <option value="prediction_created">预测生成</option>
+                            </select>
+                        </label>
+                        <label class="form-field">
+                            <span>投递模式</span>
+                            <select id="notificationSubscriptionDeliveryMode" class="form-input">
+                                <option value="notify_only">仅通知</option>
+                                <option value="follow_bet">通知 + 下注策略</option>
+                            </select>
+                        </label>
+                        <label class="form-field">
+                            <span>下注策略</span>
+                            <select id="notificationSubscriptionBetProfileId" class="form-input"></select>
+                            <small class="field-hint">选择“通知 + 下注策略”时必须绑定与彩种一致的下注策略。</small>
+                        </label>
+                        <label class="form-field">
+                            <span>最低置信度</span>
+                            <input type="number" id="notificationSubscriptionConfidenceGte" class="form-input" min="0" max="1" step="0.01" placeholder="例如：0.6">
+                        </label>
+                        <label class="form-field">
+                            <span>订阅状态</span>
+                            <select id="notificationSubscriptionEnabled" class="form-input">
+                                <option value="true">启用</option>
+                                <option value="false">停用</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="panel-actions">
+                        <button class="btn primary compact" id="saveNotificationSubscriptionBtn">保存通知订阅</button>
+                    </div>
+                    <div class="table-wrap scroll-table-wrap desktop-only">
+                        <table class="data-table compact-table">
+                            <thead>
+                                <tr>
+                                    <th>方案</th>
+                                    <th>接收端</th>
+                                    <th>发送方</th>
+                                    <th>模式</th>
+                                    <th>下注策略</th>
+                                    <th>状态</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="notificationSubscriptionsBody">
+                                <tr><td colspan="7" class="empty-cell">暂无通知订阅</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="notificationSubscriptionsCards" class="mobile-only mobile-card-list">
+                        <div class="empty-panel">暂无通知订阅</div>
                     </div>
                 </section>
             </main>
