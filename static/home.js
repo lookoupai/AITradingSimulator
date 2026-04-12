@@ -34,7 +34,7 @@ const HOME_LOTTERY_CONFIG = {
 
 class HomePage {
     constructor() {
-        this.currentLotteryType = 'pc28';
+        this.currentLotteryType = document.body?.dataset?.lotteryType || 'pc28';
         this.publicMetric = 'combo';
         this.publicSort = 'recent100';
         this.init();
@@ -59,11 +59,9 @@ class HomePage {
 
         if (lotterySelect) {
             lotterySelect.addEventListener('change', (event) => {
-                this.currentLotteryType = event.target.value || 'pc28';
-                this.publicMetric = this.getMetricOptions()[0]?.value || 'combo';
-                this.syncLotteryUi();
-                this.loadOverview();
-                this.loadPublicPredictors();
+                const nextLotteryType = event.target.value || 'pc28';
+                const targetPath = nextLotteryType === 'jingcai_football' ? '/jingcai-football' : '/pc28';
+                window.location.href = targetPath;
             });
         }
 

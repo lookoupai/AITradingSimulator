@@ -231,6 +231,49 @@ class UserSettingsApiTests(unittest.TestCase):
             self.assertEqual(delete_response.status_code, 200)
             self.assertEqual(client.get('/api/notification-subscriptions').get_json(), [])
 
+    def test_user_can_subscribe_public_predictor_from_another_account(self):
+        with fresh_app_harness() as harness:
+            owner_id = harness.db.create_user('owner', harness.module.hash_password('password'))
+            predictor_id = create_predictor(harness, owner_id, 'pc28', share_level='records')
+            client, subscriber_id = harness.make_client(username='subscriber')
+
+            endpoint_response = client.post(
+                '/api/notification-endpoints',
+                json={
+                    'channel_type': 'telegram',
+                    'endpoint_key': '99887766',
+                    'endpoint_label': '我的提醒',
+                    'config': {'chat_type': 'private'},
+                    'is_default': True
+                }
+            )
+            endpoint_id = endpoint_response.get_json()['item']['id']
+
+            context_response = client.get(f'/api/public/predictors/{predictor_id}/subscription-context')
+            context_payload = context_response.get_json()
+            self.assertEqual(context_response.status_code, 200)
+            self.assertEqual(context_payload['predictor']['id'], predictor_id)
+            self.assertEqual(context_payload['subscriptions'], [])
+
+            subscription_response = client.post(
+                '/api/notification-subscriptions',
+                json={
+                    'predictor_id': predictor_id,
+                    'endpoint_id': endpoint_id,
+                    'event_type': 'prediction_created',
+                    'delivery_mode': 'notify_only',
+                    'filter': {'confidence_gte': 0.55}
+                }
+            )
+            subscription_payload = subscription_response.get_json()
+            self.assertEqual(subscription_response.status_code, 200)
+            self.assertEqual(subscription_payload['item']['predictor_id'], predictor_id)
+            self.assertEqual(subscription_payload['item']['user_id'], subscriber_id)
+
+            subscriptions = client.get('/api/notification-subscriptions').get_json()
+            self.assertEqual(len(subscriptions), 1)
+            self.assertEqual(subscriptions[0]['predictor_id'], predictor_id)
+
     def test_notification_sender_crud_and_test_route(self):
         with fresh_app_harness() as harness:
             client, _ = harness.make_client()

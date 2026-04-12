@@ -35,6 +35,8 @@ python app.py
 启动后访问：
 
 - 首页：`http://localhost:35008`
+- 加拿大28公开页：`http://localhost:35008/pc28`
+- 竞彩足球公开页：`http://localhost:35008/jingcai-football`
 - 登录页：`http://localhost:35008/login`
 - 控制台：`http://localhost:35008/dashboard`
 

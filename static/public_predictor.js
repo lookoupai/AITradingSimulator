@@ -3,6 +3,12 @@ class PublicPredictorPage {
         this.predictorId = window.PUBLIC_PREDICTOR_ID;
         this.currentPredictor = window.PUBLIC_PREDICTOR || null;
         this.currentLotteryType = this.currentPredictor?.lottery_type || 'pc28';
+        this.currentUser = null;
+        this.publicSubscriptionContextLoaded = false;
+        this.notificationEndpoints = [];
+        this.notificationSenders = [];
+        this.betProfiles = [];
+        this.publicSubscriptions = [];
         this.selectedProfitRuleId = 'pc28_netdisk';
         this.selectedProfitMetric = null;
         this.selectedProfitPeriodKey = 'day';
@@ -22,6 +28,7 @@ class PublicPredictorPage {
             return;
         }
         this.initEventListeners();
+        await this.checkLoginStatus();
         await this.loadDetail(true);
         this.refreshTimer = setInterval(() => this.loadDetail(false), 10000);
     }
@@ -103,6 +110,27 @@ class PublicPredictorPage {
                 this.loadProfitSimulation();
             });
         }
+
+        const savePublicSubscriptionBtn = document.getElementById('savePublicSubscriptionBtn');
+        if (savePublicSubscriptionBtn) {
+            savePublicSubscriptionBtn.addEventListener('click', () => this.submitPublicSubscription());
+        }
+        const resetPublicSubscriptionBtn = document.getElementById('resetPublicSubscriptionBtn');
+        if (resetPublicSubscriptionBtn) {
+            resetPublicSubscriptionBtn.addEventListener('click', () => this.resetPublicSubscriptionForm());
+        }
+        const publicSubscriptionSenderMode = document.getElementById('publicSubscriptionSenderMode');
+        if (publicSubscriptionSenderMode) {
+            publicSubscriptionSenderMode.addEventListener('change', () => this.syncPublicSubscriptionSenderState());
+        }
+        const publicSubscriptionDeliveryMode = document.getElementById('publicSubscriptionDeliveryMode');
+        if (publicSubscriptionDeliveryMode) {
+            publicSubscriptionDeliveryMode.addEventListener('change', () => this.syncPublicSubscriptionBetProfileState());
+        }
+        const publicSubscriptionList = document.getElementById('publicSubscriptionList');
+        if (publicSubscriptionList) {
+            publicSubscriptionList.addEventListener('click', (event) => this.handlePublicSubscriptionListClick(event));
+        }
     }
 
     async loadDetail(resetProfitMetric = false) {
@@ -121,13 +149,311 @@ class PublicPredictorPage {
             this.renderMetricStats(data.stats);
             this.renderStreakStats(data.stats);
             this.renderPredictions(data.recent_predictions || []);
+            this.renderPublicSubscriptionPanel();
             this.renderProfitControls(this.currentPredictor, resetProfitMetric);
             await this.loadProfitSimulation();
+            if (this.currentUser && this.currentPredictor?.can_subscribe_public && !this.publicSubscriptionContextLoaded) {
+                await this.loadPublicSubscriptionContext();
+            }
         } catch (error) {
             const hero = document.getElementById('publicPredictorHero');
             if (hero) {
                 hero.innerHTML = `<div class="warning-banner">${this.escapeHtml(error.message)}</div>`;
             }
+        }
+    }
+
+    async checkLoginStatus() {
+        try {
+            const response = await fetch('/api/auth/me', { credentials: 'include' });
+            if (!response.ok) {
+                this.currentUser = null;
+                return;
+            }
+            this.currentUser = await response.json();
+        } catch (error) {
+            this.currentUser = null;
+        }
+    }
+
+    renderPublicSubscriptionPanel() {
+        const panel = document.getElementById('publicSubscriptionPanel');
+        const state = document.getElementById('publicSubscriptionState');
+        const editor = document.getElementById('publicSubscriptionEditor');
+        const list = document.getElementById('publicSubscriptionList');
+        if (!panel || !state || !editor || !list) {
+            return;
+        }
+        if (!this.currentPredictor?.can_subscribe_public) {
+            panel.style.display = 'none';
+            return;
+        }
+        panel.style.display = '';
+        if (!this.currentUser) {
+            state.className = 'metric-hint';
+            state.innerHTML = `
+                <div class="metric-hint-head">
+                    <div>
+                        <strong>登录后可订阅这个方案</strong>
+                        <span class="metric-hint-alias">使用你自己的通知接收端接收公开方案的预测结果。</span>
+                    </div>
+                    <a href="/login" class="btn primary compact">登录后订阅</a>
+                </div>
+            `;
+            editor.style.display = 'none';
+            list.innerHTML = '<div class="empty-panel">登录后可查看你对这个方案的订阅记录</div>';
+            return;
+        }
+        state.className = 'metric-hint';
+        state.innerHTML = `
+            <div class="metric-hint-head">
+                <div>
+                    <strong>把这个公开方案接到你的通知体系里</strong>
+                    <span class="metric-hint-alias">接收端、发送方和下注策略都使用你自己的配置。</span>
+                </div>
+                <span class="tag">${this.escapeHtml(this.currentUser.username || '--')}</span>
+            </div>
+        `;
+        editor.style.display = '';
+        if (!this.publicSubscriptionContextLoaded) {
+            list.innerHTML = '<div class="empty-panel">加载订阅设置中...</div>';
+        }
+    }
+
+    async loadPublicSubscriptionContext() {
+        try {
+            const response = await fetch(`/api/public/predictors/${this.predictorId}/subscription-context`, {
+                credentials: 'include'
+            });
+            if (response.status === 401) {
+                this.currentUser = null;
+                this.renderPublicSubscriptionPanel();
+                return;
+            }
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '加载订阅设置失败');
+            }
+            this.notificationEndpoints = Array.isArray(data.endpoints) ? data.endpoints : [];
+            this.notificationSenders = Array.isArray(data.senders) ? data.senders : [];
+            this.betProfiles = Array.isArray(data.bet_profiles) ? data.bet_profiles : [];
+            this.publicSubscriptions = Array.isArray(data.subscriptions) ? data.subscriptions : [];
+            this.publicSubscriptionContextLoaded = true;
+            this.renderPublicSubscriptionOptions();
+            this.resetPublicSubscriptionForm();
+            this.renderPublicSubscriptionList();
+        } catch (error) {
+            const list = document.getElementById('publicSubscriptionList');
+            if (list) {
+                list.innerHTML = `<div class="warning-banner">${this.escapeHtml(error.message)}</div>`;
+            }
+        }
+    }
+
+    renderPublicSubscriptionOptions() {
+        const endpointSelect = document.getElementById('publicSubscriptionEndpointId');
+        const senderSelect = document.getElementById('publicSubscriptionSenderAccountId');
+        const betProfileSelect = document.getElementById('publicSubscriptionBetProfileId');
+        if (endpointSelect) {
+            endpointSelect.innerHTML = this.notificationEndpoints.length
+                ? this.notificationEndpoints.map((item) => `<option value="${this.escapeHtml(String(item.id))}">${this.escapeHtml(item.endpoint_label || '--')}</option>`).join('')
+                : '<option value="">请先在设置页创建通知接收端</option>';
+            endpointSelect.disabled = !this.notificationEndpoints.length;
+        }
+        if (senderSelect) {
+            senderSelect.innerHTML = ['<option value="">请选择我的机器人</option>'].concat(
+                this.notificationSenders
+                    .filter((item) => item.status === 'active')
+                    .map((item) => `<option value="${this.escapeHtml(String(item.id))}">${this.escapeHtml(item.sender_name || '--')}</option>`)
+            ).join('');
+        }
+        if (betProfileSelect) {
+            betProfileSelect.innerHTML = ['<option value="">不绑定下注策略</option>'].concat(
+                this.betProfiles.map((item) => `<option value="${this.escapeHtml(String(item.id))}">${this.escapeHtml(item.name || '--')}</option>`)
+            ).join('');
+        }
+        this.syncPublicSubscriptionSenderState();
+        this.syncPublicSubscriptionBetProfileState();
+    }
+
+    resetPublicSubscriptionForm() {
+        const subscriptionId = document.getElementById('publicSubscriptionId');
+        if (!subscriptionId) {
+            return;
+        }
+        subscriptionId.value = '';
+        const endpointSelect = document.getElementById('publicSubscriptionEndpointId');
+        if (endpointSelect && this.notificationEndpoints.length) {
+            endpointSelect.value = String(this.notificationEndpoints[0].id);
+        }
+        document.getElementById('publicSubscriptionSenderMode').value = 'platform';
+        document.getElementById('publicSubscriptionSenderAccountId').value = '';
+        document.getElementById('publicSubscriptionDeliveryMode').value = 'notify_only';
+        document.getElementById('publicSubscriptionBetProfileId').value = '';
+        document.getElementById('publicSubscriptionConfidenceGte').value = '';
+        document.getElementById('publicSubscriptionEnabled').value = 'true';
+        this.syncPublicSubscriptionSenderState();
+        this.syncPublicSubscriptionBetProfileState();
+    }
+
+    syncPublicSubscriptionSenderState() {
+        const mode = document.getElementById('publicSubscriptionSenderMode')?.value || 'platform';
+        const senderSelect = document.getElementById('publicSubscriptionSenderAccountId');
+        if (!senderSelect) {
+            return;
+        }
+        senderSelect.disabled = mode !== 'user_sender';
+        if (mode !== 'user_sender') {
+            senderSelect.value = '';
+        }
+    }
+
+    syncPublicSubscriptionBetProfileState() {
+        const mode = document.getElementById('publicSubscriptionDeliveryMode')?.value || 'notify_only';
+        const betProfileSelect = document.getElementById('publicSubscriptionBetProfileId');
+        if (!betProfileSelect) {
+            return;
+        }
+        betProfileSelect.disabled = mode !== 'follow_bet';
+        if (mode !== 'follow_bet') {
+            betProfileSelect.value = '';
+        }
+    }
+
+    renderPublicSubscriptionList() {
+        const list = document.getElementById('publicSubscriptionList');
+        if (!list) {
+            return;
+        }
+        if (!this.publicSubscriptions.length) {
+            list.innerHTML = '<div class="empty-panel">当前还没有订阅记录</div>';
+            return;
+        }
+        list.innerHTML = this.publicSubscriptions.map((item) => `
+            <article class="prediction-card">
+                <div class="prediction-section-head">
+                    <strong>${this.escapeHtml(item.endpoint_label || '--')}</strong>
+                    <span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span>
+                </div>
+                <div class="detail-list">
+                    <div class="detail-row">
+                        <span class="detail-label">发送方</span>
+                        <div>${this.escapeHtml(item.sender_mode === 'user_sender' ? (item.sender_account_name || '--') : '平台机器人')}</div>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">模式</span>
+                        <div>${this.escapeHtml(item.delivery_mode_label || '--')}</div>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">下注策略</span>
+                        <div>${this.escapeHtml(item.bet_profile_name || '未绑定')}</div>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">最低置信度</span>
+                        <div>${this.escapeHtml(String((item.filter || {}).confidence_gte ?? '未设置'))}</div>
+                    </div>
+                </div>
+                <div class="panel-actions" style="margin-top: 14px;">
+                    <button class="btn ghost compact" data-action="edit-subscription" data-id="${item.id}">编辑</button>
+                    <button class="btn ghost compact" data-action="delete-subscription" data-id="${item.id}">删除</button>
+                </div>
+            </article>
+        `).join('');
+    }
+
+    handlePublicSubscriptionListClick(event) {
+        const button = event.target.closest('[data-action]');
+        if (!button) {
+            return;
+        }
+        const subscriptionId = Number(button.dataset.id);
+        if (!subscriptionId) {
+            return;
+        }
+        if (button.dataset.action === 'edit-subscription') {
+            this.populatePublicSubscriptionForm(subscriptionId);
+            return;
+        }
+        if (button.dataset.action === 'delete-subscription') {
+            this.deletePublicSubscription(subscriptionId);
+        }
+    }
+
+    populatePublicSubscriptionForm(subscriptionId) {
+        const item = (this.publicSubscriptions || []).find((row) => row.id === subscriptionId);
+        if (!item) {
+            return;
+        }
+        document.getElementById('publicSubscriptionId').value = String(item.id);
+        document.getElementById('publicSubscriptionEndpointId').value = String(item.endpoint_id);
+        document.getElementById('publicSubscriptionSenderMode').value = item.sender_mode || 'platform';
+        document.getElementById('publicSubscriptionSenderAccountId').value = item.sender_account_id ? String(item.sender_account_id) : '';
+        document.getElementById('publicSubscriptionDeliveryMode').value = item.delivery_mode || 'notify_only';
+        document.getElementById('publicSubscriptionBetProfileId').value = item.bet_profile_id ? String(item.bet_profile_id) : '';
+        document.getElementById('publicSubscriptionConfidenceGte').value = (item.filter || {}).confidence_gte ?? '';
+        document.getElementById('publicSubscriptionEnabled').value = item.enabled ? 'true' : 'false';
+        this.syncPublicSubscriptionSenderState();
+        this.syncPublicSubscriptionBetProfileState();
+    }
+
+    async submitPublicSubscription() {
+        const subscriptionId = document.getElementById('publicSubscriptionId')?.value || '';
+        const confidenceText = document.getElementById('publicSubscriptionConfidenceGte')?.value.trim() || '';
+        const payload = {
+            predictor_id: this.predictorId,
+            endpoint_id: Number(document.getElementById('publicSubscriptionEndpointId')?.value || 0),
+            sender_mode: document.getElementById('publicSubscriptionSenderMode')?.value || 'platform',
+            sender_account_id: document.getElementById('publicSubscriptionSenderAccountId')?.value
+                ? Number(document.getElementById('publicSubscriptionSenderAccountId').value)
+                : null,
+            bet_profile_id: document.getElementById('publicSubscriptionBetProfileId')?.value
+                ? Number(document.getElementById('publicSubscriptionBetProfileId').value)
+                : null,
+            event_type: 'prediction_created',
+            delivery_mode: document.getElementById('publicSubscriptionDeliveryMode')?.value || 'notify_only',
+            enabled: document.getElementById('publicSubscriptionEnabled')?.value === 'true',
+            filter: {}
+        };
+        if (confidenceText !== '') {
+            payload.filter.confidence_gte = Number(confidenceText);
+        }
+        const url = subscriptionId ? `/api/notification-subscriptions/${subscriptionId}` : '/api/notification-subscriptions';
+        const method = subscriptionId ? 'PUT' : 'POST';
+        try {
+            const response = await fetch(url, {
+                method,
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '保存订阅失败');
+            }
+            this.publicSubscriptionContextLoaded = false;
+            await this.loadPublicSubscriptionContext();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async deletePublicSubscription(subscriptionId) {
+        if (!window.confirm('确定删除这个订阅吗？')) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/notification-subscriptions/${subscriptionId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await this.parseJsonSafely(response);
+            if (!response.ok) {
+                throw new Error(data.error || '删除订阅失败');
+            }
+            this.publicSubscriptionContextLoaded = false;
+            await this.loadPublicSubscriptionContext();
+        } catch (error) {
+            alert(error.message);
         }
     }
 
@@ -1226,6 +1552,18 @@ class PublicPredictorPage {
             return value === null || value === undefined || value === '' ? '--' : Number(value).toFixed(2);
         });
         return values.join('/');
+    }
+
+    async parseJsonSafely(response) {
+        const text = await response.text();
+        if (!text) {
+            return {};
+        }
+        try {
+            return JSON.parse(text);
+        } catch (error) {
+            return {};
+        }
     }
 }
 

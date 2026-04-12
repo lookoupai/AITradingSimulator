@@ -64,6 +64,20 @@ app.secret_key = os.environ.get('SECRET_KEY', 'pc28-predictor-secret')
 CORS(app, supports_credentials=True)
 
 APP_VERSION = str(int(time.time()))
+PUBLIC_LOTTERY_PAGE_CONFIG = {
+    'pc28': {
+        'slug': 'pc28',
+        'title': '加拿大28 AI 预测平台',
+        'heading': '加拿大28 AI 预测',
+        'description': '查看加拿大28最新开奖、公开方案榜单与命中表现，面向单点、大/小、单/双和组合投注做公开展示。'
+    },
+    'jingcai_football': {
+        'slug': 'jingcai-football',
+        'title': '竞彩足球 AI 预测平台',
+        'heading': '竞彩足球 AI 预测',
+        'description': '查看竞彩足球当前批次、公开方案榜单与胜平负 / 让球胜平负近期表现，适合作为独立公开落地页。'
+    }
+}
 
 db = Database(config.DATABASE_PATH)
 prediction_guard = PredictionGuardService(db)
@@ -1069,6 +1083,35 @@ def _build_public_links(predictor_id: int) -> dict:
     }
 
 
+def _get_public_lottery_page_context(lottery_type: str) -> dict:
+    normalized_lottery_type = normalize_lottery_type(lottery_type)
+    page_config = PUBLIC_LOTTERY_PAGE_CONFIG.get(normalized_lottery_type)
+    if not page_config:
+        raise ValueError('暂不支持的彩种')
+    alternate_items = [
+        {
+            'lottery_type': item_type,
+            'label': get_lottery_definition(item_type).label,
+            'path': f"/{item_config['slug']}",
+            'is_current': item_type == normalized_lottery_type
+        }
+        for item_type, item_config in PUBLIC_LOTTERY_PAGE_CONFIG.items()
+    ]
+    canonical_url = ''
+    if has_request_context():
+        canonical_url = url_for('public_lottery_page', lottery_slug=page_config['slug'], _external=True)
+    return {
+        'lottery_type': normalized_lottery_type,
+        'lottery_label': get_lottery_definition(normalized_lottery_type).label,
+        'page_title': page_config['title'],
+        'page_heading': page_config['heading'],
+        'page_description': page_config['description'],
+        'canonical_path': f"/{page_config['slug']}",
+        'canonical_url': canonical_url,
+        'alternate_items': alternate_items
+    }
+
+
 def _build_public_predictor_rankings(sort_by: str = 'recent100', metric: str = 'combo', limit: int = 10, lottery_type: str = 'pc28') -> list[dict]:
     normalized_lottery_type = normalize_lottery_type(lottery_type)
     predictors = [
@@ -1207,6 +1250,7 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'share_predictions': can_view_records,
             'can_view_records': can_view_records,
             'can_view_analysis': can_view_analysis,
+            'can_subscribe_public': can_view_records,
             'public_path': public_links['path'],
             'public_url': public_links['url']
         },
@@ -1214,7 +1258,20 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
         'current_prediction': _serialize_public_prediction_with_level(current_prediction, share_level) if lottery_type == 'pc28' else current_prediction,
         'latest_prediction': _serialize_public_prediction_with_level(latest_prediction, share_level) if lottery_type == 'pc28' else latest_prediction,
         'recent_predictions': [_serialize_public_prediction_with_level(item, share_level) for item in predictions] if lottery_type == 'pc28' else predictions
-    }
+}
+
+
+def _can_user_subscribe_to_predictor(user_id: int, predictor: dict | None) -> bool:
+    if not predictor:
+        return False
+    predictor_user_id = int(predictor.get('user_id') or 0)
+    if predictor_user_id == int(user_id):
+        return True
+    lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
+    if not predictor.get('enabled') or not supports_public_pages(lottery_type):
+        return False
+    share_level = predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')
+    return share_level in {'records', 'analysis'}
 
 
 def _parse_bool(value, default: bool = True) -> bool:
@@ -1409,7 +1466,7 @@ def _validate_notification_subscription_payload(
     sender_account = db.get_notification_sender_account(sender_account_id) if sender_account_id else None
     bet_profile = db.get_bet_profile(bet_profile_id) if bet_profile_id else None
 
-    if not predictor_id or not predictor or int(predictor.get('user_id') or 0) != int(user_id):
+    if not predictor_id or not predictor or not _can_user_subscribe_to_predictor(user_id, predictor):
         errors.append('订阅的预测方案不存在或无权访问')
     if not endpoint_id or not endpoint or int(endpoint.get('user_id') or 0) != int(user_id):
         errors.append('通知接收端不存在或无权访问')
@@ -1777,7 +1834,26 @@ def serve_image(filename):
 
 @app.route('/')
 def index():
-    return render_template('home.html')
+    lottery_cards = [
+        {
+            **_get_public_lottery_page_context(lottery_type),
+            'capabilities': get_lottery_definition(lottery_type).to_catalog_item()['capabilities']
+        }
+        for lottery_type in PUBLIC_LOTTERY_PAGE_CONFIG.keys()
+    ]
+    return render_template('home.html', lottery_cards=lottery_cards)
+
+
+@app.route('/<string:lottery_slug>')
+def public_lottery_page(lottery_slug: str):
+    slug_mapping = {
+        item_config['slug']: lottery_type
+        for lottery_type, item_config in PUBLIC_LOTTERY_PAGE_CONFIG.items()
+    }
+    lottery_type = slug_mapping.get(lottery_slug)
+    if not lottery_type:
+        return redirect('/')
+    return render_template('public_lottery_home.html', **_get_public_lottery_page_context(lottery_type))
 
 
 @app.route('/login')
@@ -2256,6 +2332,32 @@ def get_notification_subscriptions():
     user_id = get_current_user_id()
     items = db.list_notification_subscriptions(user_id)
     return jsonify([_serialize_notification_subscription(item) for item in items])
+
+
+@app.route('/api/public/predictors/<int:predictor_id>/subscription-context', methods=['GET'])
+@login_required
+def get_public_predictor_subscription_context(predictor_id: int):
+    user_id = get_current_user_id()
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    if not predictor or not _can_user_subscribe_to_predictor(user_id, predictor):
+        return jsonify({'error': '该方案暂不支持订阅'}), 403
+    lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
+    subscriptions = [
+        item for item in db.list_notification_subscriptions(user_id)
+        if int(item.get('predictor_id') or 0) == int(predictor_id)
+    ]
+    return jsonify({
+        'predictor': {
+            'id': predictor['id'],
+            'name': predictor.get('name') or '',
+            'lottery_type': lottery_type,
+            'lottery_label': get_lottery_definition(lottery_type).label
+        },
+        'endpoints': [_serialize_notification_endpoint(item) for item in db.list_notification_endpoints(user_id)],
+        'senders': [_serialize_notification_sender_account(item) for item in db.list_notification_sender_accounts(user_id)],
+        'bet_profiles': [_serialize_bet_profile(item) for item in db.list_bet_profiles(user_id, lottery_type=lottery_type)],
+        'subscriptions': [_serialize_notification_subscription(item) for item in subscriptions]
+    })
 
 
 @app.route('/api/notification-subscriptions', methods=['POST'])
