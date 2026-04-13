@@ -203,6 +203,7 @@ class PredictionApp {
         this.selectedProfitMaxSteps = DEFAULT_PROFIT_MAX_STEPS;
         this.selectedProfitOrder = 'desc';
         this.selectedProfitOddsProfile = 'regular';
+        this.currentProfitSimulation = null;
         this.overview = null;
         this.chart = null;
         this.profitChart = null;
@@ -337,6 +338,7 @@ class PredictionApp {
         });
         this.bindEvent('profitBetProfileView', 'change', (event) => {
             this.selectedProfitBetProfileId = event.target.value || '';
+            this.syncProfitBetControlState();
             this.loadProfitSimulation();
         });
         this.bindEvent('profitBetModeView', 'change', (event) => {
@@ -361,6 +363,10 @@ class PredictionApp {
         });
         this.bindEvent('profitOrderView', 'change', (event) => {
             this.selectedProfitOrder = event.target.value;
+            if (this.currentProfitSimulation) {
+                this.renderProfitSimulation(this.currentProfitSimulation, this.currentPredictor);
+                return;
+            }
             this.loadProfitSimulation();
         });
         this.bindEvent('profitOddsProfileView', 'change', (event) => {
@@ -2978,6 +2984,9 @@ class PredictionApp {
     }
 
     renderProfitControls(predictor, resetMetric = false) {
+        if (resetMetric) {
+            this.currentProfitSimulation = null;
+        }
         const ruleSelect = document.getElementById('profitRuleView');
         const metricSelect = document.getElementById('profitMetricView');
         const periodSelect = document.getElementById('profitPeriodView');
@@ -3011,6 +3020,13 @@ class PredictionApp {
             maxStepsInput.disabled = true;
             orderSelect.disabled = true;
             oddsSelect.disabled = true;
+            this.syncProfitOptionVisibility({
+                ruleCount: 0,
+                metricCount: 0,
+                periodCount: 0,
+                oddsCount: 0,
+                hasSavedBetProfiles: false
+            });
             return;
         }
 
@@ -3090,6 +3106,13 @@ class PredictionApp {
         `).join('');
         oddsSelect.disabled = false;
         oddsSelect.value = this.selectedProfitOddsProfile;
+        this.syncProfitOptionVisibility({
+            ruleCount: rules.length,
+            metricCount: metrics.length,
+            periodCount: periodOptions.length,
+            oddsCount: oddsProfiles.length,
+            hasSavedBetProfiles
+        });
         this.syncProfitBetControlState();
     }
 
@@ -3137,6 +3160,7 @@ class PredictionApp {
                 throw new Error(data.error || '加载收益模拟失败');
             }
 
+            this.currentProfitSimulation = data.simulation;
             this.renderProfitSimulation(data.simulation, predictor);
         } catch (error) {
             console.error('Failed to load profit simulation:', error);
@@ -3145,6 +3169,7 @@ class PredictionApp {
     }
 
     renderProfitSimulation(simulation, predictor) {
+        this.currentProfitSimulation = simulation || null;
         const orderedRecords = this.orderProfitRecords(simulation.records || []);
         this.renderProfitSimulationHint(simulation, predictor);
         this.renderProfitSummary(simulation);
@@ -3179,7 +3204,7 @@ class PredictionApp {
             </div>
             <p>${fallbackText}</p>
             ${selectedBetProfile ? `<p>当前已套用下注策略：<strong>${this.escapeHtml(selectedBetProfile.name || '--')}</strong>，系统会优先使用已保存的下注参数。</p>` : ''}
-            <p class="metric-hint-foot">基础注 ${this.formatUsd(simulation.bet_config?.base_stake || 0)} · ${this.escapeHtml(oddsText)} · ${this.escapeHtml(simulation.bet_config?.refund_action_label || '--')} · ${this.escapeHtml(simulation.bet_config?.cap_action_label || '--')} · 当前共计下注 ${summary.bet_count || 0} 笔模拟票。</p>
+            <p class="metric-hint-foot">${this.escapeHtml(this.buildProfitHintFootText(simulation, summary, oddsText))}</p>
         `;
     }
 
@@ -3298,6 +3323,7 @@ class PredictionApp {
     }
 
     renderProfitSimulationEmpty(message) {
+        this.currentProfitSimulation = null;
         document.getElementById('profitSimulationHint').className = 'metric-hint empty-panel';
         document.getElementById('profitSimulationHint').textContent = message || '暂无收益模拟数据';
         document.getElementById('profitSummaryGrid').innerHTML = '';
@@ -3324,10 +3350,52 @@ class PredictionApp {
         const maxStepsInput = document.getElementById('profitMaxStepsView');
         const hasProfileOverride = Boolean(this.selectedProfitBetProfileId);
         const isFlatMode = this.selectedProfitBetMode === DEFAULT_PROFIT_BET_MODE;
+        betModeSelect.hidden = hasProfileOverride;
+        baseStakeInput.hidden = hasProfileOverride;
+        multiplierInput.hidden = hasProfileOverride || isFlatMode;
+        maxStepsInput.hidden = hasProfileOverride || isFlatMode;
         betModeSelect.disabled = hasProfileOverride;
         baseStakeInput.disabled = hasProfileOverride;
         multiplierInput.disabled = hasProfileOverride || isFlatMode;
         maxStepsInput.disabled = hasProfileOverride || isFlatMode;
+    }
+
+    syncProfitOptionVisibility({
+        ruleCount = 0,
+        metricCount = 0,
+        periodCount = 0,
+        oddsCount = 0,
+        hasSavedBetProfiles = false
+    } = {}) {
+        this.setProfitControlVisibility(document.getElementById('profitRuleView'), ruleCount > 1);
+        this.setProfitControlVisibility(document.getElementById('profitMetricView'), metricCount > 1);
+        this.setProfitControlVisibility(document.getElementById('profitPeriodView'), periodCount > 1);
+        this.setProfitControlVisibility(document.getElementById('profitOddsProfileView'), oddsCount > 1);
+        this.setProfitControlVisibility(document.getElementById('profitBetProfileView'), hasSavedBetProfiles);
+    }
+
+    setProfitControlVisibility(element, shouldShow) {
+        if (!element) {
+            return;
+        }
+        element.hidden = !shouldShow;
+        if (!shouldShow) {
+            element.disabled = true;
+        }
+    }
+
+    buildProfitHintFootText(simulation, summary, oddsText) {
+        const items = [
+            `基础注 ${this.formatUsd(simulation.bet_config?.base_stake || 0)}`
+        ];
+        if (simulation.bet_mode === 'martingale') {
+            items.push(
+                `倍投 ${Number(simulation.bet_config?.multiplier || DEFAULT_PROFIT_MULTIPLIER).toFixed(2)} × ${Number.parseInt(simulation.bet_config?.max_steps || DEFAULT_PROFIT_MAX_STEPS, 10)} 手`
+            );
+        }
+        items.push(oddsText);
+        items.push(`当前共计下注 ${summary.bet_count || 0} 笔模拟票`);
+        return items.join(' · ');
     }
 
     normalizePositiveNumber(value, fallback, min = 0.01, max = 1000000) {
@@ -3745,6 +3813,7 @@ class PredictionApp {
         this.selectedProfitMultiplier = DEFAULT_PROFIT_MULTIPLIER;
         this.selectedProfitMaxSteps = DEFAULT_PROFIT_MAX_STEPS;
         this.selectedProfitOrder = 'desc';
+        this.currentProfitSimulation = null;
         this.currentPredictions = [];
         this.updatePredictorActionState(null);
         this.renderSubscriptionPredictorOptions();
@@ -3786,6 +3855,14 @@ class PredictionApp {
         document.getElementById('profitOrderView').disabled = true;
         document.getElementById('profitOddsProfileView').value = this.selectedProfitOddsProfile;
         document.getElementById('profitOddsProfileView').disabled = true;
+        this.syncProfitOptionVisibility({
+            ruleCount: 0,
+            metricCount: 0,
+            periodCount: 0,
+            oddsCount: 0,
+            hasSavedBetProfiles: false
+        });
+        this.syncProfitBetControlState();
         document.getElementById('profitSimulationHint').className = 'metric-hint empty-panel';
         document.getElementById('profitSimulationHint').textContent = '请选择预测方案';
         document.getElementById('profitSummaryGrid').innerHTML = '';
