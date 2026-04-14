@@ -309,7 +309,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'has_api_key': bool(predictor.get('api_key')),
         'public_path': public_links['path'],
         'public_url': public_links['url'],
-        'public_page_available': bool(predictor.get('enabled')) and supports_public_pages(lottery_type)
+        'public_page_available': _is_predictor_publicly_available(predictor)
     }
     return data
 
@@ -1083,6 +1083,13 @@ def _build_public_links(predictor_id: int) -> dict:
     }
 
 
+def _is_predictor_publicly_available(predictor: dict | None) -> bool:
+    if not predictor:
+        return False
+    lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
+    return bool(predictor.get('enabled')) and not bool(predictor.get('auto_paused')) and supports_public_pages(lottery_type)
+
+
 def _get_public_lottery_page_context(lottery_type: str) -> dict:
     normalized_lottery_type = normalize_lottery_type(lottery_type)
     page_config = PUBLIC_LOTTERY_PAGE_CONFIG.get(normalized_lottery_type)
@@ -1116,7 +1123,7 @@ def _build_public_predictor_rankings(sort_by: str = 'recent100', metric: str = '
     normalized_lottery_type = normalize_lottery_type(lottery_type)
     predictors = [
         item for item in db.get_all_predictors(include_secret=False)
-        if item.get('enabled') and normalize_lottery_type(item.get('lottery_type')) == normalized_lottery_type
+        if _is_predictor_publicly_available(item) and normalize_lottery_type(item.get('lottery_type')) == normalized_lottery_type
     ]
     ranked_items = []
 
@@ -1193,9 +1200,9 @@ def _build_public_predictor_rankings(sort_by: str = 'recent100', metric: str = '
 
 def _get_public_predictor_detail(predictor_id: int) -> dict:
     predictor = db.get_predictor(predictor_id, include_secret=False)
-    lottery_type = normalize_lottery_type(predictor.get('lottery_type')) if predictor else 'pc28'
-    if not predictor or not predictor.get('enabled') or not supports_public_pages(lottery_type):
+    if not _is_predictor_publicly_available(predictor):
         return None
+    lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
 
     if lottery_type == 'jingcai_football':
         stats = jingcai_football_service.build_predictor_stats(
@@ -1267,8 +1274,7 @@ def _can_user_subscribe_to_predictor(user_id: int, predictor: dict | None) -> bo
     predictor_user_id = int(predictor.get('user_id') or 0)
     if predictor_user_id == int(user_id):
         return True
-    lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
-    if not predictor.get('enabled') or not supports_public_pages(lottery_type):
+    if not _is_predictor_publicly_available(predictor):
         return False
     share_level = predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')
     return share_level in {'records', 'analysis'}

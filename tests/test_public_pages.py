@@ -51,6 +51,41 @@ class PublicPagesTests(unittest.TestCase):
             self.assertIn('href="/jingcai-football"', football_response.get_data(as_text=True))
             self.assertIn('返回竞彩足球', football_response.get_data(as_text=True))
 
+    def test_auto_paused_predictor_is_hidden_from_public_entries(self):
+        with fresh_app_harness() as harness:
+            user_id = harness.db.create_user('public-user', harness.module.hash_password('password'))
+            visible_predictor_id = create_predictor(harness, user_id, 'pc28', name='visible-predictor', share_level='records')
+            paused_predictor_id = create_predictor(harness, user_id, 'pc28', name='paused-predictor', share_level='records')
+            harness.db.update_predictor_runtime_state(paused_predictor_id, {
+                'auto_paused': True,
+                'auto_paused_at': '2026-04-14 10:00:00',
+                'auto_pause_reason': 'AI 连续失败 3 次'
+            })
+
+            client = harness.app.test_client()
+            list_response = client.get('/api/public/predictors?lottery_type=pc28')
+            self.assertEqual(list_response.status_code, 200)
+            list_data = list_response.get_json()
+            listed_ids = [item['predictor_id'] for item in list_data['items']]
+            self.assertIn(visible_predictor_id, listed_ids)
+            self.assertNotIn(paused_predictor_id, listed_ids)
+
+            detail_response = client.get(f'/api/public/predictors/{paused_predictor_id}')
+            self.assertEqual(detail_response.status_code, 404)
+
+            page_response = client.get(f'/public/predictors/{paused_predictor_id}')
+            self.assertEqual(page_response.status_code, 404)
+
+            with client.session_transaction() as session:
+                session['user_id'] = user_id
+                session['username'] = 'public-user'
+                session['is_admin'] = 0
+            predictors_response = client.get('/api/predictors')
+            self.assertEqual(predictors_response.status_code, 200)
+            predictors = predictors_response.get_json()
+            paused_predictor = next(item for item in predictors if item['id'] == paused_predictor_id)
+            self.assertFalse(paused_predictor['public_page_available'])
+
 
 if __name__ == '__main__':
     unittest.main()
