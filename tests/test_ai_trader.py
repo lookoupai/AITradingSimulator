@@ -622,6 +622,70 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(prediction['prediction_combo'], '小双')
         self.assertEqual(prediction['confidence'], 0.71)
 
+    def test_parse_response_accepts_nested_json_string(self):
+        prediction = self.predictor._parse_response(
+            raw_response=(
+                '"{\\"issue_no\\":\\"3419005\\",\\"predicted_number\\":16,\\"predicted_big_small\\":\\"大\\",'
+                '\\"predicted_odd_even\\":\\"双\\",\\"predicted_combo\\":\\"大双\\",\\"confidence\\":0.6}"'
+            ),
+            expected_issue_no='3419005',
+            requested_targets=['number', 'big_small', 'odd_even', 'combo']
+        )
+
+        self.assertEqual(prediction['issue_no'], '3419005')
+        self.assertEqual(prediction['prediction_number'], 16)
+        self.assertEqual(prediction['prediction_big_small'], '大')
+        self.assertEqual(prediction['prediction_odd_even'], '双')
+        self.assertEqual(prediction['prediction_combo'], '大双')
+        self.assertEqual(prediction['confidence'], 0.6)
+
+    def test_predict_next_issue_repairs_reasoning_drift_output(self):
+        predictor_config = {
+            'prediction_targets': ['number', 'big_small', 'odd_even', 'combo']
+        }
+        drift_response = (
+            'We need to determine trend. Even streak is strongest. '
+            'So the direction should stay big even, combo 大双.'
+        )
+        repaired_response = json.dumps({
+            'issue_no': '3419006',
+            'predicted_number': 16,
+            'predicted_big_small': '大',
+            'predicted_odd_even': '双',
+            'predicted_combo': '大双',
+            'confidence': 0.6,
+            'reasoning_summary': '单双长龙延续大双'
+        }, ensure_ascii=False)
+
+        with patch.object(self.predictor, '_build_prompt', return_value='PROMPT'), patch.object(
+            self.predictor,
+            '_call_llm_with_metadata',
+            side_effect=[
+                {
+                    'raw_response': drift_response,
+                    'finish_reason': 'stop'
+                },
+                {
+                    'raw_response': repaired_response,
+                    'finish_reason': 'stop'
+                }
+            ]
+        ) as call_llm:
+            prediction, raw_response, prompt = self.predictor.predict_next_issue(
+                context={'next_issue_no': '3419006'},
+                predictor_config=predictor_config
+            )
+
+        self.assertEqual(prompt, 'PROMPT')
+        self.assertEqual(prediction['issue_no'], '3419006')
+        self.assertEqual(prediction['prediction_number'], 16)
+        self.assertEqual(prediction['prediction_big_small'], '大')
+        self.assertEqual(prediction['prediction_odd_even'], '双')
+        self.assertEqual(prediction['prediction_combo'], '大双')
+        self.assertIn('[original]', raw_response)
+        self.assertIn('[repair_json]', raw_response)
+        self.assertEqual(call_llm.call_count, 2)
+
     def test_predict_next_issue_treats_schema_text_as_parse_failure(self):
         predictor_config = {
             'prediction_targets': ['number', 'big_small', 'odd_even', 'combo']

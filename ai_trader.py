@@ -69,11 +69,22 @@ class AIPredictor:
                 raw_response = result['raw_response']
                 last_response = raw_response
                 last_finish_reason = str(result.get('finish_reason') or 'unknown')
-                prediction = self._parse_response(
-                    raw_response=raw_response,
-                    expected_issue_no=context.get('next_issue_no'),
-                    requested_targets=predictor_config.get('prediction_targets')
-                )
+                try:
+                    prediction = self._parse_response(
+                        raw_response=raw_response,
+                        expected_issue_no=context.get('next_issue_no'),
+                        requested_targets=predictor_config.get('prediction_targets')
+                    )
+                except Exception as parse_error:
+                    repaired = self._attempt_prediction_repair(
+                        raw_response=raw_response,
+                        prompt_snapshot=prompt,
+                        expected_issue_no=context.get('next_issue_no'),
+                        requested_targets=predictor_config.get('prediction_targets')
+                    )
+                    if repaired is not None:
+                        return repaired['prediction'], repaired['raw_response'], prompt
+                    raise parse_error
                 if self._has_effective_prediction(prediction, predictor_config.get('prediction_targets')):
                     return prediction, raw_response, prompt
                 last_error = AIPredictionError(
@@ -174,6 +185,9 @@ class AIPredictor:
         if self._is_minimax_reasoning_model():
             return 3200
         return 1800
+
+    def _prediction_repair_max_output_tokens(self) -> int:
+        return 500
 
     def _build_prompt(self, context: dict, predictor_config: dict) -> str:
         targets = normalize_target_list(predictor_config.get('prediction_targets'))
@@ -390,7 +404,11 @@ class AIPredictor:
         json_output: bool = False
     ) -> dict:
         last_error: Optional[Exception] = None
-        system_prompt = system_prompt or "你是 PC28 预测助手。你必须遵守字段契约，只输出单个 JSON 对象。"
+        system_prompt = system_prompt or (
+            "你是 PC28 预测助手。"
+            "禁止输出思考过程、分析草稿、字段说明、Markdown 或代码块。"
+            "你必须遵守字段契约，只输出单个 JSON 对象。"
+        )
         resolved_api_mode = self._resolve_api_mode()
 
         for base_url in self._candidate_base_urls():
@@ -1057,28 +1075,19 @@ class AIPredictor:
         return host in {'api.openai.com', 'openai.com'} or host.endswith('.openai.com')
 
     def _extract_json_payload(self, raw_response: str):
-        text = (raw_response or '').strip()
+        text = self._prepare_response_text(raw_response)
         if not text:
             raise ValueError('AI 返回为空')
 
-        if '<think>' in text and '</think>' in text:
-            text = text.split('</think>')[-1].strip()
-
-        code_block_match = re.search(r'```(?:json)?\s*(\{.*\}|\[.*\])\s*```', text, re.DOTALL)
-        if code_block_match:
-            text = code_block_match.group(1).strip()
-
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
+        payload = self._load_json_candidate(text)
+        if payload is not None:
+            return payload
 
         json_match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
         if json_match:
-            try:
-                return json.loads(json_match.group(0))
-            except json.JSONDecodeError:
-                pass
+            payload = self._load_json_candidate(json_match.group(0))
+            if payload is not None:
+                return payload
 
         raise ValueError(f'无法从模型响应中解析 JSON：{text[:300]}')
 
@@ -1352,35 +1361,169 @@ class AIPredictor:
         return deduped
 
     def _parse_response(self, raw_response: str, expected_issue_no: Optional[str], requested_targets) -> dict:
-        text = (raw_response or '').strip()
+        text = self._prepare_response_text(raw_response)
         if not text:
             raise ValueError('AI 返回为空')
 
-        if '<think>' in text and '</think>' in text:
-            text = text.split('</think>')[-1].strip()
-
-        code_block_match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.DOTALL)
-        if code_block_match:
-            text = code_block_match.group(1).strip()
-
-        try:
-            payload = json.loads(text)
+        payload = self._load_json_candidate(text)
+        if payload is not None:
             return self._normalize_prediction(payload, expected_issue_no, requested_targets)
-        except json.JSONDecodeError:
-            pass
 
         json_match = re.search(r'\{.*\}', text, re.DOTALL)
         if json_match:
-            try:
-                payload = json.loads(json_match.group(0))
+            payload = self._load_json_candidate(json_match.group(0))
+            if payload is not None:
                 return self._normalize_prediction(payload, expected_issue_no, requested_targets)
-            except json.JSONDecodeError:
-                pass
 
         prediction = self._extract_from_text(text, expected_issue_no, requested_targets)
         if not self._has_effective_prediction(prediction, requested_targets):
             raise ValueError('AI 返回未包含可用预测字段，请只输出最终 JSON 结果')
         return prediction
+
+    def _prepare_response_text(self, raw_response: str) -> str:
+        text = (raw_response or '').strip()
+        if not text:
+            return ''
+
+        if '<think>' in text and '</think>' in text:
+            text = text.split('</think>')[-1].strip()
+
+        code_block_match = re.search(r'```(?:json)?\s*(\{.*\}|\[.*\])\s*```', text, re.DOTALL)
+        if code_block_match:
+            return code_block_match.group(1).strip()
+
+        return text
+
+    def _load_json_candidate(self, text: str):
+        candidate_queue = [str(text or '').strip()]
+        visited: set[str] = set()
+
+        while candidate_queue:
+            candidate = candidate_queue.pop(0).strip()
+            if not candidate or candidate in visited:
+                continue
+            visited.add(candidate)
+
+            try:
+                payload = json.loads(candidate)
+            except json.JSONDecodeError:
+                payload = None
+
+            if isinstance(payload, str):
+                candidate_queue.append(payload.strip())
+                continue
+            if payload is not None:
+                return payload
+
+            if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {'"', "'"}:
+                candidate_queue.append(candidate[1:-1].strip())
+
+            if '\\"' in candidate or '\\n' in candidate or '\\t' in candidate or '\\r' in candidate:
+                candidate_queue.append(
+                    candidate
+                    .replace('\\"', '"')
+                    .replace('\\n', '\n')
+                    .replace('\\t', '\t')
+                    .replace('\\r', '\r')
+                    .strip()
+                )
+
+        return None
+
+    def _attempt_prediction_repair(
+        self,
+        raw_response: str,
+        prompt_snapshot: str,
+        expected_issue_no: Optional[str],
+        requested_targets
+    ) -> Optional[dict]:
+        text = self._prepare_response_text(raw_response)
+        if not text or self._looks_like_schema_description(text):
+            return None
+
+        repair_prompt = self._build_prediction_repair_prompt(
+            raw_response=raw_response,
+            prompt_snapshot=prompt_snapshot,
+            expected_issue_no=expected_issue_no,
+            requested_targets=requested_targets
+        )
+
+        try:
+            repaired = self._call_llm_with_metadata(
+                repair_prompt,
+                system_prompt=(
+                    '你是 PC28 预测结果修复助手。'
+                    '你只能把已有原始提示词和原始输出整理成最终 JSON。'
+                    '禁止输出推理过程、字段说明、Markdown、代码块或额外解释。'
+                ),
+                max_output_tokens=self._prediction_repair_max_output_tokens(),
+                json_output=True
+            )
+            repaired_raw_response = repaired.get('raw_response', '')
+            prediction = self._parse_response(
+                raw_response=repaired_raw_response,
+                expected_issue_no=expected_issue_no,
+                requested_targets=requested_targets
+            )
+        except Exception:
+            return None
+
+        if not self._has_effective_prediction(prediction, requested_targets):
+            return None
+
+        return {
+            'prediction': prediction,
+            'raw_response': self._compose_repaired_prediction_trace(
+                raw_response=raw_response,
+                repaired_raw_response=repaired_raw_response
+            )
+        }
+
+    def _build_prediction_repair_prompt(
+        self,
+        raw_response: str,
+        prompt_snapshot: str,
+        expected_issue_no: Optional[str],
+        requested_targets
+    ) -> str:
+        target_labels = [self._target_label(target) for target in normalize_target_list(requested_targets)]
+        issue_no = str(expected_issue_no or '').strip()
+
+        return f"""下面有一段 PC28 模型原始输出，没有按要求稳定返回最终 JSON。
+
+请基于“原始提示词”和“模型原始输出”整理出最终 JSON，不要输出任何解释。
+
+硬性要求：
+1. 只输出一个 JSON 对象。
+2. 字段只允许：issue_no、predicted_number、predicted_big_small、predicted_odd_even、predicted_combo、confidence、reasoning_summary。
+3. issue_no 固定输出为 {issue_no or 'null'}。
+4. predicted_number 必须是 0-27 的整数或 null。
+5. predicted_big_small 只能是 "大"、"小" 或 null。
+6. predicted_odd_even 只能是 "单"、"双" 或 null。
+7. predicted_combo 只能是 "大单"、"大双"、"小单"、"小双" 或 null。
+8. confidence 只能是 0-1 之间的小数或 null。
+9. reasoning_summary 不超过 30 个字。
+10. 如果模型原始输出里已经明确给出结论，优先提取，不要改写方向。
+11. 如果模型原始输出只明确给出大小/单双/组合方向，但缺少 predicted_number，可以结合原始提示词里的同一任务上下文补出一个与方向一致的保守和值；如果仍无法确定，则输出 null。
+12. 如果任何字段无法从现有内容可靠确定，输出 null，禁止编造额外解释。
+
+预测目标：{', '.join(target_labels) if target_labels else '未指定'}
+
+原始提示词：
+{prompt_snapshot}
+
+模型原始输出：
+{raw_response}
+"""
+
+    def _compose_repaired_prediction_trace(self, raw_response: str, repaired_raw_response: str) -> str:
+        original = (raw_response or '').strip()
+        repaired = (repaired_raw_response or '').strip()
+        if not original:
+            return repaired
+        if not repaired:
+            return original
+        return f"[original]\n{original}\n\n[repair_json]\n{repaired}"
 
     def _normalize_prediction(self, payload: dict, expected_issue_no: Optional[str], requested_targets) -> dict:
         if 'prediction' in payload and isinstance(payload['prediction'], dict):
