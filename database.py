@@ -356,6 +356,9 @@ class Database:
                 raw_response TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 error_message TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                last_retry_at TIMESTAMP,
+                last_retry_error TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 settled_at TIMESTAMP,
@@ -471,6 +474,18 @@ class Database:
             pass
         try:
             cursor.execute("ALTER TABLE notification_subscriptions ADD COLUMN sender_account_id INTEGER")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE prediction_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE prediction_items ADD COLUMN last_retry_at TIMESTAMP")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE prediction_items ADD COLUMN last_retry_error TEXT")
         except Exception:
             pass
 
@@ -1359,9 +1374,9 @@ class Database:
                 run_id, predictor_id, lottery_type, run_key, event_key, item_order,
                 issue_no, title, requested_targets, prediction_payload, actual_payload,
                 hit_payload, confidence, reasoning_summary, raw_response, status,
-                error_message, settled_at
+                error_message, retry_count, last_retry_at, last_retry_error, settled_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, event_key) DO UPDATE SET
                 item_order = excluded.item_order,
                 issue_no = excluded.issue_no,
@@ -1375,6 +1390,9 @@ class Database:
                 raw_response = excluded.raw_response,
                 status = excluded.status,
                 error_message = excluded.error_message,
+                retry_count = excluded.retry_count,
+                last_retry_at = excluded.last_retry_at,
+                last_retry_error = excluded.last_retry_error,
                 settled_at = excluded.settled_at,
                 updated_at = CURRENT_TIMESTAMP
             ''',
@@ -1397,6 +1415,9 @@ class Database:
                     item.get('raw_response'),
                     item.get('status', 'pending'),
                     item.get('error_message'),
+                    int(item.get('retry_count') or 0),
+                    item.get('last_retry_at'),
+                    item.get('last_retry_error'),
                     item.get('settled_at')
                 )
                 for item in items
@@ -3228,6 +3249,7 @@ class Database:
         data['prediction_payload'] = self._decode_json_object(data.get('prediction_payload'))
         data['actual_payload'] = self._decode_json_object(data.get('actual_payload'))
         data['hit_payload'] = self._decode_json_object(data.get('hit_payload'))
+        data['retry_count'] = int(data.get('retry_count') or 0)
         if not data.get('raw_response') and data.get('run_raw_response'):
             data['raw_response'] = data.get('run_raw_response')
         if not data.get('error_message') and data.get('run_error_message'):

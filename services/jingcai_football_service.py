@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import re
 
 import requests
 
@@ -24,6 +25,12 @@ from utils.timezone import get_current_beijing_time, parse_beijing_time
 
 DEFAULT_TIMEOUT = getattr(config, 'JINGCAI_REQUEST_TIMEOUT', 15)
 DETAIL_CACHE_SECONDS = getattr(config, 'JINGCAI_DETAIL_CACHE_SECONDS', 6 * 60 * 60)
+PREDICTION_BATCH_MAX_MATCHES = max(1, int(getattr(config, 'JINGCAI_PREDICTION_BATCH_MAX_MATCHES', 10)))
+PREDICTION_PROMPT_SOFT_LIMIT = max(4000, int(getattr(config, 'JINGCAI_PREDICTION_PROMPT_SOFT_LIMIT', 20000)))
+PREDICTION_MAX_OUTPUT_TOKENS = max(800, int(getattr(config, 'JINGCAI_PREDICTION_MAX_OUTPUT_TOKENS', 3200)))
+PREDICTION_CONCISE_REASONING_THRESHOLD = max(1, int(getattr(config, 'JINGCAI_PREDICTION_CONCISE_REASONING_THRESHOLD', 8)))
+FAILED_ITEM_RETRY_MAX_ATTEMPTS = max(1, int(getattr(config, 'JINGCAI_FAILED_ITEM_RETRY_MAX_ATTEMPTS', 3)))
+FAILED_ITEM_RETRY_COOLDOWN_SECONDS = max(60, int(getattr(config, 'JINGCAI_FAILED_ITEM_RETRY_COOLDOWN_SECONDS', 15 * 60)))
 
 
 class JingcaiFootballService:
@@ -416,14 +423,23 @@ class JingcaiFootballService:
         batch_payload = batch_payload or self.sync_matches(db, is_prized='')
         run_key = batch_payload.get('batch_key') or datetime.now().strftime('%Y-%m-%d')
         existing_run = db.get_prediction_run_by_key(predictor['id'], run_key)
-        if existing_run and existing_run['status'] in {'pending', 'settled'}:
-            return existing_run
-        if auto_mode and existing_run and existing_run['status'] == 'failed':
-            return existing_run
 
         upcoming_matches = [item for item in batch_payload['matches'] if football_utils.is_match_sale_open(item)]
         if not upcoming_matches:
             raise ValueError('当前没有处于已开售状态的竞彩足球比赛')
+
+        retry_matches = self._select_retry_target_matches(
+            db=db,
+            existing_run=existing_run,
+            upcoming_matches=upcoming_matches,
+            auto_mode=auto_mode
+        )
+        if existing_run and existing_run.get('status') == 'settled':
+            return existing_run
+        if existing_run and not retry_matches:
+            return existing_run
+
+        target_matches = retry_matches or upcoming_matches
 
         history_matches = self._fetch_recent_history(
             db,
@@ -431,14 +447,7 @@ class JingcaiFootballService:
             run_key,
             predictor.get('history_window') or 40
         )
-        enriched_matches = self.enrich_matches_for_prediction(db, upcoming_matches)
-        prompt = self._build_prediction_prompt(
-            predictor,
-            run_key,
-            enriched_matches,
-            history_matches,
-            predictor.get('data_injection_mode') or 'summary'
-        )
+        enriched_matches = self.enrich_matches_for_prediction(db, target_matches)
         predictor_client = AIPredictor(
             api_key=predictor['api_key'],
             api_url=predictor['api_url'],
@@ -447,107 +456,101 @@ class JingcaiFootballService:
             temperature=predictor['temperature']
         )
 
-        raw_response = ''
-        prompt_snapshot = prompt
-        try:
-            llm_result = predictor_client.run_json_task(
-                prompt=prompt,
-                system_prompt='你是中国竞彩足球预测助手。你必须只输出单个 JSON 对象。',
-                max_output_tokens=3200
-            )
-            raw_response = llm_result['raw_response']
-            payload = llm_result['payload']
-            items_payload = payload.get('predictions') if isinstance(payload, dict) else None
-            if not isinstance(items_payload, list):
-                raise AIPredictionError('AI 返回 JSON 缺少 predictions 数组', category='parse')
-            run_payload = {
-                'predictor_id': predictor['id'],
-                'lottery_type': self.lottery_type,
-                'run_key': run_key,
-                'title': f'{run_key} 竞彩足球批次预测',
-                'requested_targets': predictor.get('prediction_targets') or [],
-                'status': 'pending',
-                'total_items': len(upcoming_matches),
-                'settled_items': 0,
-                'hit_items': 0,
-                'confidence': self._average_confidence(items_payload),
-                'reasoning_summary': '',
-                'raw_response': raw_response,
-                'prompt_snapshot': prompt_snapshot,
-                'error_message': None,
-                'settled_at': None
-            }
-        except AIPredictionError as exc:
-            run_payload = {
-                'predictor_id': predictor['id'],
-                'lottery_type': self.lottery_type,
-                'run_key': run_key,
-                'title': f'{run_key} 竞彩足球批次预测',
-                'requested_targets': predictor.get('prediction_targets') or [],
-                'status': 'failed',
-                'total_items': 0,
-                'settled_items': 0,
-                'hit_items': 0,
-                'confidence': None,
-                'reasoning_summary': '',
-                'raw_response': raw_response,
-                'prompt_snapshot': prompt_snapshot,
-                'error_message': str(exc),
-                'settled_at': None
-            }
-            run_id = db.upsert_prediction_run(run_payload)
-            if auto_mode and self.prediction_guard:
-                self.prediction_guard.record_ai_failure(predictor['id'], exc)
-            return db.get_prediction_run(run_id) or run_payload
-        except Exception as exc:
-            run_payload = {
-                'predictor_id': predictor['id'],
-                'lottery_type': self.lottery_type,
-                'run_key': run_key,
-                'title': f'{run_key} 竞彩足球批次预测',
-                'requested_targets': predictor.get('prediction_targets') or [],
-                'status': 'failed',
-                'total_items': 0,
-                'settled_items': 0,
-                'hit_items': 0,
-                'confidence': None,
-                'reasoning_summary': '',
-                'raw_response': raw_response,
-                'prompt_snapshot': prompt_snapshot,
-                'error_message': str(exc),
-                'settled_at': None
-            }
-            run_id = db.upsert_prediction_run(run_payload)
-            return db.get_prediction_run(run_id) or run_payload
-
-        run_id = db.upsert_prediction_run(run_payload)
-        normalized_items = self._normalize_prediction_items(
-            run_id=run_id,
+        batch_results = self._predict_in_batches(
+            predictor_client=predictor_client,
             predictor=predictor,
             run_key=run_key,
             matches=enriched_matches,
-            items_payload=items_payload,
-            raw_response=raw_response
+            history_matches=history_matches,
+            data_injection_mode=predictor.get('data_injection_mode') or 'summary'
         )
-        if not any(item.get('status') == 'pending' for item in normalized_items):
-            failure = AIPredictionError('AI 未返回任何有效预测项', category='parse')
-            failed_run_payload = {
-                **run_payload,
-                'status': 'failed',
-                'total_items': 0,
-                'confidence': None,
-                'error_message': str(failure)
-            }
-            db.upsert_prediction_run(failed_run_payload)
+        raw_response = self._compose_batch_trace(batch_results, field_name='raw_response')
+        prompt_snapshot = self._compose_batch_trace(batch_results, field_name='prompt_snapshot')
+        run_payload = {
+            'predictor_id': predictor['id'],
+            'lottery_type': self.lottery_type,
+            'run_key': run_key,
+            'title': f'{run_key} 竞彩足球批次预测',
+            'requested_targets': predictor.get('prediction_targets') or [],
+            'status': 'pending',
+            'total_items': existing_run.get('total_items') if existing_run else len(upcoming_matches),
+            'settled_items': existing_run.get('settled_items', 0) if existing_run else 0,
+            'hit_items': existing_run.get('hit_items', 0) if existing_run else 0,
+            'confidence': self._average_confidence([
+                item
+                for result in batch_results
+                for item in (result.get('items_payload') or [])
+                if isinstance(item, dict)
+            ]),
+            'reasoning_summary': '',
+            'raw_response': self._merge_trace_payload(existing_run.get('raw_response') if existing_run else '', raw_response),
+            'prompt_snapshot': self._merge_trace_payload(existing_run.get('prompt_snapshot') if existing_run else '', prompt_snapshot),
+            'error_message': None,
+            'settled_at': None
+        }
+        run_id = db.upsert_prediction_run(run_payload)
+
+        normalized_items = []
+        for result in batch_results:
+            if result.get('items_payload') is not None:
+                normalized_items.extend(
+                    self._normalize_prediction_items(
+                        run_id=run_id,
+                        predictor=predictor,
+                        run_key=run_key,
+                        matches=result['matches'],
+                        items_payload=result.get('items_payload') or [],
+                        raw_response=result.get('raw_response') or '',
+                        item_order_offset=result.get('item_order_offset', 0)
+                    )
+                )
+                continue
+
+            normalized_items.extend(
+                self._build_failed_prediction_items(
+                    run_id=run_id,
+                    predictor=predictor,
+                    run_key=run_key,
+                    matches=result['matches'],
+                    raw_response=result.get('raw_response') or '',
+                    error_message=result.get('error_message') or 'AI 子批次预测失败',
+                    batch_label=result.get('batch_label') or '',
+                    item_order_offset=result.get('item_order_offset', 0)
+                )
+            )
+
+        if normalized_items:
+            db.upsert_prediction_items(normalized_items)
+
+        all_items = db.get_prediction_run_items(run_id)
+        pending_items = [item for item in all_items if item.get('status') == 'pending']
+        failed_items = [item for item in all_items if item.get('status') == 'failed']
+        failed_batches = self._build_failed_batch_summaries(failed_items)
+        error_message = self._build_prediction_error_summary(failed_batches, len(failed_items), len(all_items))
+        final_run_payload = {
+            **run_payload,
+            'status': 'pending' if pending_items else 'failed',
+            'confidence': self._average_confidence([
+                {'confidence': item.get('confidence')}
+                for item in pending_items
+            ]),
+            'total_items': len(all_items) or run_payload.get('total_items', 0),
+            'error_message': error_message
+        }
+        db.upsert_prediction_run(final_run_payload)
+        if all_items:
+            self._refresh_run_summary(db, run_id)
+
+        if not pending_items:
+            failure = AIPredictionError(error_message or 'AI 未返回任何有效预测项', category='parse')
             if auto_mode and self.prediction_guard:
                 self.prediction_guard.record_ai_failure(predictor['id'], failure)
-            return db.get_prediction_run(run_id) or failed_run_payload
-        db.upsert_prediction_items(normalized_items)
-        self._refresh_run_summary(db, run_id)
-        if auto_mode and self.prediction_guard:
+            return db.get_prediction_run(run_id) or final_run_payload
+
+        if self.prediction_guard:
             self.prediction_guard.record_success(predictor['id'])
-        saved = db.get_prediction_run(run_id) or run_payload
-        if self.notification_service and saved.get('status') == 'pending':
+        saved = db.get_prediction_run(run_id) or final_run_payload
+        if self.notification_service and saved.get('status') == 'pending' and not existing_run:
             self.notification_service.notify_prediction_created(
                 predictor=predictor,
                 prediction=saved,
@@ -616,7 +619,20 @@ class JingcaiFootballService:
         if open_matches and batch_key:
             for predictor in predictors:
                 existing_run = db.get_prediction_run_by_key(predictor['id'], batch_key)
-                if existing_run and existing_run.get('status') in {'pending', 'settled'}:
+                if existing_run and existing_run.get('status') == 'settled':
+                    prediction_results.append({
+                        'predictor_id': predictor['id'],
+                        'lottery_type': self.lottery_type,
+                        'issue_no': existing_run.get('run_key'),
+                        'status': existing_run.get('status')
+                    })
+                    continue
+                if existing_run and existing_run.get('status') in {'pending', 'failed'} and not self._run_has_retryable_failed_items(
+                    db,
+                    existing_run,
+                    open_matches,
+                    auto_mode=True
+                ):
                     prediction_results.append({
                         'predictor_id': predictor['id'],
                         'lottery_type': self.lottery_type,
@@ -695,6 +711,366 @@ class JingcaiFootballService:
         history_window = predictor_payload.get('history_window') or 40
         return f"""你是一个资深提示词工程师。请帮我为“AITradingSimulator”的竞彩足球预测功能编写一版可直接使用的自定义提示词。\n\n当前配置：\n- 彩种：竞彩足球\n- 预测玩法：{', '.join(football_utils.TARGET_LABELS.get(item, item) for item in predictor_payload.get('prediction_targets') or [])}\n- 主玩法：{football_utils.TARGET_LABELS.get(predictor_payload.get('primary_metric') or 'spf', '胜平负')}\n- 历史窗口：最近 {history_window} 场已结束比赛\n\n平台会提供的数据包括：\n1. 待售比赛列表与 SPF / RQSPF 赔率\n2. 每场比赛详情、积分排名、历史交锋、双方近期战绩、伤停信息\n3. 近期已结束比赛样本\n\n要求：\n1. 只能预测当前待售比赛列表中的场次。\n2. 重点参考联赛、对阵、赔率、让球、历史交锋、近期战绩、积分排名、伤停信息。\n3. 输出严格 JSON，不要 Markdown，不要解释性前缀。\n4. JSON 字段只包含：batch_key、predictions。\n5. predictions 中每项字段只包含：event_key、match_no、predicted_spf、predicted_rqspf、confidence、reasoning_summary。\n6. predicted_spf / predicted_rqspf 只能输出“胜 / 平 / 负”或 null。\n7. confidence 取值 0-1。\n8. reasoning_summary 要简短，不要空泛。\n\n如果我补充“偏保守”“更重视赔率”“重点看让球”这类自然语言需求，请自动把它改写成专业、可执行的竞彩足球提示词。"""
 
+    def _select_retry_target_matches(self, db, existing_run: dict | None, upcoming_matches: list[dict], auto_mode: bool) -> list[dict]:
+        if not existing_run:
+            return []
+
+        match_map = {
+            str(match.get('event_key') or '').strip(): match
+            for match in upcoming_matches
+            if str(match.get('event_key') or '').strip()
+        }
+        if not match_map:
+            return []
+
+        retry_timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        retry_matches: list[dict] = []
+        existing_items = db.get_prediction_run_items(existing_run['id'])
+        for item in sorted(existing_items, key=lambda current: (int(current.get('item_order') or 0), int(current.get('id') or 0))):
+            if str(item.get('status') or '').strip() != 'failed':
+                continue
+
+            event_key = str(item.get('event_key') or '').strip()
+            match = match_map.get(event_key)
+            if not match:
+                continue
+            if not self._should_retry_failed_item(item, auto_mode):
+                continue
+
+            retry_matches.append({
+                **match,
+                'prediction_item_order': int(item.get('item_order') or 0),
+                'prediction_next_retry_count': int(item.get('retry_count') or 0) + 1,
+                'prediction_last_retry_at': retry_timestamp,
+                'prediction_existing_retry_error': str(item.get('last_retry_error') or '').strip()
+            })
+        return retry_matches
+
+    def _should_retry_failed_item(self, item: dict, auto_mode: bool) -> bool:
+        if str(item.get('status') or '').strip() != 'failed':
+            return False
+        if not auto_mode:
+            return True
+
+        retry_count = int(item.get('retry_count') or 0)
+        if retry_count >= FAILED_ITEM_RETRY_MAX_ATTEMPTS:
+            return False
+
+        last_attempt_at = (
+            self._parse_utc_timestamp(item.get('last_retry_at'))
+            or self._parse_utc_timestamp(item.get('updated_at'))
+            or self._parse_utc_timestamp(item.get('created_at'))
+        )
+        if last_attempt_at is None:
+            return True
+        return (datetime.utcnow() - last_attempt_at).total_seconds() >= FAILED_ITEM_RETRY_COOLDOWN_SECONDS
+
+    def _parse_utc_timestamp(self, value) -> datetime | None:
+        text = str(value or '').strip()
+        if not text:
+            return None
+        try:
+            return datetime.strptime(text, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            return None
+
+    def _merge_trace_payload(self, previous_text: str, new_text: str) -> str:
+        previous = str(previous_text or '').strip()
+        current = str(new_text or '').strip()
+        if previous and current:
+            return f'{previous}\n\n{current}'
+        return current or previous
+
+    def _run_has_retryable_failed_items(self, db, run: dict | None, upcoming_matches: list[dict], auto_mode: bool) -> bool:
+        return bool(self._select_retry_target_matches(db, run, upcoming_matches, auto_mode=auto_mode))
+
+    def _predict_in_batches(
+        self,
+        predictor_client: AIPredictor,
+        predictor: dict,
+        run_key: str,
+        matches: list[dict],
+        history_matches: list[dict],
+        data_injection_mode: str
+    ) -> list[dict]:
+        initial_batches = self._split_prediction_batches(
+            predictor=predictor,
+            run_key=run_key,
+            matches=matches,
+            history_matches=history_matches,
+            data_injection_mode=data_injection_mode
+        )
+        results: list[dict] = []
+        total_batches = len(initial_batches)
+        for batch_index, batch in enumerate(initial_batches, start=1):
+            results.extend(
+                self._predict_batch_with_retry(
+                    predictor_client=predictor_client,
+                    predictor=predictor,
+                    run_key=run_key,
+                    matches=batch['matches'],
+                    history_matches=history_matches,
+                    data_injection_mode=data_injection_mode,
+                    item_order_offset=batch['item_order_offset'],
+                    batch_label=f'{batch_index}/{total_batches}'
+                )
+            )
+        return results
+
+    def _split_prediction_batches(
+        self,
+        predictor: dict,
+        run_key: str,
+        matches: list[dict],
+        history_matches: list[dict],
+        data_injection_mode: str
+    ) -> list[dict]:
+        if not matches:
+            return []
+
+        batches: list[dict] = []
+        current_matches: list[dict] = []
+        current_offset = 0
+        for match in matches:
+            candidate_matches = current_matches + [match]
+            candidate_prompt = self._build_prediction_prompt(
+                predictor,
+                run_key,
+                candidate_matches,
+                history_matches,
+                data_injection_mode
+            )
+            should_split = (
+                current_matches
+                and (
+                    len(candidate_matches) > PREDICTION_BATCH_MAX_MATCHES
+                    or len(candidate_prompt) > PREDICTION_PROMPT_SOFT_LIMIT
+                )
+            )
+            if should_split:
+                batches.append({
+                    'matches': current_matches,
+                    'item_order_offset': current_offset
+                })
+                current_offset += len(current_matches)
+                current_matches = [match]
+                continue
+            current_matches = candidate_matches
+
+        if current_matches:
+            batches.append({
+                'matches': current_matches,
+                'item_order_offset': current_offset
+            })
+        return batches
+
+    def _predict_batch_with_retry(
+        self,
+        predictor_client: AIPredictor,
+        predictor: dict,
+        run_key: str,
+        matches: list[dict],
+        history_matches: list[dict],
+        data_injection_mode: str,
+        item_order_offset: int,
+        batch_label: str
+    ) -> list[dict]:
+        prompt = self._build_prediction_prompt(
+            predictor,
+            run_key,
+            matches,
+            history_matches,
+            data_injection_mode
+        )
+        raw_response = ''
+        prompt_snapshot = prompt
+        try:
+            llm_result = predictor_client.run_json_task(
+                prompt=prompt,
+                system_prompt='你是中国竞彩足球预测助手。你必须只输出单个 JSON 对象。',
+                max_output_tokens=PREDICTION_MAX_OUTPUT_TOKENS
+            )
+            raw_response = llm_result['raw_response']
+            payload = llm_result['payload']
+            items_payload = payload.get('predictions') if isinstance(payload, dict) else None
+            if not isinstance(items_payload, list):
+                raise AIPredictionError('AI 返回 JSON 缺少 predictions 数组', category='parse')
+
+            missing_matches = self._find_missing_prediction_matches(matches, items_payload)
+            if missing_matches and len(matches) > 1:
+                return self._split_and_retry_prediction_batch(
+                    predictor_client=predictor_client,
+                    predictor=predictor,
+                    run_key=run_key,
+                    matches=matches,
+                    history_matches=history_matches,
+                    data_injection_mode=data_injection_mode,
+                    item_order_offset=item_order_offset,
+                    batch_label=batch_label
+                )
+
+            return [{
+                'batch_label': batch_label,
+                'matches': matches,
+                'item_order_offset': item_order_offset,
+                'items_payload': items_payload,
+                'raw_response': raw_response,
+                'prompt_snapshot': prompt_snapshot,
+                'error_message': None
+            }]
+        except AIPredictionError as exc:
+            raw_response = getattr(exc, 'raw_response', raw_response) or raw_response
+            prompt_snapshot = getattr(exc, 'prompt_snapshot', prompt_snapshot) or prompt_snapshot
+            if self._should_retry_prediction_batch(exc) and len(matches) > 1:
+                return self._split_and_retry_prediction_batch(
+                    predictor_client=predictor_client,
+                    predictor=predictor,
+                    run_key=run_key,
+                    matches=matches,
+                    history_matches=history_matches,
+                    data_injection_mode=data_injection_mode,
+                    item_order_offset=item_order_offset,
+                    batch_label=batch_label
+                )
+            return [{
+                'batch_label': batch_label,
+                'matches': matches,
+                'item_order_offset': item_order_offset,
+                'items_payload': None,
+                'raw_response': raw_response,
+                'prompt_snapshot': prompt_snapshot,
+                'error_message': str(exc)
+            }]
+        except Exception as exc:
+            raw_response = getattr(exc, 'raw_response', raw_response) or raw_response
+            prompt_snapshot = getattr(exc, 'prompt_snapshot', prompt_snapshot) or prompt_snapshot
+            return [{
+                'batch_label': batch_label,
+                'matches': matches,
+                'item_order_offset': item_order_offset,
+                'items_payload': None,
+                'raw_response': raw_response,
+                'prompt_snapshot': prompt_snapshot,
+                'error_message': str(exc)
+            }]
+
+    def _split_and_retry_prediction_batch(
+        self,
+        predictor_client: AIPredictor,
+        predictor: dict,
+        run_key: str,
+        matches: list[dict],
+        history_matches: list[dict],
+        data_injection_mode: str,
+        item_order_offset: int,
+        batch_label: str
+    ) -> list[dict]:
+        midpoint = max(1, len(matches) // 2)
+        left_matches = matches[:midpoint]
+        right_matches = matches[midpoint:]
+        if not left_matches or not right_matches:
+            return [{
+                'batch_label': batch_label,
+                'matches': matches,
+                'item_order_offset': item_order_offset,
+                'items_payload': None,
+                'raw_response': '',
+                'prompt_snapshot': '',
+                'error_message': 'AI 子批次拆分失败'
+            }]
+
+        results = self._predict_batch_with_retry(
+            predictor_client=predictor_client,
+            predictor=predictor,
+            run_key=run_key,
+            matches=left_matches,
+            history_matches=history_matches,
+            data_injection_mode=data_injection_mode,
+            item_order_offset=item_order_offset,
+            batch_label=f'{batch_label}.1'
+        )
+        results.extend(
+            self._predict_batch_with_retry(
+                predictor_client=predictor_client,
+                predictor=predictor,
+                run_key=run_key,
+                matches=right_matches,
+                history_matches=history_matches,
+                data_injection_mode=data_injection_mode,
+                item_order_offset=item_order_offset + len(left_matches),
+                batch_label=f'{batch_label}.2'
+            )
+        )
+        return results
+
+    def _should_retry_prediction_batch(self, error: Exception) -> bool:
+        category = str(getattr(error, 'category', '') or '').strip().lower()
+        finish_reason = str(getattr(error, 'finish_reason', '') or '').strip().lower()
+        message = str(error or '').lower()
+        if category == 'parse':
+            return True
+        if finish_reason in {'length', 'incomplete'}:
+            return True
+        return any(
+            keyword in message
+            for keyword in (
+                '无法从模型响应中解析 json',
+                'json 缺少 predictions',
+                '只输出单个 json 对象',
+                '返回为空'
+            )
+        )
+
+    def _find_missing_prediction_matches(self, matches: list[dict], items_payload: list[dict]) -> list[dict]:
+        item_by_key = {}
+        item_by_match_no = {}
+        for item in items_payload:
+            if not isinstance(item, dict):
+                continue
+            event_key = str(item.get('event_key') or '').strip()
+            match_no = str(item.get('match_no') or '').strip()
+            if event_key:
+                item_by_key[event_key] = item
+            if match_no:
+                item_by_match_no[match_no] = item
+
+        return [
+            match
+            for match in matches
+            if not item_by_key.get(match.get('event_key') or '')
+            and not item_by_match_no.get(match.get('match_no') or '')
+        ]
+
+    def _compose_batch_trace(self, batch_results: list[dict], field_name: str) -> str:
+        blocks: list[str] = []
+        for result in batch_results:
+            content = str(result.get(field_name) or '').strip()
+            if not content:
+                continue
+            match_labels = '、'.join(
+                str(match.get('match_no') or match.get('event_key') or '').strip()
+                for match in (result.get('matches') or [])[:5]
+            )
+            if len(result.get('matches') or []) > 5:
+                match_labels = f'{match_labels}...'
+            blocks.append(
+                f"[子批次 {result.get('batch_label') or '--'} | 场次 {len(result.get('matches') or [])} | {match_labels}]\n{content}"
+            )
+        return '\n\n'.join(blocks)
+
+    def _build_prediction_error_summary(self, failed_batches: list[dict], failed_item_count: int, total_items: int) -> str | None:
+        if not failed_batches:
+            return None
+
+        previews = []
+        for batch in failed_batches[:3]:
+            previews.append(
+                f"子批次 {batch.get('batch_label') or '--'}（{batch.get('match_text') or '未知场次'}）：{batch.get('reason') or 'AI 子批次预测失败'}"
+            )
+        joined_preview = '；'.join(previews)
+        prefix = 'AI 未返回任何有效预测项' if failed_item_count >= total_items else 'AI 未返回部分场次的有效预测'
+        return f'{prefix}，失败 {failed_item_count}/{total_items} 场，涉及 {len(failed_batches)} 个子批次。{joined_preview}'
+
     def _fetch_recent_history(self, db, dates: list[str], batch_key: str, history_window: int) -> list[dict]:
         normalized_dates = [date for date in dates if str(date) < str(batch_key)]
         history: list[dict] = []
@@ -718,35 +1094,148 @@ class JingcaiFootballService:
         data_injection_mode: str
     ) -> str:
         requested_targets = predictor.get('prediction_targets') or []
-        target_labels = '、'.join(football_utils.TARGET_LABELS.get(item, item) for item in requested_targets)
-        upcoming_lines = []
-        detail_lines = []
-        detail_json_items = []
+        custom_prompt = (predictor.get('system_prompt') or '').strip()
+        method_name = predictor.get('prediction_method') or '自定义策略'
+        prompt_variables = self._build_prompt_variables(
+            run_key=run_key,
+            requested_targets=requested_targets,
+            upcoming_matches=upcoming_matches,
+            history_matches=history_matches,
+            data_injection_mode=data_injection_mode
+        )
+        rendered_custom_prompt = self._render_prompt_template(custom_prompt, prompt_variables)
+        placeholders_used = self._contains_placeholder(custom_prompt)
+        target_labels = prompt_variables['prediction_targets']
+        concise_reasoning_rule = ''
+        if len(upcoming_matches) >= PREDICTION_CONCISE_REASONING_THRESHOLD:
+            concise_reasoning_rule = '\n8. 当前子批次场次较多，reasoning_summary 必须压缩为一句短句，尽量控制在 30 个汉字内。'
+        return f"""你正在为中国竞彩足球生成一批比赛预测。\n\n基础要求：\n1. 只能预测我提供的待售比赛。\n2. 当前批次：{run_key}。\n3. 预测玩法：{target_labels}。\n4. 不能编造比赛，也不能输出列表外的 event_key。\n5. 只输出一个 JSON 对象，不要 Markdown，不要额外解释。\n6. predicted_spf / predicted_rqspf 只能输出“胜”“平”“负”或 null。\n7. confidence 取值 0-1。{concise_reasoning_rule}\n\n方案信息：\n- 方案名称：{predictor.get('name', '')}\n- 预测方法：{method_name}\n- 历史窗口：最近 {len(history_matches)} 场已结束比赛\n\n用户自定义策略：\n{rendered_custom_prompt or '无，按赔率、让球、联赛、历史交锋、近期战绩、积分排名与伤停信息做稳健分析'}\n\n平台数据输入：\n{prompt_variables['default_data_block'] if not placeholders_used else '你在自定义提示词中已经使用了项目占位符，平台不再重复拼接整批比赛上下文。'}\n\n输出格式：\n{{\n  \"batch_key\": \"{run_key}\",\n  \"predictions\": [\n    {{\n      \"event_key\": \"示例event_key\",\n      \"match_no\": \"周日024\",\n      \"predicted_spf\": \"胜\",\n      \"predicted_rqspf\": \"平\",\n      \"confidence\": 0.68,\n      \"reasoning_summary\": \"一句简短依据\"\n    }}\n  ]\n}}\n\n现在开始，只输出 JSON。"""
+
+    def _build_prompt_variables(
+        self,
+        run_key: str,
+        requested_targets: list[str],
+        upcoming_matches: list[dict],
+        history_matches: list[dict],
+        data_injection_mode: str
+    ) -> dict[str, str]:
+        target_labels = '、'.join(football_utils.TARGET_LABELS.get(item, item) for item in requested_targets) or '胜平负'
+        match_batch_lines: list[str] = []
+        detail_lines: list[str] = []
+        odds_lines: list[str] = []
+        injury_lines: list[str] = []
+        intelligence_lines: list[str] = []
+
         for match in upcoming_matches:
+            detail_bundle = match.get('detail_bundle') or {}
+            detail = detail_bundle.get('detail') or {}
+            battle_history = detail_bundle.get('battle_history') or []
+            odds_euro = detail_bundle.get('odds_euro') or []
+            odds_asia = detail_bundle.get('odds_asia') or []
+            odds_totals = detail_bundle.get('odds_totals') or []
+            odds_snapshots = detail_bundle.get('odds_snapshots') or football_utils.extract_odds_snapshots(
+                odds_euro,
+                odds_asia,
+                odds_totals
+            )
+            team_table = detail_bundle.get('team_table') or {}
+            recent_team1 = detail_bundle.get('recent_form_team1') or []
+            recent_team2 = detail_bundle.get('recent_form_team2') or []
+            injury = detail_bundle.get('injury') or {}
+            intelligence = detail_bundle.get('intelligence') or {}
+            recent_matches = detail_bundle.get('recent_matches') or {}
+
             spf_text = self._format_odds_text(match.get('spf_odds') or {})
             rqspf = match.get('rqspf') or {}
             rq_text = self._format_odds_text(rqspf.get('odds') or {})
-            upcoming_lines.append(
-                f"- event_key={match['event_key']} | {match['match_no']} | {match['league']} | {match['home_team']} vs {match['away_team']} | 开赛={match['match_time']} | SPF={spf_text} | RQSPF={rqspf.get('handicap_text') or '--'} [{rq_text}]"
+            match_batch_lines.append(
+                f"- event_key={match['event_key']} | {match['match_no']} | {match['league']} | "
+                f"{match['home_team']} vs {match['away_team']} | 开赛={match['match_time']} | "
+                f"SPF={spf_text} | RQSPF={rqspf.get('handicap_text') or '--'} [{rq_text}]"
             )
-            if match.get('detail_summary'):
-                detail_lines.append(match['detail_summary'])
-            detail_json_items.append(self._build_match_detail_json(match))
-
-        history_lines = []
-        for match in history_matches[:60]:
-            history_lines.append(
-                f"- {match['match_no']} | {match['league']} | {match['home_team']} {match.get('score_text') or '--'} {match['away_team']} | SPF={match.get('actual_spf') or '--'} | RQSPF={match.get('actual_rqspf') or '--'}"
+            detail_lines.append(
+                f"- {match['event_key']} / {match['match_no']} / 比赛详情={self._build_detail_line(detail)} / "
+                f"积分排名={self._build_table_line(team_table)} / "
+                f"历史交锋={self._build_battle_history_line(battle_history, match['home_team'], match['away_team'])} / "
+                f"近期战绩={self._build_recent_form_line(recent_team1, match['home_team'], match.get('team1_id'))}；"
+                f"{self._build_recent_form_line(recent_team2, match['away_team'], match.get('team2_id'))} / "
+                f"后续赛程={self._build_recent_matches_line(recent_matches)}"
+            )
+            odds_lines.append(
+                f"- {match['event_key']} / {match['match_no']} / 市场赔率={self._build_market_odds_line(odds_euro, odds_asia, odds_totals)} / "
+                f"快照摘要={self._build_odds_snapshot_line(odds_snapshots)}"
+            )
+            injury_lines.append(
+                f"- {match['event_key']} / {match['match_no']} / {self._build_injury_line(injury)}"
+            )
+            intelligence_lines.append(
+                f"- {match['event_key']} / {match['match_no']} / {self._build_intelligence_line(intelligence)}"
             )
 
-        custom_prompt = (predictor.get('system_prompt') or '').strip()
-        method_name = predictor.get('prediction_method') or '自定义策略'
-        detail_block = '\n'.join(detail_lines) if detail_lines else '- 暂无可用详情摘要'
-        detail_json_block = football_utils.dump_json(detail_json_items)
+        recent_results_lines = [
+            f"- {match['match_no']} | {match['league']} | {match['home_team']} {match.get('score_text') or '--'} {match['away_team']} | "
+            f"SPF={match.get('actual_spf') or '--'} | RQSPF={match.get('actual_rqspf') or '--'}"
+            for match in history_matches[:60]
+        ]
+
+        current_time_beijing = get_current_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+        prompt_variables = {
+            'match_batch_summary': '\n'.join(match_batch_lines) or '- 暂无待预测比赛',
+            'match_detail_summary': '\n'.join(detail_lines) or '- 暂无比赛详情摘要',
+            'market_odds_summary': '\n'.join(odds_lines) or '- 暂无市场赔率摘要',
+            'recent_results_summary': '\n'.join(recent_results_lines) or '- 暂无可用历史比赛',
+            'injury_summary': '\n'.join(injury_lines) or '- 暂无伤停摘要',
+            'intelligence_summary': '\n'.join(intelligence_lines) or '- 暂无情报摘要',
+            'current_time_beijing': current_time_beijing,
+            'history_window': str(len(history_matches)),
+            'prediction_targets': target_labels
+        }
+        prompt_variables['default_data_block'] = self._build_default_data_block(
+            run_key=run_key,
+            prompt_variables=prompt_variables,
+            data_injection_mode=data_injection_mode
+        )
+        return prompt_variables
+
+    def _build_default_data_block(self, run_key: str, prompt_variables: dict[str, str], data_injection_mode: str) -> str:
         is_raw_mode = str(data_injection_mode).strip().lower() == 'raw'
-        extra_label = '待预测比赛详情 JSON' if is_raw_mode else '待预测比赛详情摘要'
-        extra_context = detail_json_block if is_raw_mode else detail_block
-        return f"""你正在为中国竞彩足球生成一批比赛预测。\n\n基础要求：\n1. 只能预测我提供的待售比赛。\n2. 当前批次：{run_key}。\n3. 预测玩法：{target_labels}。\n4. 不能编造比赛，也不能输出列表外的 event_key。\n5. 只输出一个 JSON 对象，不要 Markdown，不要额外解释。\n6. predicted_spf / predicted_rqspf 只能输出“胜”“平”“负”或 null。\n7. confidence 取值 0-1。\n\n方案信息：\n- 方案名称：{predictor.get('name', '')}\n- 预测方法：{method_name}\n- 历史窗口：最近 {len(history_matches)} 场已结束比赛\n\n用户自定义策略：\n{custom_prompt or '无，按赔率、让球、联赛、历史交锋、近期战绩、积分排名与伤停信息做稳健分析'}\n\n待预测比赛：\n{chr(10).join(upcoming_lines)}\n\n{extra_label}：\n{extra_context}\n\n近期已结束比赛：\n{chr(10).join(history_lines) if history_lines else '- 暂无可用历史比赛'}\n\n输出格式：\n{{\n  \"batch_key\": \"{run_key}\",\n  \"predictions\": [\n    {{\n      \"event_key\": \"示例event_key\",\n      \"match_no\": \"周日024\",\n      \"predicted_spf\": \"胜\",\n      \"predicted_rqspf\": \"平\",\n      \"confidence\": 0.68,\n      \"reasoning_summary\": \"一句简短依据\"\n    }}\n  ]\n}}\n\n现在开始，只输出 JSON。"""
+        sections = [
+            f"- 当前北京时间：{prompt_variables['current_time_beijing']}",
+            f"- 当前批次：{run_key}",
+            f"- 预测玩法：{prompt_variables['prediction_targets']}",
+            "- 待预测比赛：",
+            prompt_variables['match_batch_summary'],
+            "- 市场赔率摘要：",
+            prompt_variables['market_odds_summary'],
+            "- 比赛详情摘要：",
+            prompt_variables['match_detail_summary'],
+            "- 伤停摘要：",
+            prompt_variables['injury_summary'],
+            "- 情报摘要：",
+            prompt_variables['intelligence_summary'],
+            "- 近期已结束比赛：",
+            prompt_variables['recent_results_summary']
+        ]
+        if is_raw_mode:
+            sections.insert(3, '- 数据注入模式：原始模式（已裁剪为结构化摘要，避免上下文冗余）')
+        else:
+            sections.insert(3, '- 数据注入模式：摘要模式')
+        return '\n'.join(sections)
+
+    def _render_prompt_template(self, prompt: str, prompt_variables: dict[str, str]) -> str:
+        if not prompt:
+            return ''
+
+        def replace(match: re.Match) -> str:
+            key = str(match.group(1) or '').strip()
+            return str(prompt_variables.get(key, match.group(0)))
+
+        return re.sub(r'\{\{\s*([a-zA-Z0-9_]+)\s*\}\}', replace, prompt)
+
+    def _contains_placeholder(self, prompt: str) -> bool:
+        if not prompt:
+            return False
+        return re.search(r'\{\{\s*[a-zA-Z0-9_]+\s*\}\}', prompt) is not None
 
     def _normalize_match(self, item: dict, batch_key: str) -> dict | None:
         event_key = football_utils.resolve_event_key(item)
@@ -1157,7 +1646,16 @@ class JingcaiFootballService:
             return '--'
         return f"{item.get('won') or 0}胜{item.get('draw') or 0}平{item.get('loss') or 0}负"
 
-    def _normalize_prediction_items(self, run_id: int, predictor: dict, run_key: str, matches: list[dict], items_payload: list[dict], raw_response: str) -> list[dict]:
+    def _normalize_prediction_items(
+        self,
+        run_id: int,
+        predictor: dict,
+        run_key: str,
+        matches: list[dict],
+        items_payload: list[dict],
+        raw_response: str,
+        item_order_offset: int = 0
+    ) -> list[dict]:
         item_by_key = {}
         item_by_match_no = {}
         for item in items_payload:
@@ -1179,13 +1677,16 @@ class JingcaiFootballService:
                 'rqspf': football_utils.normalize_prediction_outcome(raw_item.get('predicted_rqspf'))
             }
             status = 'pending' if any(prediction_payload.get(target) for target in requested_targets) else 'failed'
+            item_order = int(match.get('prediction_item_order') or (item_order_offset + index))
+            retry_count = int(match.get('prediction_next_retry_count') or 0)
+            last_retry_at = match.get('prediction_last_retry_at') if retry_count else None
             normalized_items.append({
                 'run_id': run_id,
                 'predictor_id': predictor['id'],
                 'lottery_type': self.lottery_type,
                 'run_key': run_key,
                 'event_key': match['event_key'],
-                'item_order': index,
+                'item_order': item_order,
                 'issue_no': match.get('match_no') or match['event_key'],
                 'title': match.get('event_name') or '',
                 'requested_targets': requested_targets,
@@ -1197,9 +1698,102 @@ class JingcaiFootballService:
                 'raw_response': raw_response,
                 'status': status,
                 'error_message': None if status == 'pending' else 'AI 未返回该场次的有效预测',
+                'retry_count': retry_count,
+                'last_retry_at': last_retry_at,
+                'last_retry_error': None if status == 'pending' else ('AI 未返回该场次的有效预测' if retry_count else None),
                 'settled_at': None
             })
         return normalized_items
+
+    def _build_failed_prediction_items(
+        self,
+        run_id: int,
+        predictor: dict,
+        run_key: str,
+        matches: list[dict],
+        raw_response: str,
+        error_message: str,
+        batch_label: str = '',
+        item_order_offset: int = 0
+    ) -> list[dict]:
+        requested_targets = predictor.get('prediction_targets') or []
+        formatted_error_message = self._format_failed_batch_error_message(
+            batch_label=batch_label,
+            matches=matches,
+            error_message=error_message
+        )
+        return [
+            {
+                'run_id': run_id,
+                'predictor_id': predictor['id'],
+                'lottery_type': self.lottery_type,
+                'run_key': run_key,
+                'event_key': match['event_key'],
+                'item_order': int(match.get('prediction_item_order') or (item_order_offset + index)),
+                'issue_no': match.get('match_no') or match['event_key'],
+                'title': match.get('event_name') or '',
+                'requested_targets': requested_targets,
+                'prediction_payload': {},
+                'actual_payload': {},
+                'hit_payload': {},
+                'confidence': None,
+                'reasoning_summary': '',
+                'raw_response': raw_response,
+                'status': 'failed',
+                'error_message': formatted_error_message,
+                'retry_count': int(match.get('prediction_next_retry_count') or 0),
+                'last_retry_at': match.get('prediction_last_retry_at') if int(match.get('prediction_next_retry_count') or 0) else None,
+                'last_retry_error': error_message if int(match.get('prediction_next_retry_count') or 0) else None,
+                'settled_at': None
+            }
+            for index, match in enumerate(matches)
+        ]
+
+    def _format_failed_batch_error_message(self, batch_label: str, matches: list[dict], error_message: str) -> str:
+        label_text = str(batch_label or '--').strip()
+        normalized_error = str(error_message or 'AI 子批次预测失败').strip()
+        match_names = [str(match.get('match_no') or match.get('event_key') or '').strip() for match in matches]
+        match_names = [item for item in match_names if item]
+        match_text = '、'.join(match_names) if match_names else '未知场次'
+        match_text = f'{match_text}（共{len(matches)}场）'
+        return f'子批次 {label_text} 失败；场次：{match_text}；原因：{normalized_error}'
+
+    def _parse_failed_batch_error_message(self, error_message: str) -> dict | None:
+        text = str(error_message or '').strip()
+        if not text:
+            return None
+        match = re.match(r'^子批次\s*(?P<label>[^；]+)\s*失败；场次：(?P<matches>.+?)；原因：(?P<reason>.+)$', text)
+        if not match:
+            return None
+
+        match_text = str(match.group('matches') or '').strip()
+        matches_text = match_text.split('（共', 1)[0].strip()
+        match_names = [item.strip() for item in matches_text.split('、') if item.strip()]
+        return {
+            'batch_label': str(match.group('label') or '').strip(),
+            'match_text': match_text,
+            'match_names': match_names,
+            'reason': str(match.group('reason') or '').strip(),
+            'message': text
+        }
+
+    def _build_failed_batch_summaries(self, failed_items: list[dict]) -> list[dict]:
+        summaries: list[dict] = []
+        seen: set[str] = set()
+        for item in failed_items:
+            parsed = self._parse_failed_batch_error_message(item.get('error_message') or '')
+            if not parsed:
+                continue
+            key = f"{parsed['batch_label']}|{parsed['match_text']}|{parsed['reason']}"
+            if key in seen:
+                continue
+            seen.add(key)
+            summaries.append({
+                **parsed,
+                'issue_no': item.get('issue_no'),
+                'title': item.get('title')
+            })
+        return summaries
 
     def _build_actual_payload(self, match: dict, requested_targets: list[str]) -> dict:
         payload = {}
@@ -1258,10 +1852,12 @@ class JingcaiFootballService:
             return None
         items = self._decorate_prediction_items(db, db.get_prediction_run_items(run['id']))
         ticket_plan = self._build_recommended_ticket_plan(items)
+        failed_batches = self._build_failed_batch_summaries([item for item in items if item.get('status') == 'failed'])
         return {
             **run,
             'lottery_type': self.lottery_type,
             'items': items,
+            'failed_batches': failed_batches,
             'recommended_parlay': self._build_two_match_recommendation(items),
             'recommended_tickets': ticket_plan['tickets'],
             'recommended_ticket_warnings': ticket_plan['warnings']
@@ -1305,12 +1901,17 @@ class JingcaiFootballService:
         }
         decorated = []
         for item in items:
+            failed_batch = self._parse_failed_batch_error_message(item.get('error_message') or '')
             event = event_map.get(item.get('event_key')) or {}
             meta_payload = event.get('meta_payload') or {}
             detail_payload = detail_map.get(item.get('event_key')) or {}
             odds_snapshots = ((detail_payload.get('odds_snapshots') or {}).get('payload') or {})
             decorated.append({
                 **item,
+                'batch_failure_label': (failed_batch or {}).get('batch_label'),
+                'batch_failure_match_text': (failed_batch or {}).get('match_text'),
+                'batch_failure_matches': (failed_batch or {}).get('match_names') or [],
+                'batch_failure_reason': (failed_batch or {}).get('reason'),
                 'market_snapshot': {
                     'event_time': event.get('event_time') or '',
                     'status': event.get('status') or '',

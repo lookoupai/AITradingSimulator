@@ -154,7 +154,13 @@ class AIPredictor:
         try:
             payload = self._extract_json_payload(result['raw_response'])
         except Exception as exc:
-            raise self._normalize_ai_exception(exc, default_category='parse') from exc
+            normalized_error = self._normalize_ai_exception(exc, default_category='parse')
+            raise self._attach_prediction_debug_context(
+                normalized_error,
+                raw_response=result.get('raw_response', ''),
+                prompt_snapshot=prompt,
+                finish_reason=result.get('finish_reason')
+            ) from exc
         return {
             'api_mode': result['api_mode'],
             'response_model': result['response_model'],

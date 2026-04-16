@@ -61,12 +61,31 @@ class PredictionGuardService:
 
     def record_success(self, predictor_id: int) -> dict:
         state = self.db.get_predictor_runtime_state(predictor_id)
-        if int(state.get('consecutive_ai_failures') or 0) == 0:
+        has_failures = int(state.get('consecutive_ai_failures') or 0) > 0
+        has_error_context = any(
+            state.get(key)
+            for key in ('last_ai_error_category', 'last_ai_error_message', 'last_ai_error_at')
+        )
+        has_stale_pause_context = not bool(state.get('auto_paused')) and any(
+            state.get(key)
+            for key in ('auto_paused_at', 'auto_pause_reason')
+        )
+        if not has_failures and not has_error_context and not has_stale_pause_context:
             return state
 
-        self.db.update_predictor_runtime_state(predictor_id, {
-            'consecutive_ai_failures': 0
-        })
+        payload = {
+            'consecutive_ai_failures': 0,
+            'last_ai_error_category': None,
+            'last_ai_error_message': None,
+            'last_ai_error_at': None
+        }
+        if not bool(state.get('auto_paused')):
+            payload.update({
+                'auto_paused_at': None,
+                'auto_pause_reason': None
+            })
+
+        self.db.update_predictor_runtime_state(predictor_id, payload)
         return self.db.get_predictor_runtime_state(predictor_id)
 
     def record_ai_failure(self, predictor_id: int, error: Exception | str) -> dict:

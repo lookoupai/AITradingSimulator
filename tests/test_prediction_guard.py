@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import unittest
 from unittest import mock
 
@@ -181,3 +182,105 @@ class PredictionGuardTests(unittest.TestCase):
             self.assertEqual(second_run['status'], 'failed')
             predictor_after_second = harness.db.get_predictor(predictor_id, include_secret=False)
             self.assertEqual(predictor_after_second['consecutive_ai_failures'], 1)
+
+    def test_jingcai_manual_success_clears_guard_state(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'jingcai_football')
+            harness.db.update_predictor_runtime_state(predictor_id, {
+                'consecutive_ai_failures': 2,
+                'last_ai_error_category': 'parse',
+                'last_ai_error_message': '旧的 JSON 解析失败',
+                'last_ai_error_at': '2026-04-06 00:00:00'
+            })
+            predictor = harness.db.get_predictor(predictor_id, include_secret=True)
+            match = self._build_jingcai_match(harness)
+            batch_payload = {
+                'batch_key': '2026-04-06',
+                'dates': ['2026-04-06'],
+                'matches': [match]
+            }
+            llm_result = {
+                'raw_response': json.dumps({
+                    'batch_key': '2026-04-06',
+                    'predictions': [
+                        {
+                            'event_key': match['event_key'],
+                            'match_no': match['match_no'],
+                            'predicted_spf': '胜',
+                            'predicted_rqspf': '负',
+                            'confidence': 0.66,
+                            'reasoning_summary': '测试'
+                        }
+                    ]
+                }, ensure_ascii=False),
+                'payload': {
+                    'batch_key': '2026-04-06',
+                    'predictions': [
+                        {
+                            'event_key': match['event_key'],
+                            'match_no': match['match_no'],
+                            'predicted_spf': '胜',
+                            'predicted_rqspf': '负',
+                            'confidence': 0.66,
+                            'reasoning_summary': '测试'
+                        }
+                    ]
+                }
+            }
+
+            with mock.patch.object(harness.module.jingcai_football_service, '_fetch_recent_history', return_value=[]), \
+                 mock.patch.object(harness.module.jingcai_football_service, 'enrich_matches_for_prediction', return_value=[match]), \
+                 mock.patch.object(harness.module.jingcai_football_service, '_build_prediction_prompt', return_value='prompt'), \
+                 mock.patch('services.jingcai_football_service.AIPredictor.run_json_task', return_value=llm_result):
+                run = harness.module.jingcai_football_service.generate_prediction(
+                    harness.db,
+                    predictor,
+                    auto_mode=False,
+                    batch_payload=batch_payload
+                )
+
+            self.assertEqual(run['status'], 'pending')
+            predictor_after = harness.db.get_predictor(predictor_id, include_secret=False)
+            self.assertEqual(predictor_after['consecutive_ai_failures'], 0)
+            self.assertIsNone(predictor_after['last_ai_error_category'])
+            self.assertIsNone(predictor_after['last_ai_error_message'])
+            self.assertIsNone(predictor_after['last_ai_error_at'])
+
+    def test_pc28_manual_success_clears_guard_state(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28')
+            harness.db.update_predictor_runtime_state(predictor_id, {
+                'consecutive_ai_failures': 2,
+                'last_ai_error_category': 'parse',
+                'last_ai_error_message': '旧的格式错误',
+                'last_ai_error_at': '2026-04-06 00:00:00'
+            })
+            predictor = harness.db.get_predictor(predictor_id, include_secret=True)
+
+            with mock.patch('services.prediction_engine.AIPredictor.predict_next_issue', return_value=(
+                {
+                    'issue_no': '2001',
+                    'prediction_number': 12,
+                    'prediction_big_small': '小',
+                    'prediction_odd_even': '双',
+                    'prediction_combo': '小双',
+                    'confidence': 0.72,
+                    'reasoning_summary': '测试'
+                },
+                '{"issue_no":"2001"}',
+                'PROMPT'
+            )):
+                prediction = harness.module.prediction_engine._generate_prediction_locked(
+                    predictor,
+                    self._pc28_context('2001'),
+                    auto_mode=False
+                )
+
+            self.assertEqual(prediction['status'], 'pending')
+            predictor_after = harness.db.get_predictor(predictor_id, include_secret=False)
+            self.assertEqual(predictor_after['consecutive_ai_failures'], 0)
+            self.assertIsNone(predictor_after['last_ai_error_category'])
+            self.assertIsNone(predictor_after['last_ai_error_message'])
+            self.assertIsNone(predictor_after['last_ai_error_at'])

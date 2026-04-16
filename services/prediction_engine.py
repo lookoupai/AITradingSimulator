@@ -217,7 +217,7 @@ class PredictionEngine:
                 'settled_at': None
             }
             self.db.upsert_prediction(payload)
-            if auto_mode:
+            if self.prediction_guard:
                 self.prediction_guard.record_success(predictor['id'])
             saved = self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
             if self.notification_service and saved.get('status') == 'pending':

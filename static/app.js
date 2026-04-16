@@ -2652,6 +2652,37 @@ class PredictionApp {
         `;
     }
 
+    buildFootballBatchFailureHint(prediction) {
+        const label = prediction.batch_failure_label ? `子批次 ${prediction.batch_failure_label}` : '子批次失败';
+        const matchText = prediction.batch_failure_match_text || prediction.issue_no || '--';
+        const reason = prediction.batch_failure_reason || prediction.error_message || 'AI 子批次预测失败';
+        return `${label} · ${matchText} · ${reason}`;
+    }
+
+    renderFootballFailedBatchSection(failedBatches) {
+        if (!Array.isArray(failedBatches) || !failedBatches.length) {
+            return '';
+        }
+        const cards = failedBatches.map((batch) => this.renderCurrentPredictionCard(
+            `子批次 ${batch.batch_label || '--'}`,
+            batch.match_text || '--',
+            batch.reason || 'AI 子批次预测失败'
+        )).join('');
+        return `
+            <div class="prediction-section">
+                <div class="prediction-section-head">
+                    <div>
+                        <span class="mini-label">失败子批次</span>
+                        <p class="section-hint">以下子批次未成功返回完整预测，系统已在其余子批次成功结果基础上保留可用场次。</p>
+                    </div>
+                </div>
+                <div class="prediction-grid prediction-grid-compact">
+                    ${cards}
+                </div>
+            </div>
+        `;
+    }
+
     renderFootballCurrentPrediction(currentPrediction, latestPrediction, predictor) {
         const container = document.getElementById('currentPrediction');
         if (!predictor) {
@@ -2685,6 +2716,7 @@ class PredictionApp {
             const parlay = Array.isArray(prediction.recommended_parlay) ? prediction.recommended_parlay : [];
             const tickets = Array.isArray(prediction.recommended_tickets) ? prediction.recommended_tickets : [];
             const ticketWarnings = Array.isArray(prediction.recommended_ticket_warnings) ? prediction.recommended_ticket_warnings : [];
+            const failedBatches = Array.isArray(prediction.failed_batches) ? prediction.failed_batches : [];
             const saleNotice = ticketWarnings.length
                 ? ticketWarnings.map((item) => item.message || '--').join('；')
                 : '若当前玩法停售、已开奖或缺少有效赔率快照，系统会自动跳过该玩法，不纳入推荐票面与收益模拟。';
@@ -2701,11 +2733,12 @@ class PredictionApp {
                 const rqspfHint = this.buildFootballAvailabilityHint('rqspf', marketSnapshot);
                 const snapshotSummary = this.buildFootballSnapshotSummary(marketSnapshot);
                 const statusLabel = this.footballMatchStatusLabel(marketSnapshot);
+                const failureHint = item.status === 'failed' ? this.buildFootballBatchFailureHint(item) : '';
                 return `
                     <tr>
                         <td>${this.escapeHtml(item.issue_no || '--')}</td>
                         <td>${this.escapeHtml(item.title || '--')}</td>
-                        <td>${this.escapeHtml(statusLabel)}</td>
+                        <td>${this.escapeHtml(statusLabel)}${failureHint ? `<br><span class="hint-text">${this.escapeHtml(failureHint)}</span>` : ''}</td>
                         <td>${this.escapeHtml(spfOutcome || '--')}${spfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(spfOdds)}</span>` : ''}${spfHint ? `<br><span class="hint-text">${this.escapeHtml(spfHint)}</span>` : ''}${snapshotSummary ? `<br><span class="hint-text">${this.escapeHtml(snapshotSummary)}</span>` : ''}</td>
                         <td>${this.escapeHtml(rqspfOutcome || '--')}${rqspfOdds ? `<br><span class="hint-text">赔率 ${this.escapeHtml(rqspfOdds)}</span>` : ''}${rqspfHint ? `<br><span class="hint-text">${this.escapeHtml(rqspfHint)}</span>` : ''}</td>
                         <td>${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}</td>
@@ -2722,6 +2755,7 @@ class PredictionApp {
                 const rqspfHint = this.buildFootballAvailabilityHint('rqspf', marketSnapshot);
                 const snapshotSummary = this.buildFootballSnapshotSummary(marketSnapshot);
                 const statusLabel = this.footballMatchStatusLabel(marketSnapshot);
+                const failureHint = item.status === 'failed' ? this.buildFootballBatchFailureHint(item) : '';
                 return this.renderMobileDataCard({
                     title: `${this.escapeHtml(item.issue_no || '--')} · ${this.escapeHtml(item.title || '--')}`,
                     badgeHtml: `<span class="tag">${this.escapeHtml(statusLabel)}</span>`,
@@ -2738,7 +2772,8 @@ class PredictionApp {
                             label: '置信度',
                             content: this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)
                         }
-                    ]
+                    ],
+                    footer: failureHint ? this.escapeHtml(failureHint) : ''
                 });
             }).join('');
 
@@ -2781,6 +2816,7 @@ class PredictionApp {
                 ${this.renderPredictorGuardNotice(predictor)}
                 ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
                 ${saleNoticeBlock}
+                ${this.renderFootballFailedBatchSection(failedBatches)}
                 <div class="prediction-grid prediction-grid-compact">
                     ${this.renderCurrentPredictionCard('预测批次', prediction.run_key || '--')}
                     ${this.renderCurrentPredictionCard('场次数量', String(items.length))}
@@ -3683,6 +3719,7 @@ class PredictionApp {
                         <div>
                             <strong>${this.escapeHtml(prediction.issue_no || prediction.title || '--')}</strong>
                             <span class="status-chip ${prediction.status}">${this.predictionStatusLabel(prediction.status)}</span>
+                            ${prediction.batch_failure_label ? `<span class="tag">子批次 ${this.escapeHtml(prediction.batch_failure_label)}</span>` : ''}
                         </div>
                         <span>${this.escapeHtml(prediction.created_at || prediction.run_created_at || '--')}</span>
                     </div>
@@ -5182,6 +5219,14 @@ class PredictionApp {
     }
 
     renderFootballPredictionResult(prediction) {
+        if (prediction.status === 'failed') {
+            return `
+                <div class="result-stack">
+                    <strong>${this.escapeHtml(prediction.title || prediction.issue_no || '--')}</strong>
+                    <span class="result-meta-text">${this.escapeHtml(this.buildFootballBatchFailureHint(prediction))}</span>
+                </div>
+            `;
+        }
         const payload = prediction.prediction_payload || {};
         const marketSnapshot = prediction.market_snapshot || {};
         const spfText = this.buildFootballOutcomeText('spf', payload.spf, marketSnapshot);
@@ -5198,6 +5243,9 @@ class PredictionApp {
     }
 
     renderFootballActualResult(prediction) {
+        if (prediction.status === 'failed') {
+            return `<span class="hint-text">${this.escapeHtml(prediction.batch_failure_reason || prediction.error_message || 'AI 子批次预测失败')}</span>`;
+        }
         if (prediction.status === 'pending') {
             return '<span class="hint-text">等待赛果</span>';
         }
@@ -5211,6 +5259,9 @@ class PredictionApp {
     }
 
     renderFootballHitSummary(prediction, options = {}) {
+        if (prediction.status === 'failed') {
+            return `<span class="hint-text">${this.escapeHtml(prediction.batch_failure_label ? `子批次 ${prediction.batch_failure_label} 失败` : '执行失败')}</span>`;
+        }
         if (prediction.status === 'pending') {
             return '<span class="hint-text">未结算</span>';
         }

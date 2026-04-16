@@ -545,6 +545,31 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(getattr(cm.exception, 'finish_reason', ''), 'length')
         self.assertIn('原始响应', str(cm.exception))
 
+    def test_run_json_task_parse_failure_preserves_debug_context(self):
+        raw_response = '{"batch_key":"2026-04-16","predictions":[{"event_key":"2039116"'
+
+        with patch.object(
+            self.predictor,
+            '_call_llm_with_metadata',
+            return_value={
+                'api_mode': 'chat_completions',
+                'response_model': 'test-model',
+                'finish_reason': 'length',
+                'latency_ms': 123,
+                'raw_response': raw_response
+            }
+        ):
+            with self.assertRaises(AIPredictionError) as cm:
+                self.predictor.run_json_task(
+                    prompt='FOOTBALL_PROMPT',
+                    system_prompt='只输出 JSON',
+                    max_output_tokens=3200
+                )
+
+        self.assertEqual(getattr(cm.exception, 'raw_response', ''), raw_response)
+        self.assertEqual(getattr(cm.exception, 'prompt_snapshot', ''), 'FOOTBALL_PROMPT')
+        self.assertEqual(getattr(cm.exception, 'finish_reason', ''), 'length')
+
     def test_parse_response_rejects_schema_description_text(self):
         with self.assertRaises(ValueError):
             self.predictor._parse_response(
