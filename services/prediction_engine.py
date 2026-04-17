@@ -141,7 +141,7 @@ class PredictionEngine:
 
     def _build_context(self, history_window: int, draws: Optional[list[dict]] = None) -> dict:
         recent_draws = draws or self.db.get_recent_draws('pc28', limit=history_window)
-        keno_snapshot = self.pc28_service.fetch_keno_snapshot()
+        keno_snapshot = self.pc28_service.fetch_keno_snapshot(recent_draws=recent_draws[:1])
         omission_stats = self.pc28_service.fetch_omission_stats()
         today_stats = self.pc28_service.fetch_today_stats()
 

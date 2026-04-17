@@ -8,7 +8,7 @@
 - 每个账号可创建多个预测方案
 - 每个方案独立配置 `API Key`、`API URL`、模型名称、提示词、预测目标、温度、数据注入模式
 - 支持 `pc28` 与 `jingcai_football` 两类彩种
-- 自动轮询 `pc28.ai` 官方接口同步开奖数据
+- 自动轮询 `pc28.help` 官方接口同步开奖数据
 - 自动轮询新浪竞彩足球接口同步待赛赛事、已赛赛果与比赛详情
 - 支持方案连通性测试、提示词体检、提示词优化与立即预测
 - 支持开奖/赛果回写、命中结算、统计看板与公开预测页
@@ -20,7 +20,7 @@
 - 前端：原生 JavaScript / ECharts
 - AI 接口：OpenAI 兼容格式（DeepSeek、Gemini OpenAI-compatible、OpenAI 等）
 - 数据源：
-  - PC28：`https://www.pc28.ai/docs.html`
+  - PC28：默认 `https://pc28.help`，当官方最近开奖接口不可用时自动回退 `https://jnd-28.vip/api/recent` 与 `https://feiji28.com/api/keno/latest`
   - 竞彩足球：新浪移动 JSON 接口为主，体彩 `webapi.sporttery.cn` 作为辅助探测/校验源
 
 ## 快速开始
@@ -85,8 +85,11 @@ PORT=35008
 DATABASE_PATH=pc28_predictor.db
 AUTO_PREDICTION=True
 PREDICTION_POLL_INTERVAL=20
-PC28_API_BASE_URL=https://www.pc28.ai
+PC28_API_BASE_URL=https://pc28.help
 PC28_REQUEST_TIMEOUT=10
+PC28_JND_RECENT_URL=https://jnd-28.vip/api/recent
+PC28_FEIJI_RECENT_URL=https://feiji28.com/api/keno/latest
+PC28_RECENT_SOURCE_ORDER=official,jnd,feiji
 JINGCAI_REQUEST_TIMEOUT=15
 JINGCAI_DETAIL_CACHE_SECONDS=21600
 JINGCAI_IDLE_INTERVAL=1800
