@@ -35,9 +35,10 @@ _SINA_BASE_PARAMS = {
 def build_sina_match_list_params(
     date: str = '',
     is_prized: str = '',
-    game_types: str = 'spf'
+    game_types: str = 'spf',
+    cache_bust: int | str | None = None
 ) -> dict:
-    return {
+    params = {
         **_SINA_BASE_PARAMS,
         'cat1': 'jczqMatches',
         'gameTypes': game_types,
@@ -46,6 +47,9 @@ def build_sina_match_list_params(
         'isAll': 1,
         'dpc': 1
     }
+    if cache_bust not in {None, ''}:
+        params['t'] = cache_bust
+    return params
 
 
 def build_sina_detail_params(cat1: str, extra_params: dict | None = None) -> dict:

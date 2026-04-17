@@ -571,6 +571,85 @@ class JingcaiFootballServicePromptTests(unittest.TestCase):
             self.assertEqual(generate_prediction.call_count, 1)
             self.assertEqual(result['predictions'][0]['status'], 'pending')
 
+    def test_sync_matches_best_effort_retries_history_batch_with_cache_bust_for_overdue_pending_matches(self):
+        with fresh_app_harness() as harness, \
+             mock.patch('services.jingcai_football_service.HISTORY_RESULT_REFRESH_GRACE_MINUTES', 30):
+            stale_match = harness.module.jingcai_football_service._normalize_match({
+                'matchId': 'match-2039119',
+                'tiCaiId': '2039119',
+                'matchNo': '周四004',
+                'matchNoValue': '4004',
+                'league': '欧罗巴',
+                'leagueOfficial': '欧罗巴',
+                'team1': '维拉',
+                'team2': '博洛尼亚',
+                'team1Id': 't1',
+                'team2Id': 't2',
+                'matchTimeFormat': '2026-04-17 03:00:00',
+                'showSellStatus': '2',
+                'showSellStatusCn': '待开奖',
+                'spfSellStatus': '3',
+                'rqspfSellStatus': '3',
+                'spf': '1.49,4.20,5.40',
+                'rqspf': '-1,2.56,3.55,2.20',
+                'score1': '',
+                'score2': '',
+                'halfScore1': '',
+                'halfScore2': ''
+            }, '2026-04-16')
+            settled_match = harness.module.jingcai_football_service._normalize_match({
+                'matchId': 'match-2039119',
+                'tiCaiId': '2039119',
+                'matchNo': '周四004',
+                'matchNoValue': '4004',
+                'league': '欧罗巴',
+                'leagueOfficial': '欧罗巴',
+                'team1': '维拉',
+                'team2': '博洛尼亚',
+                'team1Id': 't1',
+                'team2Id': 't2',
+                'matchTimeFormat': '2026-04-17 03:00:00',
+                'showSellStatus': '3',
+                'showSellStatusCn': '已开奖',
+                'spfSellStatus': '3',
+                'rqspfSellStatus': '3',
+                'spf': '1.49,4.20,5.40',
+                'rqspf': '-1,2.56,3.55,2.20',
+                'score1': '4',
+                'score2': '0',
+                'halfScore1': '3',
+                'halfScore2': '0'
+            }, '2026-04-16')
+
+            with mock.patch.object(harness.module.jingcai_football_service, 'current_sale_date', return_value='2026-04-17'), \
+                 mock.patch('services.jingcai_football_service.get_current_beijing_time', return_value=datetime(2026, 4, 17, 12, 0, 0)), \
+                 mock.patch.object(
+                     harness.module.jingcai_football_service,
+                     'sync_matches',
+                     side_effect=[
+                         {
+                             'lottery_type': 'jingcai_football',
+                             'batch_key': '2026-04-16',
+                             'matches': [stale_match]
+                         },
+                         {
+                             'lottery_type': 'jingcai_football',
+                             'batch_key': '2026-04-16',
+                             'matches': [settled_match]
+                         }
+                     ]
+                 ) as sync_matches:
+                payload, used_is_prized = harness.module.jingcai_football_service._sync_matches_best_effort(
+                    harness.db,
+                    '2026-04-16'
+                )
+
+            self.assertEqual(used_is_prized, '1')
+            self.assertEqual(sync_matches.call_count, 2)
+            self.assertFalse(sync_matches.call_args_list[0].kwargs['cache_bust'])
+            self.assertTrue(sync_matches.call_args_list[1].kwargs['cache_bust'])
+            self.assertTrue(payload['matches'][0]['settled'])
+
 
 if __name__ == '__main__':
     unittest.main()

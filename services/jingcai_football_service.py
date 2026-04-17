@@ -25,6 +25,10 @@ from utils.timezone import get_current_beijing_time, parse_beijing_time
 
 DEFAULT_TIMEOUT = getattr(config, 'JINGCAI_REQUEST_TIMEOUT', 15)
 DETAIL_CACHE_SECONDS = getattr(config, 'JINGCAI_DETAIL_CACHE_SECONDS', 6 * 60 * 60)
+HISTORY_RESULT_REFRESH_GRACE_MINUTES = max(
+    30,
+    int(getattr(config, 'JINGCAI_HISTORY_RESULT_REFRESH_GRACE_MINUTES', 90))
+)
 PREDICTION_BATCH_MAX_MATCHES = max(1, int(getattr(config, 'JINGCAI_PREDICTION_BATCH_MAX_MATCHES', 10)))
 PREDICTION_PROMPT_SOFT_LIMIT = max(4000, int(getattr(config, 'JINGCAI_PREDICTION_PROMPT_SOFT_LIMIT', 20000)))
 PREDICTION_MAX_OUTPUT_TOKENS = max(800, int(getattr(config, 'JINGCAI_PREDICTION_MAX_OUTPUT_TOKENS', 3200)))
@@ -43,13 +47,20 @@ class JingcaiFootballService:
         self._next_auto_run_at = None
         self._last_auto_reason = ''
 
-    def _request_payload(self, date: str = '', is_prized: str = '', game_types: str = 'spf') -> dict:
+    def _request_payload(
+        self,
+        date: str = '',
+        is_prized: str = '',
+        game_types: str = 'spf',
+        cache_bust: bool = False
+    ) -> dict:
         response = requests.get(
             SINA_JINGCAI_URL,
             params=build_sina_match_list_params(
                 date=date,
                 is_prized=is_prized,
-                game_types=game_types
+                game_types=game_types,
+                cache_bust=int(datetime.utcnow().timestamp() * 1000) if cache_bust else None
             ),
             headers=SINA_LIST_HEADERS,
             timeout=self.timeout
@@ -79,8 +90,19 @@ class JingcaiFootballService:
             raise ValueError(f'新浪竞彩详情接口返回失败: cat1={cat1}, payload={payload}')
         return result.get('data') or {}
 
-    def fetch_matches(self, date: str = '', is_prized: str = '', game_types: str = 'spf') -> dict:
-        result = self._request_payload(date=date, is_prized=is_prized, game_types=game_types)
+    def fetch_matches(
+        self,
+        date: str = '',
+        is_prized: str = '',
+        game_types: str = 'spf',
+        cache_bust: bool = False
+    ) -> dict:
+        result = self._request_payload(
+            date=date,
+            is_prized=is_prized,
+            game_types=game_types,
+            cache_bust=cache_bust
+        )
         batch_key = str(result.get('date') or date or '').strip()
         matches = [self._normalize_match(item, batch_key=batch_key) for item in (result.get('data') or [])]
         matches = [item for item in matches if item]
@@ -91,8 +113,20 @@ class JingcaiFootballService:
             'matches': matches
         }
 
-    def sync_matches(self, db, date: str = '', is_prized: str = '', game_types: str = 'spf') -> dict:
-        payload = self.fetch_matches(date=date, is_prized=is_prized, game_types=game_types)
+    def sync_matches(
+        self,
+        db,
+        date: str = '',
+        is_prized: str = '',
+        game_types: str = 'spf',
+        cache_bust: bool = False
+    ) -> dict:
+        payload = self.fetch_matches(
+            date=date,
+            is_prized=is_prized,
+            game_types=game_types,
+            cache_bust=cache_bust
+        )
         event_keys = [item.get('event_key') for item in payload['matches'] if item.get('event_key')]
         existing_event_map = db.get_lottery_event_map(self.lottery_type, event_keys) if event_keys else {}
         events = [
@@ -2056,12 +2090,29 @@ class JingcaiFootballService:
             payload['warning'] = warning
         return payload
 
+    def _is_history_batch(self, date: str) -> bool:
+        normalized_date = str(date or '').strip()
+        return bool(normalized_date) and normalized_date < self.current_sale_date()
+
+    def _has_overdue_unsettled_matches(self, matches: list[dict]) -> bool:
+        if not matches:
+            return False
+
+        grace_deadline = get_current_beijing_time() - timedelta(minutes=HISTORY_RESULT_REFRESH_GRACE_MINUTES)
+        for match in matches:
+            if match.get('settled'):
+                continue
+            kickoff_time = parse_beijing_time(match.get('match_time') or '')
+            if kickoff_time and kickoff_time <= grace_deadline:
+                return True
+        return False
+
     def _sync_matches_best_effort(self, db, date: str, prefer_is_prized: str | None = None) -> tuple[dict, str]:
         candidates = []
+        is_history = self._is_history_batch(date)
         if prefer_is_prized is not None:
             candidates.append(str(prefer_is_prized))
         else:
-            is_history = bool(date) and str(date) < self.current_sale_date()
             candidates.extend(['1', ''] if is_history else ['', '1'])
 
         last_error = None
@@ -2071,7 +2122,13 @@ class JingcaiFootballService:
                 continue
             seen.add(is_prized)
             try:
-                return self.sync_matches(db, date=date, is_prized=is_prized), is_prized
+                payload = self.sync_matches(db, date=date, is_prized=is_prized, cache_bust=False)
+                if is_history and self._has_overdue_unsettled_matches(payload.get('matches') or []):
+                    try:
+                        payload = self.sync_matches(db, date=date, is_prized=is_prized, cache_bust=True)
+                    except Exception:
+                        pass
+                return payload, is_prized
             except Exception as exc:
                 last_error = exc
 
