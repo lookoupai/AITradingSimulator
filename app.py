@@ -493,7 +493,9 @@ def _build_pc28_execution_signal_view(predictor: dict, prediction: dict) -> dict
                 'requested_targets': prediction.get('requested_targets') or [],
                 'predictor_id': predictor.get('id'),
                 'primary_metric': predictor.get('primary_metric'),
-                'share_level': share_level
+                'share_level': share_level,
+                'profit_rule_id': predictor.get('profit_rule_id') or DEFAULT_PROFIT_RULE_ID,
+                'odds_profile': DEFAULT_ODDS_PROFILE
             }
         }
         if bet_type != 'number':

@@ -45,6 +45,8 @@ class SignalExportTests(unittest.TestCase):
             self.assertEqual(data['items'][0]['source_type'], 'ai_trading_simulator')
             self.assertEqual(data['items'][0]['signals'][0]['bet_type'], 'big_small')
             self.assertEqual(data['items'][0]['signals'][0]['bet_value'], '大')
+            self.assertEqual(data['items'][0]['signals'][0]['normalized_payload']['profit_rule_id'], 'pc28_netdisk')
+            self.assertEqual(data['items'][0]['signals'][0]['normalized_payload']['odds_profile'], 'regular')
 
     def test_export_analysis_view_contains_predictor_context(self):
         with fresh_app_harness() as harness:
