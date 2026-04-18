@@ -65,6 +65,14 @@ class AIPredictor:
             300,
             int(getattr(config, 'AI_GATEWAY_PREFERRED_BASE_URL_TTL_SECONDS', 21600))
         )
+        self.prediction_cutoff_buffer_seconds = max(
+            0,
+            int(getattr(config, 'PC28_PREDICTION_CUTOFF_BUFFER_SECONDS', 20))
+        )
+        self.prediction_min_request_window_seconds = max(
+            1,
+            int(getattr(config, 'PC28_PREDICTION_MIN_REQUEST_WINDOW_SECONDS', 8))
+        )
 
     def predict_next_issue(self, context: dict, predictor_config: dict) -> tuple[dict, str, str]:
         """预测下一期开奖结果"""
@@ -73,13 +81,24 @@ class AIPredictor:
         last_response = ''
         last_finish_reason = 'unknown'
         max_output_tokens = self._prediction_max_output_tokens()
+        request_time_budget_seconds = self._resolve_prediction_request_budget_seconds(context)
+        prediction_started_at = time.monotonic()
 
         for _ in range(3):
+            iteration_request_budget_seconds = self._remaining_request_time_budget(
+                request_time_budget_seconds,
+                prediction_started_at
+            )
+            self._ensure_viable_prediction_request_window(
+                countdown=context.get('countdown'),
+                request_time_budget_seconds=iteration_request_budget_seconds
+            )
             try:
                 result = self._call_llm_with_metadata(
                     prompt,
                     max_output_tokens=max_output_tokens,
-                    json_output=True
+                    json_output=True,
+                    request_time_budget_seconds=iteration_request_budget_seconds
                 )
                 raw_response = result['raw_response']
                 last_response = raw_response
@@ -108,7 +127,7 @@ class AIPredictor:
                 )
             except Exception as exc:
                 last_error = self._normalize_ai_exception(exc)
-                if last_error.category == 'transport':
+                if last_error.category in {'transport', 'deadline'}:
                     break
 
         if last_response:
@@ -418,7 +437,8 @@ class AIPredictor:
         prompt: str,
         system_prompt: Optional[str] = None,
         max_output_tokens: int = 1200,
-        json_output: bool = False
+        json_output: bool = False,
+        request_time_budget_seconds: Optional[float] = None
     ) -> dict:
         last_error: Optional[Exception] = None
         system_prompt = system_prompt or (
@@ -427,12 +447,27 @@ class AIPredictor:
             "你必须遵守字段契约，只输出单个 JSON 对象。"
         )
         resolved_api_mode = self._resolve_api_mode()
+        request_started_at = time.monotonic()
         for _ in range(self.transport_attempts):
+            transport_budget_seconds = self._remaining_request_time_budget(
+                request_time_budget_seconds,
+                request_started_at
+            )
+            if request_time_budget_seconds is not None and not self._has_viable_request_window(transport_budget_seconds):
+                last_error = AIPredictionError('请求时间预算已耗尽，已停止继续尝试', category='deadline')
+                break
             failed_transport_hosts: set[str] = set()
             attempted_any_candidate = False
             preferred_base_url = self._get_preferred_base_url(resolved_api_mode)
 
             for base_url in self._candidate_base_urls(resolved_api_mode):
+                candidate_budget_seconds = self._remaining_request_time_budget(
+                    request_time_budget_seconds,
+                    request_started_at
+                )
+                if request_time_budget_seconds is not None and not self._has_viable_request_window(candidate_budget_seconds):
+                    last_error = AIPredictionError('请求时间预算已耗尽，已停止继续尝试', category='deadline')
+                    break
                 host = self._base_url_host(base_url)
                 if host and host in failed_transport_hosts:
                     continue
@@ -446,7 +481,8 @@ class AIPredictor:
                             prompt=prompt,
                             system_prompt=system_prompt,
                             max_output_tokens=max_output_tokens,
-                            json_output=json_output
+                            json_output=json_output,
+                            request_time_budget_seconds=candidate_budget_seconds
                         )
                     else:
                         result = self._call_llm_via_openai_sdk(
@@ -455,7 +491,8 @@ class AIPredictor:
                             prompt=prompt,
                             system_prompt=system_prompt,
                             max_output_tokens=max_output_tokens,
-                            json_output=json_output
+                            json_output=json_output,
+                            request_time_budget_seconds=candidate_budget_seconds
                         )
                     self._store_preferred_base_url(resolved_api_mode, base_url)
                     return result
@@ -487,12 +524,13 @@ class AIPredictor:
         prompt: str,
         system_prompt: str,
         max_output_tokens: int,
-        json_output: bool
+        json_output: bool,
+        request_time_budget_seconds: Optional[float] = None
     ) -> dict:
         client = OpenAI(
             api_key=self.api_key,
             base_url=base_url,
-            timeout=self._build_openai_timeout(),
+            timeout=self._build_openai_timeout(request_time_budget_seconds),
             max_retries=0
         )
         capability_cache_key = self._build_gateway_capability_cache_key(base_url, resolved_api_mode)
@@ -565,7 +603,8 @@ class AIPredictor:
         prompt: str,
         system_prompt: str,
         max_output_tokens: int,
-        json_output: bool
+        json_output: bool,
+        request_time_budget_seconds: Optional[float] = None
     ) -> dict:
         endpoint = self._build_compatible_endpoint(base_url, resolved_api_mode)
         capability_cache_key = self._build_gateway_capability_cache_key(base_url, resolved_api_mode)
@@ -586,7 +625,7 @@ class AIPredictor:
                 endpoint,
                 headers=self._build_compatible_headers(),
                 json=request_kwargs,
-                timeout=(self.connect_timeout_seconds, self.read_timeout_seconds)
+                timeout=self._build_requests_timeout(request_time_budget_seconds)
             )
         )
         if response.status_code >= 400:
@@ -845,13 +884,102 @@ class AIPredictor:
     def _is_transport_exception(self, exc: Exception | None) -> bool:
         return self._normalize_ai_exception(exc).category == 'transport'
 
-    def _build_openai_timeout(self) -> httpx.Timeout:
-        return httpx.Timeout(
-            connect=self.connect_timeout_seconds,
-            read=self.read_timeout_seconds,
-            write=self.connect_timeout_seconds,
-            pool=self.connect_timeout_seconds
+    def _resolve_prediction_request_budget_seconds(self, context: dict) -> float | None:
+        countdown_seconds = self._parse_countdown_seconds(context.get('countdown'))
+        if countdown_seconds is None:
+            return None
+
+        request_budget_seconds = float(countdown_seconds - self.prediction_cutoff_buffer_seconds)
+        self._ensure_viable_prediction_request_window(
+            countdown=context.get('countdown'),
+            request_time_budget_seconds=request_budget_seconds
         )
+        return request_budget_seconds
+
+    def _ensure_viable_prediction_request_window(
+        self,
+        countdown,
+        request_time_budget_seconds: Optional[float]
+    ) -> None:
+        if self._has_viable_request_window(request_time_budget_seconds):
+            return
+
+        countdown_text = str(countdown or '--:--:--')
+        raise AIPredictionError(
+            (
+                f'距离封盘仅剩 {countdown_text}，扣除安全缓冲 '
+                f'{self.prediction_cutoff_buffer_seconds} 秒后可用请求窗口不足 '
+                f'{self.prediction_min_request_window_seconds} 秒，已跳过 AI 调用'
+            ),
+            category='deadline'
+        )
+
+    def _has_viable_request_window(self, request_time_budget_seconds: Optional[float]) -> bool:
+        if request_time_budget_seconds is None:
+            return True
+        return float(request_time_budget_seconds) >= float(self.prediction_min_request_window_seconds)
+
+    def _remaining_request_time_budget(
+        self,
+        request_time_budget_seconds: Optional[float],
+        started_at: float
+    ) -> Optional[float]:
+        if request_time_budget_seconds is None:
+            return None
+
+        elapsed_seconds = max(0.0, time.monotonic() - started_at)
+        return max(0.0, float(request_time_budget_seconds) - elapsed_seconds)
+
+    def _parse_countdown_seconds(self, countdown) -> int | None:
+        text = str(countdown or '').strip()
+        if not text or text == '--:--:--':
+            return None
+
+        parts = text.split(':')
+        if len(parts) not in {2, 3}:
+            return None
+        if any(not part.isdigit() for part in parts):
+            return None
+
+        values = [int(part) for part in parts]
+        if len(values) == 2:
+            minutes, seconds = values
+            return minutes * 60 + seconds
+
+        hours, minutes, seconds = values
+        return hours * 3600 + minutes * 60 + seconds
+
+    def _resolve_request_timeout_budget(
+        self,
+        request_time_budget_seconds: Optional[float]
+    ) -> tuple[float, float]:
+        if request_time_budget_seconds is None:
+            return self.connect_timeout_seconds, self.read_timeout_seconds
+
+        total_budget_seconds = max(1.0, float(request_time_budget_seconds))
+        connect_timeout_seconds = min(
+            self.connect_timeout_seconds,
+            max(1.0, min(5.0, total_budget_seconds * 0.25))
+        )
+        read_timeout_seconds = min(
+            self.read_timeout_seconds,
+            max(1.0, total_budget_seconds - connect_timeout_seconds)
+        )
+        return connect_timeout_seconds, read_timeout_seconds
+
+    def _build_openai_timeout(self, request_time_budget_seconds: Optional[float] = None) -> httpx.Timeout:
+        connect_timeout_seconds, read_timeout_seconds = self._resolve_request_timeout_budget(
+            request_time_budget_seconds
+        )
+        return httpx.Timeout(
+            connect=connect_timeout_seconds,
+            read=read_timeout_seconds,
+            write=connect_timeout_seconds,
+            pool=connect_timeout_seconds
+        )
+
+    def _build_requests_timeout(self, request_time_budget_seconds: Optional[float] = None) -> tuple[float, float]:
+        return self._resolve_request_timeout_budget(request_time_budget_seconds)
 
     def _iter_token_limit_kwargs(
         self,

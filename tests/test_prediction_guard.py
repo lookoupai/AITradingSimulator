@@ -116,6 +116,32 @@ class PredictionGuardTests(unittest.TestCase):
             self.assertEqual(predictor['consecutive_ai_failures'], 0)
             self.assertFalse(predictor['auto_paused'])
 
+    def test_pc28_deadline_skip_does_not_increment_guard_counter(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28')
+            predictor = harness.db.get_predictor(predictor_id, include_secret=True)
+            guard_module = importlib.import_module('services.prediction_guard')
+            deadline_error = guard_module.AIPredictionError(
+                '距离封盘仅剩 00:00:05，已跳过 AI 调用',
+                category='deadline'
+            )
+
+            with mock.patch('services.prediction_engine.AIPredictor.predict_next_issue', side_effect=deadline_error):
+                result = harness.module.prediction_engine._generate_prediction_locked(
+                    predictor,
+                    {
+                        **self._pc28_context('2002'),
+                        'countdown': '00:00:05'
+                    },
+                    auto_mode=True
+                )
+
+            self.assertEqual(result['status'], 'failed')
+            predictor_after = harness.db.get_predictor(predictor_id, include_secret=False)
+            self.assertEqual(predictor_after['consecutive_ai_failures'], 0)
+            self.assertFalse(predictor_after['auto_paused'])
+
     def test_admin_can_update_guard_settings_and_resume_auto_pause(self):
         with fresh_app_harness() as harness:
             client, user_id = harness.make_client(username='admin', is_admin=True)

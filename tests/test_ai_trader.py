@@ -546,12 +546,63 @@ class AIPredictorEncodingTests(unittest.TestCase):
         call_llm.assert_called_once_with(
             'PROMPT',
             max_output_tokens=1800,
-            json_output=True
+            json_output=True,
+            request_time_budget_seconds=None
         )
         self.assertEqual(prompt, 'PROMPT')
         self.assertEqual(raw_response, llm_result['raw_response'])
         self.assertEqual(prediction['prediction_number'], 12)
         self.assertEqual(prediction['prediction_combo'], '小双')
+
+    def test_predict_next_issue_uses_countdown_budget_for_request_timeout(self):
+        predictor_config = {
+            'prediction_targets': ['number', 'big_small', 'odd_even', 'combo']
+        }
+        llm_result = {
+            'raw_response': json.dumps({
+                'issue_no': '3418518',
+                'predicted_number': 12,
+                'predicted_big_small': '小',
+                'predicted_odd_even': '双',
+                'predicted_combo': '小双'
+            }, ensure_ascii=False),
+            'finish_reason': 'stop'
+        }
+
+        with patch.object(self.predictor, '_build_prompt', return_value='PROMPT'), patch.object(
+            self.predictor,
+            '_call_llm_with_metadata',
+            return_value=llm_result
+        ) as call_llm:
+            self.predictor.predict_next_issue(
+                context={'next_issue_no': '3418518', 'countdown': '00:00:40'},
+                predictor_config=predictor_config
+            )
+
+        self.assertAlmostEqual(
+            call_llm.call_args.kwargs['request_time_budget_seconds'],
+            20.0,
+            delta=1.0
+        )
+
+    def test_predict_next_issue_skips_ai_call_when_countdown_window_too_small(self):
+        predictor_config = {
+            'prediction_targets': ['number', 'big_small', 'odd_even', 'combo']
+        }
+
+        with patch.object(self.predictor, '_build_prompt', return_value='PROMPT'), patch.object(
+            self.predictor,
+            '_call_llm_with_metadata'
+        ) as call_llm:
+            with self.assertRaises(AIPredictionError) as cm:
+                self.predictor.predict_next_issue(
+                    context={'next_issue_no': '3418518', 'countdown': '00:00:25'},
+                    predictor_config=predictor_config
+                )
+
+        call_llm.assert_not_called()
+        self.assertEqual(cm.exception.category, 'deadline')
+        self.assertIn('已跳过 AI 调用', str(cm.exception))
 
     def test_predict_next_issue_uses_higher_budget_for_minimax_reasoning_model(self):
         minimax_predictor = AIPredictor(
@@ -586,7 +637,8 @@ class AIPredictorEncodingTests(unittest.TestCase):
         call_llm.assert_called_once_with(
             'PROMPT',
             max_output_tokens=3200,
-            json_output=True
+            json_output=True,
+            request_time_budget_seconds=None
         )
 
     def test_predict_next_issue_failure_preserves_debug_context(self):
