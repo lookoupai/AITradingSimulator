@@ -10,10 +10,12 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
+import httpx
 import requests
 from openai import APIConnectionError, APIError, OpenAI
 from requests import RequestException
 
+import config
 from services.prediction_guard import AIPredictionError
 from utils.pc28 import (
     build_combo,
@@ -36,6 +38,12 @@ class AIPredictor:
     _gateway_capability_cache: dict[tuple[str, str, str], dict] = {}
     _gateway_capability_cache_lock = threading.Lock()
     _gateway_capability_cache_ttl_seconds = 24 * 60 * 60
+    _preferred_base_url_cache: dict[tuple[str, str, str], dict] = {}
+    _preferred_base_url_cache_lock = threading.Lock()
+    _preferred_base_url_cache_ttl_seconds = max(
+        300,
+        int(getattr(config, 'AI_GATEWAY_PREFERRED_BASE_URL_TTL_SECONDS', 21600))
+    )
 
     def __init__(
         self,
@@ -50,6 +58,13 @@ class AIPredictor:
         self.model_name = model_name
         self.api_mode = normalize_api_mode(api_mode)
         self.temperature = temperature
+        self.connect_timeout_seconds = max(1.0, float(getattr(config, 'AI_GATEWAY_CONNECT_TIMEOUT', 10)))
+        self.read_timeout_seconds = max(5.0, float(getattr(config, 'AI_GATEWAY_READ_TIMEOUT', 35)))
+        self.transport_attempts = max(1, int(getattr(config, 'AI_GATEWAY_TRANSPORT_ATTEMPTS', 2)))
+        self._preferred_base_url_cache_ttl_seconds = max(
+            300,
+            int(getattr(config, 'AI_GATEWAY_PREFERRED_BASE_URL_TTL_SECONDS', 21600))
+        )
 
     def predict_next_issue(self, context: dict, predictor_config: dict) -> tuple[dict, str, str]:
         """预测下一期开奖结果"""
@@ -93,6 +108,8 @@ class AIPredictor:
                 )
             except Exception as exc:
                 last_error = self._normalize_ai_exception(exc)
+                if last_error.category == 'transport':
+                    break
 
         if last_response:
             failure = AIPredictionError(
@@ -410,29 +427,48 @@ class AIPredictor:
             "你必须遵守字段契约，只输出单个 JSON 对象。"
         )
         resolved_api_mode = self._resolve_api_mode()
+        for _ in range(self.transport_attempts):
+            failed_transport_hosts: set[str] = set()
+            attempted_any_candidate = False
+            preferred_base_url = self._get_preferred_base_url(resolved_api_mode)
 
-        for base_url in self._candidate_base_urls():
-            try:
-                if self._should_use_compatible_http_transport(base_url):
-                    return self._call_llm_via_compatible_http(
-                        base_url=base_url,
-                        resolved_api_mode=resolved_api_mode,
-                        prompt=prompt,
-                        system_prompt=system_prompt,
-                        max_output_tokens=max_output_tokens,
-                        json_output=json_output
-                    )
-                return self._call_llm_via_openai_sdk(
-                    base_url=base_url,
-                    resolved_api_mode=resolved_api_mode,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    max_output_tokens=max_output_tokens,
-                    json_output=json_output
-                )
-            except (APIConnectionError, APIError, RequestException, Exception) as exc:
-                last_error = exc
-                continue
+            for base_url in self._candidate_base_urls(resolved_api_mode):
+                host = self._base_url_host(base_url)
+                if host and host in failed_transport_hosts:
+                    continue
+
+                attempted_any_candidate = True
+                try:
+                    if self._should_use_compatible_http_transport(base_url):
+                        result = self._call_llm_via_compatible_http(
+                            base_url=base_url,
+                            resolved_api_mode=resolved_api_mode,
+                            prompt=prompt,
+                            system_prompt=system_prompt,
+                            max_output_tokens=max_output_tokens,
+                            json_output=json_output
+                        )
+                    else:
+                        result = self._call_llm_via_openai_sdk(
+                            base_url=base_url,
+                            resolved_api_mode=resolved_api_mode,
+                            prompt=prompt,
+                            system_prompt=system_prompt,
+                            max_output_tokens=max_output_tokens,
+                            json_output=json_output
+                        )
+                    self._store_preferred_base_url(resolved_api_mode, base_url)
+                    return result
+                except (APIConnectionError, APIError, RequestException, Exception) as exc:
+                    last_error = exc
+                    if preferred_base_url and base_url == preferred_base_url:
+                        self._clear_preferred_base_url(resolved_api_mode, base_url)
+                    if self._is_transport_exception(exc) and host:
+                        failed_transport_hosts.add(host)
+                    continue
+
+            if not attempted_any_candidate or not self._is_transport_exception(last_error):
+                break
 
         normalized_error = self._normalize_ai_exception(last_error)
         message = str(normalized_error)
@@ -455,7 +491,9 @@ class AIPredictor:
     ) -> dict:
         client = OpenAI(
             api_key=self.api_key,
-            base_url=base_url
+            base_url=base_url,
+            timeout=self._build_openai_timeout(),
+            max_retries=0
         )
         capability_cache_key = self._build_gateway_capability_cache_key(base_url, resolved_api_mode)
         if resolved_api_mode == 'responses':
@@ -548,7 +586,7 @@ class AIPredictor:
                 endpoint,
                 headers=self._build_compatible_headers(),
                 json=request_kwargs,
-                timeout=60
+                timeout=(self.connect_timeout_seconds, self.read_timeout_seconds)
             )
         )
         if response.status_code >= 400:
@@ -699,6 +737,13 @@ class AIPredictor:
             resolved_api_mode
         )
 
+    def _build_preferred_base_url_cache_key(self, resolved_api_mode: str) -> tuple[str, str, str]:
+        return (
+            self.api_url.rstrip('/'),
+            str(self.model_name or '').strip(),
+            resolved_api_mode
+        )
+
     def _get_cached_disabled_parameters(self, capability_cache_key: tuple[str, str, str]) -> set[str]:
         now = time.time()
         with self._gateway_capability_cache_lock:
@@ -758,6 +803,55 @@ class AIPredictor:
             else:
                 request_kwargs.pop('extra_body', None)
         return request_kwargs
+
+    def _get_preferred_base_url(self, resolved_api_mode: str) -> str | None:
+        cache_key = self._build_preferred_base_url_cache_key(resolved_api_mode)
+        now = time.time()
+        with self._preferred_base_url_cache_lock:
+            entry = self._preferred_base_url_cache.get(cache_key)
+            if not entry:
+                return None
+
+            expires_at = float(entry.get('expires_at') or 0)
+            if expires_at and expires_at <= now:
+                self._preferred_base_url_cache.pop(cache_key, None)
+                return None
+
+            base_url = str(entry.get('base_url') or '').strip()
+            return base_url or None
+
+    def _store_preferred_base_url(self, resolved_api_mode: str, base_url: str) -> None:
+        cache_key = self._build_preferred_base_url_cache_key(resolved_api_mode)
+        with self._preferred_base_url_cache_lock:
+            self._preferred_base_url_cache[cache_key] = {
+                'base_url': base_url.rstrip('/'),
+                'expires_at': time.time() + self._preferred_base_url_cache_ttl_seconds
+            }
+
+    def _clear_preferred_base_url(self, resolved_api_mode: str, base_url: str | None = None) -> None:
+        cache_key = self._build_preferred_base_url_cache_key(resolved_api_mode)
+        with self._preferred_base_url_cache_lock:
+            if base_url is None:
+                self._preferred_base_url_cache.pop(cache_key, None)
+                return
+
+            cached_base_url = self._preferred_base_url_cache.get(cache_key, {}).get('base_url')
+            if str(cached_base_url or '').rstrip('/') == base_url.rstrip('/'):
+                self._preferred_base_url_cache.pop(cache_key, None)
+
+    def _base_url_host(self, base_url: str) -> str:
+        return (urlparse(base_url).hostname or '').strip().lower()
+
+    def _is_transport_exception(self, exc: Exception | None) -> bool:
+        return self._normalize_ai_exception(exc).category == 'transport'
+
+    def _build_openai_timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(
+            connect=self.connect_timeout_seconds,
+            read=self.read_timeout_seconds,
+            write=self.connect_timeout_seconds,
+            pool=self.connect_timeout_seconds
+        )
 
     def _iter_token_limit_kwargs(
         self,
@@ -1346,7 +1440,7 @@ class AIPredictor:
         except (TypeError, ValueError):
             return 0
 
-    def _candidate_base_urls(self) -> list[str]:
+    def _candidate_base_urls(self, resolved_api_mode: Optional[str] = None) -> list[str]:
         base_url = self.api_url.rstrip('/')
         candidates = [base_url]
 
@@ -1358,6 +1452,12 @@ class AIPredictor:
         for candidate in candidates:
             if candidate not in deduped:
                 deduped.append(candidate)
+
+        if resolved_api_mode:
+            preferred_base_url = self._get_preferred_base_url(resolved_api_mode)
+            if preferred_base_url and preferred_base_url in deduped:
+                deduped.remove(preferred_base_url)
+                deduped.insert(0, preferred_base_url)
         return deduped
 
     def _parse_response(self, raw_response: str, expected_issue_no: Optional[str], requested_targets) -> dict:

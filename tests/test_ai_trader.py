@@ -4,6 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+from requests import RequestException
 from requests import Response
 
 from ai_trader import AIPredictor
@@ -13,6 +14,7 @@ from services.prediction_guard import AIPredictionError
 class AIPredictorEncodingTests(unittest.TestCase):
     def setUp(self):
         AIPredictor._gateway_capability_cache.clear()
+        AIPredictor._preferred_base_url_cache.clear()
         self.predictor = AIPredictor(
             api_key='test-key',
             api_url='https://example.com/v1',
@@ -147,6 +149,73 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(payload['response_format'], {'type': 'json_object'})
         self.assertEqual(payload['messages'][0]['content'], 'SYSTEM')
         self.assertEqual(payload['messages'][1]['content'], 'PROMPT')
+
+    def test_candidate_base_urls_prioritizes_cached_preferred_base_url(self):
+        predictor = AIPredictor(
+            api_key='test-key',
+            api_url='https://example.com',
+            model_name='gpt-5.4'
+        )
+        predictor._store_preferred_base_url('chat_completions', 'https://example.com/v1')
+
+        self.assertEqual(
+            predictor._candidate_base_urls('chat_completions'),
+            ['https://example.com/v1', 'https://example.com']
+        )
+
+    def test_call_llm_with_metadata_remembers_successful_base_url(self):
+        predictor = AIPredictor(
+            api_key='test-key',
+            api_url='https://example.com',
+            model_name='gpt-5.4'
+        )
+        predictor.transport_attempts = 1
+        call_order = []
+
+        def call_side_effect(*args, **kwargs):
+            base_url = kwargs['base_url']
+            call_order.append(base_url)
+            if base_url == 'https://example.com':
+                raise Exception('HTTP 404：not found')
+            return {
+                'raw_response': '{"status":"ok"}',
+                'api_mode': kwargs['resolved_api_mode'],
+                'response_model': 'gpt-5.4',
+                'finish_reason': 'stop',
+                'latency_ms': 10
+            }
+
+        with patch.object(predictor, '_call_llm_via_compatible_http', side_effect=call_side_effect):
+            predictor._call_llm_with_metadata('PROMPT', json_output=True)
+            predictor._call_llm_with_metadata('PROMPT', json_output=True)
+
+        self.assertEqual(
+            call_order,
+            [
+                'https://example.com',
+                'https://example.com/v1',
+                'https://example.com/v1'
+            ]
+        )
+
+    def test_call_llm_with_metadata_skips_same_host_sibling_base_url_after_transport_timeout(self):
+        predictor = AIPredictor(
+            api_key='test-key',
+            api_url='https://example.com',
+            model_name='gpt-5.4'
+        )
+        predictor.transport_attempts = 1
+        call_order = []
+
+        def call_side_effect(*args, **kwargs):
+            call_order.append(kwargs['base_url'])
+            raise RequestException('Read timed out')
+
+        with patch.object(predictor, '_call_llm_via_compatible_http', side_effect=call_side_effect):
+            with self.assertRaises(AIPredictionError):
+                predictor._call_llm_with_metadata('PROMPT', json_output=True)
+
+        self.assertEqual(call_order, ['https://example.com'])
 
     def test_call_with_token_limit_fallback_retries_on_unsupported_parameter(self):
         attempts = []
@@ -544,6 +613,24 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(getattr(cm.exception, 'prompt_snapshot', ''), 'PROMPT')
         self.assertEqual(getattr(cm.exception, 'finish_reason', ''), 'length')
         self.assertIn('原始响应', str(cm.exception))
+
+    def test_predict_next_issue_stops_outer_retry_after_transport_failure(self):
+        predictor_config = {
+            'prediction_targets': ['number', 'big_small', 'odd_even', 'combo']
+        }
+
+        with patch.object(self.predictor, '_build_prompt', return_value='PROMPT'), patch.object(
+            self.predictor,
+            '_call_llm_with_metadata',
+            side_effect=AIPredictionError('API 连接失败：Read timed out', category='transport')
+        ) as call_llm:
+            with self.assertRaises(AIPredictionError):
+                self.predictor.predict_next_issue(
+                    context={'next_issue_no': '3418520'},
+                    predictor_config=predictor_config
+                )
+
+        self.assertEqual(call_llm.call_count, 1)
 
     def test_run_json_task_parse_failure_preserves_debug_context(self):
         raw_response = '{"batch_key":"2026-04-16","predictions":[{"event_key":"2039116"'
