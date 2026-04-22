@@ -206,6 +206,13 @@ class PredictionApp {
         this.currentProfitSimulation = null;
         this.overview = null;
         this.overviewCollapsed = true;
+        this.dashboardLoadSequence = 0;
+        this.profitSimulationLoadSequence = 0;
+        this.profitSimulationDeferredTimer = null;
+        this.dashboardFetchController = null;
+        this.dashboardLoadingPredictorId = null;
+        this.dashboardLoadPromise = null;
+        this.profitSimulationFetchController = null;
         this.chart = null;
         this.profitChart = null;
         this.refreshTimer = null;
@@ -474,6 +481,15 @@ class PredictionApp {
     toggleOverviewPanel() {
         this.overviewCollapsed = !this.overviewCollapsed;
         this.syncOverviewPanelState();
+    }
+
+    nextDashboardLoadSequence() {
+        this.dashboardLoadSequence += 1;
+        return this.dashboardLoadSequence;
+    }
+
+    isDashboardLoadStale(sequence, predictorId) {
+        return sequence !== this.dashboardLoadSequence || predictorId !== this.currentPredictorId;
     }
 
     syncOverviewPanelState() {
@@ -2243,6 +2259,7 @@ class PredictionApp {
     }
 
     async selectPredictor(predictorId, shouldLoad = true) {
+        this.cancelPendingProfitSimulation();
         this.currentPredictorId = predictorId;
         this.renderPredictorList(this.predictors || []);
         if (shouldLoad) {
@@ -2251,60 +2268,96 @@ class PredictionApp {
     }
 
     async loadPredictorDashboard(predictorId) {
-        try {
-            const previousPredictorId = this.currentPredictor?.id || null;
-            const response = await fetch(`/api/predictors/${predictorId}/dashboard`, {
-                credentials: 'include'
-            });
-            if (response.status === 401) {
-                window.location.href = '/login';
-                return;
-            }
-            const data = await response.json();
-            if (!response.ok) {
-                throw new Error(data.error || '加载方案详情失败');
-            }
-
-            this.currentPredictor = data.predictor;
-            this.currentLotteryType = data.predictor?.lottery_type || 'pc28';
-            this.updateHistoryLinks();
-            this.renderSubscriptionPredictorOptions();
-            this.renderNotificationSenderOptions();
-            this.syncSubscriptionBetProfileOptions();
-            if (previousPredictorId !== predictorId) {
-                this.resetNotificationSubscriptionForm();
-            }
-            this.renderNotificationSubscriptions(this.notificationSubscriptions);
-            document.getElementById('profitPanel').style.display = data.predictor?.capabilities?.supports_profit_simulation ? '' : 'none';
-            this.currentStats = data.stats || null;
-            this.currentPredictions = data.recent_predictions || [];
-            const availableMetrics = Object.keys((data.stats && data.stats.metrics) || {});
-            const defaultMetric = data.stats?.primary_metric || 'big_small';
-            const shouldResetMetric =
-                previousPredictorId !== predictorId ||
-                !this.selectedStatsMetric ||
-                !availableMetrics.includes(this.selectedStatsMetric);
-
-            if (shouldResetMetric) {
-                this.selectedStatsMetric = defaultMetric;
-            }
-            this.renderStatsMetricOptions(this.currentLotteryType, availableMetrics, this.selectedStatsMetric);
-            document.getElementById('statsMetricView').value = this.selectedStatsMetric;
-            this.updatePredictorActionState(data.predictor);
-            this.renderOverview(data.overview || this.overview || {});
-            this.renderPredictorGuardPanel(data.predictor);
-            this.renderStats(this.currentStats);
-            this.renderCurrentPrediction(data.current_prediction, data.latest_prediction, data.predictor);
-            this.renderPublicSharePanel(data.predictor);
-            this.renderProfitControls(data.predictor, previousPredictorId !== predictorId);
-            await this.loadProfitSimulation();
-            this.renderPredictionsTable(this.currentPredictions);
-            this.renderDrawsTable(data.overview?.recent_draws || data.overview?.recent_events || data.recent_draws || data.recent_events || []);
-            this.renderAILogs(this.currentPredictions);
-            this.renderChart(this.currentPredictions);
-        } catch (error) {
-            console.error('Failed to load predictor dashboard:', error);
+        if (this.dashboardLoadPromise && this.dashboardLoadingPredictorId === predictorId) {
+            return this.dashboardLoadPromise;
         }
+        const sequence = this.nextDashboardLoadSequence();
+        if (this.dashboardFetchController && this.dashboardLoadingPredictorId !== predictorId) {
+            this.dashboardFetchController.abort();
+        }
+        const controller = new AbortController();
+        this.dashboardFetchController = controller;
+        this.dashboardLoadingPredictorId = predictorId;
+        let requestPromise = null;
+        requestPromise = (async () => {
+            const previousPredictorId = this.currentPredictor?.id || null;
+            try {
+                const response = await fetch(`/api/predictors/${predictorId}/dashboard`, {
+                    credentials: 'include',
+                    signal: controller.signal
+                });
+                if (response.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || '加载方案详情失败');
+                }
+                if (this.isDashboardLoadStale(sequence, predictorId)) {
+                    return;
+                }
+
+                this.currentPredictor = data.predictor;
+                this.currentLotteryType = data.predictor?.lottery_type || 'pc28';
+                this.updateHistoryLinks();
+                this.renderSubscriptionPredictorOptions();
+                this.renderNotificationSenderOptions();
+                this.syncSubscriptionBetProfileOptions();
+                if (previousPredictorId !== predictorId) {
+                    this.resetNotificationSubscriptionForm();
+                }
+                this.renderNotificationSubscriptions(this.notificationSubscriptions);
+                document.getElementById('profitPanel').style.display = data.predictor?.capabilities?.supports_profit_simulation ? '' : 'none';
+                this.currentStats = data.stats || null;
+                this.currentPredictions = data.recent_predictions || [];
+                const availableMetrics = Object.keys((data.stats && data.stats.metrics) || {});
+                const defaultMetric = data.stats?.primary_metric || 'big_small';
+                const shouldResetMetric =
+                    previousPredictorId !== predictorId ||
+                    !this.selectedStatsMetric ||
+                    !availableMetrics.includes(this.selectedStatsMetric);
+
+                if (shouldResetMetric) {
+                    this.selectedStatsMetric = defaultMetric;
+                }
+                this.renderStatsMetricOptions(this.currentLotteryType, availableMetrics, this.selectedStatsMetric);
+                document.getElementById('statsMetricView').value = this.selectedStatsMetric;
+                this.updatePredictorActionState(data.predictor);
+                this.renderOverview(data.overview || this.overview || {});
+                this.renderPredictorGuardPanel(data.predictor);
+                this.renderStats(this.currentStats);
+                this.renderCurrentPrediction(data.current_prediction, data.latest_prediction, data.predictor);
+                this.renderPublicSharePanel(data.predictor);
+                this.renderProfitControls(data.predictor, previousPredictorId !== predictorId);
+                this.renderPredictionsTable(this.currentPredictions);
+                this.renderDrawsTable(data.overview?.recent_draws || data.overview?.recent_events || data.recent_draws || data.recent_events || []);
+                this.renderAILogs(this.currentPredictions);
+                this.renderChart(this.currentPredictions);
+                this.renderProfitSimulationLoading('正在更新收益模拟...');
+                this.scheduleProfitSimulationLoad();
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    return;
+                }
+                if (this.isDashboardLoadStale(sequence, predictorId)) {
+                    return;
+                }
+                console.error('Failed to load predictor dashboard:', error);
+            } finally {
+                if (this.dashboardFetchController === controller) {
+                    this.dashboardFetchController = null;
+                }
+                if (this.dashboardLoadingPredictorId === predictorId) {
+                    this.dashboardLoadingPredictorId = null;
+                }
+                if (this.dashboardLoadPromise === requestPromise) {
+                    this.dashboardLoadPromise = null;
+                }
+            }
+        })();
+        this.dashboardLoadPromise = requestPromise;
+        return requestPromise;
     }
 
     renderStatsMetricOptions(lotteryType, availableMetrics, selectedMetric) {
@@ -3184,8 +3237,41 @@ class PredictionApp {
         this.syncProfitBetControlState();
     }
 
-    async loadProfitSimulation() {
+    cancelPendingProfitSimulation() {
+        this.profitSimulationLoadSequence += 1;
+        if (this.profitSimulationDeferredTimer) {
+            window.clearTimeout(this.profitSimulationDeferredTimer);
+            this.profitSimulationDeferredTimer = null;
+        }
+        if (this.profitSimulationFetchController) {
+            this.profitSimulationFetchController.abort();
+            this.profitSimulationFetchController = null;
+        }
+    }
+
+    scheduleProfitSimulationLoad() {
+        this.cancelPendingProfitSimulation();
+        const sequence = this.profitSimulationLoadSequence;
+        this.profitSimulationDeferredTimer = window.setTimeout(() => {
+            this.profitSimulationDeferredTimer = null;
+            this.loadProfitSimulation(sequence);
+        }, 300);
+    }
+
+    async loadProfitSimulation(sequence = null) {
+        const requestSequence = sequence ?? (this.profitSimulationLoadSequence + 1);
+        if (sequence === null) {
+            this.profitSimulationLoadSequence = requestSequence;
+        }
+        if (this.profitSimulationDeferredTimer) {
+            window.clearTimeout(this.profitSimulationDeferredTimer);
+            this.profitSimulationDeferredTimer = null;
+        }
         const predictor = this.currentPredictor;
+        const predictorId = this.currentPredictorId;
+        if (requestSequence !== this.profitSimulationLoadSequence || !predictorId) {
+            return;
+        }
         if (!predictor || !this.currentPredictorId) {
             this.renderProfitSimulationEmpty('请选择预测方案');
             return;
@@ -3213,10 +3299,15 @@ class PredictionApp {
             document.getElementById('profitPeriodView').value = this.selectedProfitPeriodKey;
         }
 
+        if (this.profitSimulationFetchController) {
+            this.profitSimulationFetchController.abort();
+        }
+        const controller = new AbortController();
+        this.profitSimulationFetchController = controller;
         try {
             const response = await fetch(
-                `/api/predictors/${this.currentPredictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&period_key=${encodeURIComponent(this.selectedProfitPeriodKey)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_profile_id=${encodeURIComponent(this.selectedProfitBetProfileId || '')}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`,
-                { credentials: 'include' }
+                `/api/predictors/${predictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&period_key=${encodeURIComponent(this.selectedProfitPeriodKey)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_profile_id=${encodeURIComponent(this.selectedProfitBetProfileId || '')}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`,
+                { credentials: 'include', signal: controller.signal }
             );
             if (response.status === 401) {
                 window.location.href = '/login';
@@ -3227,12 +3318,25 @@ class PredictionApp {
             if (!response.ok) {
                 throw new Error(data.error || '加载收益模拟失败');
             }
+            if (requestSequence !== this.profitSimulationLoadSequence || predictorId !== this.currentPredictorId) {
+                return;
+            }
 
             this.currentProfitSimulation = data.simulation;
             this.renderProfitSimulation(data.simulation, predictor);
         } catch (error) {
+            if (error.name === 'AbortError') {
+                return;
+            }
+            if (requestSequence !== this.profitSimulationLoadSequence || predictorId !== this.currentPredictorId) {
+                return;
+            }
             console.error('Failed to load profit simulation:', error);
             this.renderProfitSimulationEmpty(error.message);
+        } finally {
+            if (this.profitSimulationFetchController === controller) {
+                this.profitSimulationFetchController = null;
+            }
         }
     }
 
@@ -3399,6 +3503,20 @@ class PredictionApp {
         const cardsContainer = document.getElementById('profitSimulationCards');
         if (cardsContainer) {
             cardsContainer.innerHTML = `<div class="empty-panel">${this.escapeHtml(message || '暂无收益模拟数据')}</div>`;
+        }
+        this.renderProfitChart([]);
+    }
+
+    renderProfitSimulationLoading(message) {
+        const loadingMessage = message || '收益模拟计算中...';
+        this.currentProfitSimulation = null;
+        document.getElementById('profitSimulationHint').className = 'metric-hint empty-panel';
+        document.getElementById('profitSimulationHint').textContent = loadingMessage;
+        document.getElementById('profitSummaryGrid').innerHTML = '';
+        document.getElementById('profitSimulationBody').innerHTML = '<tr><td colspan="10" class="empty-cell">收益模拟计算中...</td></tr>';
+        const cardsContainer = document.getElementById('profitSimulationCards');
+        if (cardsContainer) {
+            cardsContainer.innerHTML = `<div class="empty-panel">${this.escapeHtml(loadingMessage)}</div>`;
         }
         this.renderProfitChart([]);
     }

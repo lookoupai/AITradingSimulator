@@ -18,6 +18,8 @@ DATABASE_PATH = os.getenv('DATABASE_PATH', 'pc28_predictor.db')
 # ============ PC28 数据配置 ============
 PC28_API_BASE_URL = os.getenv('PC28_API_BASE_URL', 'https://pc28.help')
 PC28_REQUEST_TIMEOUT = int(os.getenv('PC28_REQUEST_TIMEOUT', 10))
+PC28_DASHBOARD_OFFICIAL_TIMEOUT = float(os.getenv('PC28_DASHBOARD_OFFICIAL_TIMEOUT', 1.5))
+PC28_DASHBOARD_OFFICIAL_COOLDOWN_SECONDS = int(os.getenv('PC28_DASHBOARD_OFFICIAL_COOLDOWN_SECONDS', 300))
 PC28_SYNC_HISTORY = int(os.getenv('PC28_SYNC_HISTORY', 120))
 PC28_JND_RECENT_URL = os.getenv('PC28_JND_RECENT_URL', 'https://jnd-28.vip/api/recent')
 PC28_FEIJI_RECENT_URL = os.getenv('PC28_FEIJI_RECENT_URL', 'https://feiji28.com/api/keno/latest')

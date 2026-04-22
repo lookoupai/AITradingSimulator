@@ -4,6 +4,7 @@ PC28 数据服务
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Optional
 
 import requests
@@ -20,21 +21,26 @@ class PC28Service:
         self,
         base_url: str = config.PC28_API_BASE_URL,
         timeout: int = config.PC28_REQUEST_TIMEOUT,
+        dashboard_official_timeout: float = config.PC28_DASHBOARD_OFFICIAL_TIMEOUT,
+        dashboard_official_cooldown_seconds: int = config.PC28_DASHBOARD_OFFICIAL_COOLDOWN_SECONDS,
         recent_source_order: tuple[str, ...] = config.PC28_RECENT_SOURCE_ORDER,
         jnd_recent_url: str = config.PC28_JND_RECENT_URL,
         feiji_recent_url: str = config.PC28_FEIJI_RECENT_URL
     ):
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
+        self.dashboard_official_timeout = max(0.2, float(dashboard_official_timeout))
+        self.dashboard_official_cooldown_seconds = max(0, int(dashboard_official_cooldown_seconds))
         self.recent_source_order = tuple(recent_source_order or ('official', 'jnd', 'feiji'))
         self.jnd_recent_url = jnd_recent_url
         self.feiji_recent_url = feiji_recent_url
+        self._official_dashboard_cooldown_until = 0.0
 
-    def _request_json(self, path: str, params: Optional[dict] = None) -> dict:
+    def _request_json(self, path: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
         response = requests.get(
             f'{self.base_url}/{path.lstrip("/")}',
             params=params or {},
-            timeout=self.timeout
+            timeout=self.timeout if timeout is None else timeout
         )
         response.raise_for_status()
         payload = response.json()
@@ -44,23 +50,48 @@ class PC28Service:
 
         return payload
 
-    def _request_public_json(self, url: str, params: Optional[dict] = None) -> Any:
-        response = requests.get(url, params=params or {}, timeout=self.timeout)
+    def _request_public_json(self, url: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> Any:
+        response = requests.get(url, params=params or {}, timeout=self.timeout if timeout is None else timeout)
         response.raise_for_status()
         return response.json()
+
+    def _is_official_dashboard_cooled_down(self) -> bool:
+        return time.monotonic() < self._official_dashboard_cooldown_until
+
+    def _mark_official_dashboard_failure(self) -> None:
+        if self.dashboard_official_cooldown_seconds <= 0:
+            return
+        self._official_dashboard_cooldown_until = time.monotonic() + self.dashboard_official_cooldown_seconds
+
+    def _clear_official_dashboard_failure(self) -> None:
+        self._official_dashboard_cooldown_until = 0.0
+
+    def _request_official_dashboard_json(self, path: str, params: Optional[dict] = None) -> dict:
+        if self._is_official_dashboard_cooled_down():
+            raise RuntimeError('官方源熔断窗口内暂不请求')
+        try:
+            payload = self._request_json(path, params=params, timeout=self.dashboard_official_timeout)
+        except Exception:
+            self._mark_official_dashboard_failure()
+            raise
+        self._clear_official_dashboard_failure()
+        return payload
 
     def fetch_recent_draws(self, limit: int = 50) -> list[dict]:
         """获取最新开奖号，优先官方源，失败时自动回退备用源"""
         draws, _ = self._fetch_recent_draws_with_source(limit=limit)
         return draws
 
-    def _fetch_recent_draws_with_source(self, limit: int = 50) -> tuple[list[dict], str]:
+    def _fetch_recent_draws_with_source(self, limit: int = 50, dashboard_mode: bool = False) -> tuple[list[dict], str]:
         limit = max(1, min(limit, 100))
         errors = []
 
         for source in self.recent_source_order:
             if source == 'official':
-                fetcher = self._fetch_official_recent_draws
+                if dashboard_mode and self._is_official_dashboard_cooled_down():
+                    errors.append('official: 熔断窗口内跳过')
+                    continue
+                fetcher = lambda current_limit: self._fetch_official_recent_draws(current_limit, dashboard_mode=dashboard_mode)
             elif source == 'jnd':
                 fetcher = self._fetch_jnd_recent_draws
             elif source == 'feiji':
@@ -70,7 +101,7 @@ class PC28Service:
                 continue
 
             try:
-                draws = fetcher(limit=limit)
+                draws = fetcher(limit)
                 if draws:
                     return draws, source
                 errors.append(f'{source}: 返回空数据')
@@ -79,8 +110,11 @@ class PC28Service:
 
         raise RuntimeError(f'PC28 最近开奖接口全部不可用: {" | ".join(errors)}')
 
-    def _fetch_official_recent_draws(self, limit: int) -> list[dict]:
-        payload = self._request_json('api/kj.json', {'nbr': limit})
+    def _fetch_official_recent_draws(self, limit: int, dashboard_mode: bool = False) -> list[dict]:
+        if dashboard_mode:
+            payload = self._request_official_dashboard_json('api/kj.json', {'nbr': limit})
+        else:
+            payload = self._request_json('api/kj.json', {'nbr': limit})
         return self._normalize_draw_list(payload.get('data') or [], source='official')
 
     def _fetch_jnd_recent_draws(self, limit: int) -> list[dict]:
@@ -96,10 +130,13 @@ class PC28Service:
             raise ValueError(f'Feiji28 latest 接口返回格式异常: {payload}')
         return self._normalize_draw_list(data, source='feiji')
 
-    def fetch_keno_snapshot(self, recent_draws: Optional[list[dict]] = None) -> dict:
+    def fetch_keno_snapshot(self, recent_draws: Optional[list[dict]] = None, dashboard_mode: bool = False) -> dict:
         """获取当前期倒计时与期号快照"""
         try:
-            payload = self._request_json('api/keno.json', {'nbr': 1})
+            if dashboard_mode:
+                payload = self._request_official_dashboard_json('api/keno.json', {'nbr': 1})
+            else:
+                payload = self._request_json('api/keno.json', {'nbr': 1})
             data = payload.get('data') or []
             latest = data[0] if data else {}
             latest_issue_no = str(latest.get('nbr') or '').strip() or None
@@ -125,26 +162,35 @@ class PC28Service:
                 'warning': '官方快照接口不可用，已按最近开奖推导下一期期号'
             }
 
-    def fetch_omission_stats(self) -> dict:
+    def fetch_omission_stats(self, dashboard_mode: bool = False) -> dict:
         """获取遗漏统计"""
         try:
-            payload = self._request_json('api/yl.json')
+            if dashboard_mode:
+                payload = self._request_official_dashboard_json('api/yl.json')
+            else:
+                payload = self._request_json('api/yl.json')
             return payload.get('data') or {}
         except Exception:
             return {}
 
-    def fetch_today_stats(self) -> dict:
+    def fetch_today_stats(self, dashboard_mode: bool = False) -> dict:
         """获取今日统计"""
         try:
-            payload = self._request_json('api/yk.json')
+            if dashboard_mode:
+                payload = self._request_official_dashboard_json('api/yk.json')
+            else:
+                payload = self._request_json('api/yk.json')
             return payload.get('data') or {}
         except Exception:
             return {}
 
-    def fetch_preview(self) -> dict:
+    def fetch_preview(self, dashboard_mode: bool = False) -> dict:
         """获取聚合预览接口"""
         try:
-            payload = self._request_json('api/preview.json')
+            if dashboard_mode:
+                payload = self._request_official_dashboard_json('api/preview.json')
+            else:
+                payload = self._request_json('api/preview.json')
             return payload.get('data') or {}
         except Exception:
             return {}
@@ -157,11 +203,11 @@ class PC28Service:
 
     def build_overview(self, history_limit: int = 20) -> dict:
         """构建前端公开总览数据"""
-        draws, recent_source = self._fetch_recent_draws_with_source(limit=history_limit)
-        keno_snapshot = self.fetch_keno_snapshot(recent_draws=draws[:1])
-        omission_stats = self.fetch_omission_stats()
-        today_stats = self.fetch_today_stats()
-        preview = self.fetch_preview()
+        draws, recent_source = self._fetch_recent_draws_with_source(limit=history_limit, dashboard_mode=True)
+        keno_snapshot = self.fetch_keno_snapshot(recent_draws=draws[:1], dashboard_mode=True)
+        omission_stats = self.fetch_omission_stats(dashboard_mode=True)
+        today_stats = self.fetch_today_stats(dashboard_mode=True)
+        preview = self.fetch_preview(dashboard_mode=True)
 
         latest_draw = draws[0] if draws else None
         next_issue = self._resolve_next_issue_no(
