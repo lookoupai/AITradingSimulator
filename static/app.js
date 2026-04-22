@@ -205,6 +205,7 @@ class PredictionApp {
         this.selectedProfitOddsProfile = 'regular';
         this.currentProfitSimulation = null;
         this.overview = null;
+        this.overviewCollapsed = true;
         this.chart = null;
         this.profitChart = null;
         this.refreshTimer = null;
@@ -259,6 +260,7 @@ class PredictionApp {
 
     initEventListeners() {
         this.bindEvent('themeToggle', 'click', () => this.toggleTheme());
+        this.bindEvent('toggleOverviewPanelBtn', 'click', () => this.toggleOverviewPanel());
         this.bindEvent('refreshBtn', 'click', async () => {
             if (this.isSettingsPage()) {
                 await this.loadUserSettings();
@@ -443,6 +445,7 @@ class PredictionApp {
             this.enforceNumberTarget();
             this.updateLotteryForm();
         }
+        this.syncOverviewPanelState();
         if (this.getElement('betProfileId')) {
             this.resetBetProfileForm();
         }
@@ -459,6 +462,27 @@ class PredictionApp {
         if (footballReplayDate && !footballReplayDate.value) {
             footballReplayDate.value = this.getTodayDateValue();
         }
+    }
+
+    toggleOverviewPanel() {
+        this.overviewCollapsed = !this.overviewCollapsed;
+        this.syncOverviewPanelState();
+    }
+
+    syncOverviewPanelState() {
+        const section = this.getElement('sidebarOverviewSection');
+        const panel = this.getElement('overviewPanel');
+        const button = this.getElement('toggleOverviewPanelBtn');
+        if (!section || !panel || !button) {
+            return;
+        }
+
+        const expanded = !this.overviewCollapsed;
+        section.classList.toggle('is-collapsed', !expanded);
+        panel.hidden = !expanded;
+        button.setAttribute('aria-expanded', String(expanded));
+        button.setAttribute('title', expanded ? '收起实时状态' : '展开实时状态');
+        button.innerHTML = `<i class="bi ${expanded ? 'bi-chevron-up' : 'bi-chevron-down'}"></i>`;
     }
 
     enforceNumberTarget() {

@@ -54,12 +54,24 @@
 
         <div class="pc28-body">
             <aside class="pc28-sidebar sticky">
-                <section class="panel sidebar-overview-panel">
-                    <div class="panel-header compact">
+                <section class="panel sidebar-overview-panel is-collapsed" id="sidebarOverviewSection">
+                    <button
+                        type="button"
+                        class="panel-header compact sidebar-panel-header sidebar-panel-toggle"
+                        id="toggleOverviewPanelBtn"
+                        aria-expanded="false"
+                        aria-controls="overviewPanel"
+                        title="展开实时状态"
+                    >
                         <h3>实时状态</h3>
-                        <span class="status-badge">自动轮询中</span>
-                    </div>
-                    <div id="overviewPanel" class="overview-panel">
+                        <div class="sidebar-panel-actions">
+                            <span class="status-badge">自动轮询中</span>
+                            <span class="icon-btn sidebar-section-toggle" aria-hidden="true">
+                                <i class="bi bi-chevron-down"></i>
+                            </span>
+                        </div>
+                    </button>
+                    <div id="overviewPanel" class="overview-panel" hidden>
                         <div class="loading-state">加载中...</div>
                     </div>
                 </section>
