@@ -261,6 +261,13 @@ class PredictionApp {
     initEventListeners() {
         this.bindEvent('themeToggle', 'click', () => this.toggleTheme());
         this.bindEvent('toggleOverviewPanelBtn', 'click', () => this.toggleOverviewPanel());
+        this.bindEvent('toggleOverviewPanelBtn', 'keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') {
+                return;
+            }
+            event.preventDefault();
+            this.toggleOverviewPanel();
+        });
         this.bindEvent('refreshBtn', 'click', async () => {
             if (this.isSettingsPage()) {
                 await this.loadUserSettings();
@@ -473,7 +480,8 @@ class PredictionApp {
         const section = this.getElement('sidebarOverviewSection');
         const panel = this.getElement('overviewPanel');
         const button = this.getElement('toggleOverviewPanelBtn');
-        if (!section || !panel || !button) {
+        const icon = this.getElement('overviewPanelToggleIcon');
+        if (!section || !panel || !button || !icon) {
             return;
         }
 
@@ -482,7 +490,7 @@ class PredictionApp {
         panel.hidden = !expanded;
         button.setAttribute('aria-expanded', String(expanded));
         button.setAttribute('title', expanded ? '收起实时状态' : '展开实时状态');
-        button.innerHTML = `<i class="bi ${expanded ? 'bi-chevron-up' : 'bi-chevron-down'}"></i>`;
+        icon.className = `bi ${expanded ? 'bi-chevron-up' : 'bi-chevron-down'}`;
     }
 
     enforceNumberTarget() {
