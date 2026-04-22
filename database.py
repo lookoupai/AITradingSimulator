@@ -86,6 +86,7 @@ class Database:
                 last_ai_error_category TEXT,
                 last_ai_error_message TEXT,
                 last_ai_error_at TIMESTAMP,
+                last_counted_failure_key TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (predictor_id) REFERENCES predictors(id)
             )
@@ -488,6 +489,10 @@ class Database:
             cursor.execute("ALTER TABLE prediction_items ADD COLUMN last_retry_error TEXT")
         except Exception:
             pass
+        try:
+            cursor.execute("ALTER TABLE predictor_runtime_state ADD COLUMN last_counted_failure_key TEXT")
+        except Exception:
+            pass
 
         cursor.execute(
             '''
@@ -840,9 +845,10 @@ class Database:
                 auto_pause_reason,
                 last_ai_error_category,
                 last_ai_error_message,
-                last_ai_error_at
+                last_ai_error_at,
+                last_counted_failure_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(predictor_id) DO UPDATE SET
                 consecutive_ai_failures = excluded.consecutive_ai_failures,
                 auto_paused = excluded.auto_paused,
@@ -851,6 +857,7 @@ class Database:
                 last_ai_error_category = excluded.last_ai_error_category,
                 last_ai_error_message = excluded.last_ai_error_message,
                 last_ai_error_at = excluded.last_ai_error_at,
+                last_counted_failure_key = excluded.last_counted_failure_key,
                 updated_at = CURRENT_TIMESTAMP
             ''',
             (
@@ -861,7 +868,8 @@ class Database:
                 payload.get('auto_pause_reason'),
                 payload.get('last_ai_error_category'),
                 payload.get('last_ai_error_message'),
-                payload.get('last_ai_error_at')
+                payload.get('last_ai_error_at'),
+                payload.get('last_counted_failure_key')
             )
         )
         conn.commit()
@@ -3103,7 +3111,8 @@ class Database:
             'auto_pause_reason': None,
             'last_ai_error_category': None,
             'last_ai_error_message': None,
-            'last_ai_error_at': None
+            'last_ai_error_at': None,
+            'last_counted_failure_key': None
         }
 
     def _prepare_predictor_runtime_state(self, row) -> dict:
@@ -3116,7 +3125,8 @@ class Database:
             'auto_pause_reason': data.get('auto_pause_reason'),
             'last_ai_error_category': data.get('last_ai_error_category'),
             'last_ai_error_message': data.get('last_ai_error_message'),
-            'last_ai_error_at': data.get('last_ai_error_at')
+            'last_ai_error_at': data.get('last_ai_error_at'),
+            'last_counted_failure_key': data.get('last_counted_failure_key')
         }
 
     def _attach_predictor_runtime_state(self, predictor: Optional[dict]) -> Optional[dict]:

@@ -66,18 +66,20 @@ class PredictionGuardService:
             state.get(key)
             for key in ('last_ai_error_category', 'last_ai_error_message', 'last_ai_error_at')
         )
+        has_failure_key = bool(state.get('last_counted_failure_key'))
         has_stale_pause_context = not bool(state.get('auto_paused')) and any(
             state.get(key)
             for key in ('auto_paused_at', 'auto_pause_reason')
         )
-        if not has_failures and not has_error_context and not has_stale_pause_context:
+        if not has_failures and not has_error_context and not has_failure_key and not has_stale_pause_context:
             return state
 
         payload = {
             'consecutive_ai_failures': 0,
             'last_ai_error_category': None,
             'last_ai_error_message': None,
-            'last_ai_error_at': None
+            'last_ai_error_at': None,
+            'last_counted_failure_key': None
         }
         if not bool(state.get('auto_paused')):
             payload.update({
@@ -88,19 +90,23 @@ class PredictionGuardService:
         self.db.update_predictor_runtime_state(predictor_id, payload)
         return self.db.get_predictor_runtime_state(predictor_id)
 
-    def record_ai_failure(self, predictor_id: int, error: Exception | str) -> dict:
+    def record_ai_failure(self, predictor_id: int, error: Exception | str, failure_key: str | None = None) -> dict:
         state = self.db.get_predictor_runtime_state(predictor_id)
         settings = self.get_settings()
-        next_failures = int(state.get('consecutive_ai_failures') or 0) + 1
         normalized_error = self._normalize_error(error)
+        normalized_failure_key = self._normalize_failure_key(failure_key)
+        is_duplicate_failure = bool(normalized_failure_key) and normalized_failure_key == state.get('last_counted_failure_key')
+        next_failures = int(state.get('consecutive_ai_failures') or 0) + (0 if is_duplicate_failure else 1)
         payload = {
             'consecutive_ai_failures': next_failures,
             'last_ai_error_category': normalized_error.category,
             'last_ai_error_message': str(normalized_error),
             'last_ai_error_at': self._utc_now_str()
         }
+        if normalized_failure_key:
+            payload['last_counted_failure_key'] = normalized_failure_key
 
-        if settings['enabled'] and next_failures >= settings['threshold']:
+        if settings['enabled'] and not is_duplicate_failure and next_failures >= settings['threshold']:
             payload.update({
                 'auto_paused': True,
                 'auto_paused_at': self._utc_now_str(),
@@ -115,7 +121,8 @@ class PredictionGuardService:
             'consecutive_ai_failures': 0,
             'auto_paused': False,
             'auto_paused_at': None,
-            'auto_pause_reason': None
+            'auto_pause_reason': None,
+            'last_counted_failure_key': None
         })
         return self.db.get_predictor_runtime_state(predictor_id)
 
@@ -136,6 +143,10 @@ class PredictionGuardService:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    def _normalize_failure_key(self, value: str | None) -> str | None:
+        normalized = str(value or '').strip()
+        return normalized or None
 
     def _utc_now_str(self) -> str:
         return datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')

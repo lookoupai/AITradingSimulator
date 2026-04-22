@@ -176,7 +176,10 @@ class PredictionEngine:
         if existing_prediction and existing_prediction['status'] in {'pending', 'settled'}:
             return existing_prediction
         if auto_mode and existing_prediction and existing_prediction['status'] == 'failed':
-            return existing_prediction
+            if self._should_retry_failed_prediction(existing_prediction, context):
+                existing_prediction = None
+            else:
+                return existing_prediction
 
         predictor_client = AIPredictor(
             api_key=predictor['api_key'],
@@ -257,7 +260,11 @@ class PredictionEngine:
             }
             self.db.upsert_prediction(payload)
             if auto_mode and getattr(exc, 'category', '') != 'deadline':
-                self.prediction_guard.record_ai_failure(predictor['id'], exc)
+                self.prediction_guard.record_ai_failure(
+                    predictor['id'],
+                    exc,
+                    failure_key=f'pc28:{issue_no}'
+                )
             return self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
         except Exception as exc:
             raw_response = getattr(exc, 'raw_response', raw_response)
@@ -289,6 +296,36 @@ class PredictionEngine:
             }
             self.db.upsert_prediction(payload)
             return self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
+
+    def _should_retry_failed_prediction(self, existing_prediction: dict, context: dict) -> bool:
+        if str(existing_prediction.get('status') or '').strip() != 'failed':
+            return False
+        error_message = str(existing_prediction.get('error_message') or '').strip()
+        if not error_message:
+            return False
+        if '已跳过 AI 调用' not in error_message:
+            return False
+        countdown_seconds = self._parse_countdown_seconds(context.get('countdown'))
+        if countdown_seconds is None:
+            return True
+        request_budget_seconds = countdown_seconds - int(getattr(config, 'PC28_PREDICTION_CUTOFF_BUFFER_SECONDS', 20))
+        return request_budget_seconds >= int(getattr(config, 'PC28_PREDICTION_MIN_REQUEST_WINDOW_SECONDS', 8))
+
+    def _parse_countdown_seconds(self, countdown) -> int | None:
+        text = str(countdown or '').strip()
+        if not text or text == '--:--:--':
+            return None
+        parts = text.split(':')
+        if len(parts) not in {2, 3}:
+            return None
+        if any(not part.isdigit() for part in parts):
+            return None
+        values = [int(part) for part in parts]
+        if len(values) == 2:
+            minutes, seconds = values
+            return minutes * 60 + seconds
+        hours, minutes, seconds = values
+        return hours * 3600 + minutes * 60 + seconds
 
     def _evaluate_hit(self, predicted_value, actual_value, targets: list[str], target_name: str):
         if target_name not in targets:

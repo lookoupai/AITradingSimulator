@@ -142,6 +142,58 @@ class PredictionGuardTests(unittest.TestCase):
             self.assertEqual(predictor_after['consecutive_ai_failures'], 0)
             self.assertFalse(predictor_after['auto_paused'])
 
+    def test_pc28_deadline_failure_retries_same_issue_when_countdown_recovers(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28')
+            predictor = harness.db.get_predictor(predictor_id, include_secret=True)
+            guard_module = importlib.import_module('services.prediction_guard')
+            deadline_error = guard_module.AIPredictionError(
+                '距离封盘仅剩 00:00:05，扣除安全缓冲 20 秒后可用请求窗口不足 8 秒，已跳过 AI 调用',
+                category='deadline'
+            )
+
+            with mock.patch('services.prediction_engine.AIPredictor.predict_next_issue', side_effect=deadline_error):
+                first = harness.module.prediction_engine._generate_prediction_locked(
+                    predictor,
+                    {
+                        **self._pc28_context('2003'),
+                        'countdown': '00:00:05'
+                    },
+                    auto_mode=True
+                )
+
+            self.assertEqual(first['status'], 'failed')
+
+            with mock.patch(
+                'services.prediction_engine.AIPredictor.predict_next_issue',
+                return_value=(
+                    {
+                        'issue_no': '2003',
+                        'prediction_number': 14,
+                        'prediction_big_small': '大',
+                        'prediction_odd_even': '双',
+                        'prediction_combo': '大双',
+                        'confidence': 0.55,
+                        'reasoning_summary': '倒计时恢复后重试成功'
+                    },
+                    '{"issue_no":"2003"}',
+                    'PROMPT'
+                )
+            ) as mock_predict:
+                second = harness.module.prediction_engine._generate_prediction_locked(
+                    harness.db.get_predictor(predictor_id, include_secret=True),
+                    {
+                        **self._pc28_context('2003'),
+                        'countdown': '00:00:40'
+                    },
+                    auto_mode=True
+                )
+
+            mock_predict.assert_called_once()
+            self.assertEqual(second['status'], 'pending')
+            self.assertEqual(second['prediction_number'], 14)
+
     def test_admin_can_update_guard_settings_and_resume_auto_pause(self):
         with fresh_app_harness() as harness:
             client, user_id = harness.make_client(username='admin', is_admin=True)
@@ -208,6 +260,40 @@ class PredictionGuardTests(unittest.TestCase):
             self.assertEqual(second_run['status'], 'failed')
             predictor_after_second = harness.db.get_predictor(predictor_id, include_secret=False)
             self.assertEqual(predictor_after_second['consecutive_ai_failures'], 1)
+
+    def test_jingcai_retrying_same_batch_failure_does_not_trigger_auto_pause(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'jingcai_football')
+            predictor = harness.db.get_predictor(predictor_id, include_secret=True)
+            match = self._build_jingcai_match(harness)
+            batch_payload = {
+                'batch_key': '2026-04-06',
+                'dates': ['2026-04-06'],
+                'matches': [match]
+            }
+            guard_module = importlib.import_module('services.prediction_guard')
+            ai_error = guard_module.AIPredictionError('上游网关连续 503', category='transport')
+
+            with mock.patch.object(harness.module.jingcai_football_service, '_fetch_recent_history', return_value=[]), \
+                 mock.patch.object(harness.module.jingcai_football_service, 'enrich_matches_for_prediction', return_value=[match]), \
+                 mock.patch.object(harness.module.jingcai_football_service, '_build_prediction_prompt', return_value='prompt'), \
+                 mock.patch('services.jingcai_football_service.FAILED_ITEM_RETRY_COOLDOWN_SECONDS', 0), \
+                 mock.patch('services.jingcai_football_service.AIPredictor.run_json_task', side_effect=[ai_error, ai_error, ai_error]) as run_json_task:
+                for _ in range(3):
+                    run = harness.module.jingcai_football_service.generate_prediction(
+                        harness.db,
+                        predictor,
+                        auto_mode=True,
+                        batch_payload=batch_payload
+                    )
+                    self.assertEqual(run['status'], 'failed')
+                    predictor = harness.db.get_predictor(predictor_id, include_secret=True)
+
+            self.assertEqual(run_json_task.call_count, 3)
+            predictor_after = harness.db.get_predictor(predictor_id, include_secret=False)
+            self.assertEqual(predictor_after['consecutive_ai_failures'], 1)
+            self.assertFalse(predictor_after['auto_paused'])
 
     def test_jingcai_manual_success_clears_guard_state(self):
         with fresh_app_harness() as harness:

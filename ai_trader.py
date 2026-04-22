@@ -81,7 +81,15 @@ class AIPredictor:
         last_response = ''
         last_finish_reason = 'unknown'
         max_output_tokens = self._prediction_max_output_tokens()
-        request_time_budget_seconds = self._resolve_prediction_request_budget_seconds(context)
+        try:
+            request_time_budget_seconds = self._resolve_prediction_request_budget_seconds(context)
+        except Exception as exc:
+            raise self._attach_prediction_debug_context(
+                self._normalize_ai_exception(exc),
+                raw_response='',
+                prompt_snapshot=prompt,
+                finish_reason='deadline_guard'
+            )
         prediction_started_at = time.monotonic()
 
         for _ in range(3):

@@ -604,6 +604,25 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(cm.exception.category, 'deadline')
         self.assertIn('已跳过 AI 调用', str(cm.exception))
 
+    def test_predict_next_issue_deadline_skip_preserves_prompt_snapshot(self):
+        predictor_config = {
+            'prediction_targets': ['number', 'big_small', 'odd_even', 'combo']
+        }
+
+        with patch.object(self.predictor, '_build_prompt', return_value='PROMPT'), patch.object(
+            self.predictor,
+            '_call_llm_with_metadata'
+        ) as call_llm:
+            with self.assertRaises(AIPredictionError) as cm:
+                self.predictor.predict_next_issue(
+                    context={'next_issue_no': '3418518', 'countdown': '00:00:25'},
+                    predictor_config=predictor_config
+                )
+
+        call_llm.assert_not_called()
+        self.assertEqual(getattr(cm.exception, 'prompt_snapshot', ''), 'PROMPT')
+        self.assertEqual(getattr(cm.exception, 'finish_reason', ''), 'deadline_guard')
+
     def test_predict_next_issue_uses_higher_budget_for_minimax_reasoning_model(self):
         minimax_predictor = AIPredictor(
             api_key='test-key',

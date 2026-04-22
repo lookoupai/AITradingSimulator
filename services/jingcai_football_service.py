@@ -578,7 +578,11 @@ class JingcaiFootballService:
         if not pending_items:
             failure = AIPredictionError(error_message or 'AI 未返回任何有效预测项', category='parse')
             if auto_mode and self.prediction_guard:
-                self.prediction_guard.record_ai_failure(predictor['id'], failure)
+                self.prediction_guard.record_ai_failure(
+                    predictor['id'],
+                    failure,
+                    failure_key=f'{self.lottery_type}:{run_key}'
+                )
             return db.get_prediction_run(run_id) or final_run_payload
 
         if self.prediction_guard:
