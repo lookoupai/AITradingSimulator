@@ -342,40 +342,40 @@ class PredictionApp {
         });
         this.bindEvent('profitRuleView', 'change', (event) => {
             this.selectedProfitRuleId = event.target.value;
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('profitMetricView', 'change', (event) => {
             this.selectedProfitMetric = event.target.value;
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('profitPeriodView', 'change', (event) => {
             this.selectedProfitPeriodKey = event.target.value;
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('profitBetProfileView', 'change', (event) => {
             this.selectedProfitBetProfileId = event.target.value || '';
             this.syncProfitBetControlState();
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('profitBetModeView', 'change', (event) => {
             this.selectedProfitBetMode = event.target.value;
             this.syncProfitBetControlState();
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('profitBaseStakeView', 'change', (event) => {
             this.selectedProfitBaseStake = this.normalizePositiveNumber(event.target.value, DEFAULT_PROFIT_BASE_STAKE, 0.01);
             event.target.value = String(this.selectedProfitBaseStake);
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('profitMultiplierView', 'change', (event) => {
             this.selectedProfitMultiplier = this.normalizePositiveNumber(event.target.value, DEFAULT_PROFIT_MULTIPLIER, 1.01);
             event.target.value = String(this.selectedProfitMultiplier);
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('profitMaxStepsView', 'change', (event) => {
             this.selectedProfitMaxSteps = this.normalizePositiveInt(event.target.value, DEFAULT_PROFIT_MAX_STEPS, 1, 12);
             event.target.value = String(this.selectedProfitMaxSteps);
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('profitOrderView', 'change', (event) => {
             this.selectedProfitOrder = event.target.value;
@@ -383,11 +383,11 @@ class PredictionApp {
                 this.renderProfitSimulation(this.currentProfitSimulation, this.currentPredictor);
                 return;
             }
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('profitOddsProfileView', 'change', (event) => {
             this.selectedProfitOddsProfile = event.target.value;
-            this.loadProfitSimulation();
+            this.refreshProfitSimulation();
         });
         this.bindEvent('saveBetProfileBtn', 'click', () => this.submitBetProfile());
         this.bindEvent('resetBetProfileFormBtn', 'click', () => this.resetBetProfileForm());
@@ -1347,7 +1347,7 @@ class PredictionApp {
             this.resetBetProfileForm();
             await this.loadUserSettings();
             if (this.currentPredictorId) {
-                await this.loadProfitSimulation();
+                await this.refreshProfitSimulation();
             }
         } catch (error) {
             alert(error.message);
@@ -2334,8 +2334,11 @@ class PredictionApp {
                 this.renderDrawsTable(data.overview?.recent_draws || data.overview?.recent_events || data.recent_draws || data.recent_events || []);
                 this.renderAILogs(this.currentPredictions);
                 this.renderChart(this.currentPredictions);
-                this.renderProfitSimulationLoading('正在更新收益模拟...');
-                this.scheduleProfitSimulationLoad();
+                this.refreshProfitSimulation({
+                    showLoading: previousPredictorId !== predictorId || !this.currentProfitSimulation,
+                    defer: true,
+                    loadingMessage: '正在更新收益模拟...'
+                });
             } catch (error) {
                 if (error.name === 'AbortError') {
                     return;
@@ -3249,6 +3252,17 @@ class PredictionApp {
         }
     }
 
+    refreshProfitSimulation({ showLoading = true, defer = false, loadingMessage = '收益模拟计算中...' } = {}) {
+        if (showLoading) {
+            this.renderProfitSimulationLoading(loadingMessage);
+        }
+        if (defer) {
+            this.scheduleProfitSimulationLoad();
+            return Promise.resolve();
+        }
+        return this.loadProfitSimulation();
+    }
+
     scheduleProfitSimulationLoad() {
         this.cancelPendingProfitSimulation();
         const sequence = this.profitSimulationLoadSequence;
@@ -3424,6 +3438,7 @@ class PredictionApp {
 
         this.profitChart.setOption({
             animation: false,
+            title: { show: false },
             tooltip: { trigger: 'axis' },
             grid: { top: 36, left: 36, right: 24, bottom: 36, containLabel: true },
             xAxis: {

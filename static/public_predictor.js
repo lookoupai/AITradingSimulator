@@ -1024,6 +1024,7 @@ class PublicPredictorPage {
 
         this.profitChart.setOption({
             animation: false,
+            title: { show: false },
             tooltip: { trigger: 'axis' },
             grid: { top: 36, left: 36, right: 24, bottom: 36, containLabel: true },
             xAxis: {
