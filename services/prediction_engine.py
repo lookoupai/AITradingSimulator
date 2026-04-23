@@ -14,11 +14,19 @@ from utils.timezone import get_current_utc_time_str
 
 
 class PredictionEngine:
-    def __init__(self, db, pc28_service, prediction_guard: PredictionGuardService | None = None, notification_service=None):
+    def __init__(
+        self,
+        db,
+        pc28_service,
+        prediction_guard: PredictionGuardService | None = None,
+        notification_service=None,
+        notification_rule_engine=None
+    ):
         self.db = db
         self.pc28_service = pc28_service
         self.prediction_guard = prediction_guard or PredictionGuardService(db)
         self.notification_service = notification_service
+        self.notification_rule_engine = notification_rule_engine
         self._lock = threading.RLock()
 
     def generate_prediction(self, predictor_id: int, auto_mode: bool = False) -> dict:
@@ -100,10 +108,12 @@ class PredictionEngine:
     def run_auto_cycle(self) -> dict:
         with self._lock:
             settled = self.settle_pending_predictions()
+            performance_notifications = self._evaluate_performance_notifications(settled)
             predictors = self.db.get_enabled_predictors(include_secret=True, exclude_auto_paused=True)
             if not predictors:
                 return {
                     'settled_count': len(settled),
+                    'performance_notifications': performance_notifications,
                     'predictions': []
                 }
 
@@ -136,8 +146,40 @@ class PredictionEngine:
 
             return {
                 'settled_count': len(settled),
+                'performance_notifications': performance_notifications,
                 'predictions': prediction_results
             }
+
+    def _evaluate_performance_notifications(self, settled: list[dict]) -> list[dict]:
+        if not settled or not self.notification_service or not self.notification_rule_engine:
+            return []
+        if not self.notification_service.get_settings().get('enabled'):
+            return []
+
+        results = []
+        predictor_ids = sorted({
+            int(item.get('predictor_id') or 0)
+            for item in settled
+            if int(item.get('predictor_id') or 0) > 0
+        })
+        for predictor_id in predictor_ids:
+            predictor = self.db.get_predictor(predictor_id, include_secret=False)
+            if not predictor:
+                continue
+            for evaluation in self.notification_rule_engine.evaluate_predictor(predictor):
+                delivery = None
+                if evaluation.get('status') == 'triggered':
+                    delivery = self.notification_service.notify_performance_threshold(predictor, evaluation)
+                self.notification_rule_engine.mark_evaluated(evaluation)
+                results.append({
+                    'predictor_id': predictor_id,
+                    'subscription_id': int((evaluation.get('subscription') or {}).get('id') or 0),
+                    'rule_id': (evaluation.get('rule') or {}).get('id'),
+                    'status': evaluation.get('status'),
+                    'error_message': evaluation.get('error_message'),
+                    'delivery_id': delivery.get('id') if delivery else None
+                })
+        return results
 
     def _build_context(self, history_window: int, draws: Optional[list[dict]] = None) -> dict:
         recent_draws = draws or self.db.get_recent_draws('pc28', limit=history_window)

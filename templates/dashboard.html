@@ -411,7 +411,7 @@
                     <div class="panel-header">
                         <div>
                             <h3>通知订阅</h3>
-                            <p class="panel-subtitle">把某个预测方案订阅到某个接收端，并可选择是否绑定下注策略。</p>
+                            <p class="panel-subtitle">把预测方案订阅到接收端，支持预测生成通知和 PC28 表现告警。</p>
                         </div>
                         <div class="panel-actions mobile-stack">
                             <button class="btn ghost compact" id="resetSubscriptionFormBtn">清空表单</button>
@@ -476,6 +476,7 @@
                             <span>通知事件</span>
                             <select id="notificationSubscriptionEventType" class="form-input">
                                 <option value="prediction_created">预测生成</option>
+                                <option value="performance_threshold">表现告警</option>
                             </select>
                         </label>
                         <label class="form-field">
@@ -490,10 +491,64 @@
                             <select id="notificationSubscriptionBetProfileId" class="form-input"></select>
                             <small class="field-hint">选择“通知 + 下注策略”时必须绑定与彩种一致的下注策略。</small>
                         </label>
-                        <label class="form-field">
+                        <label class="form-field" id="notificationPredictionConfidenceField">
                             <span>最低置信度</span>
                             <input type="number" id="notificationSubscriptionConfidenceGte" class="form-input" min="0" max="1" step="0.01" placeholder="例如：0.6">
                         </label>
+                        <div class="span-2" id="notificationPerformanceRulePanel" hidden>
+                            <div class="metric-hint">
+                                <div class="metric-hint-head">
+                                    <div>
+                                        <strong>表现告警规则</strong>
+                                        <span class="metric-hint-alias">先检查窗口有效性，再判断命中率阈值；断档达到阈值时不会发通知。</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-grid">
+                                <label class="form-field">
+                                    <span>统计玩法</span>
+                                    <select id="notificationPerformanceMetric" class="form-input">
+                                        <option value="big_small">大/小</option>
+                                        <option value="odd_even">单/双</option>
+                                        <option value="combo">组合投注</option>
+                                        <option value="number">单点</option>
+                                        <option value="double_group">组合分组统计</option>
+                                        <option value="kill_group">排除统计</option>
+                                    </select>
+                                </label>
+                                <label class="form-field">
+                                    <span>最近期数</span>
+                                    <input type="number" id="notificationPerformanceWindow" class="form-input" min="1" max="1000" step="1" value="100">
+                                </label>
+                                <label class="form-field">
+                                    <span>触发条件</span>
+                                    <select id="notificationPerformanceOperator" class="form-input">
+                                        <option value="lt">低于</option>
+                                        <option value="lte">低于或等于</option>
+                                        <option value="gt">高于</option>
+                                        <option value="gte">高于或等于</option>
+                                    </select>
+                                </label>
+                                <label class="form-field">
+                                    <span>命中率阈值</span>
+                                    <input type="number" id="notificationPerformanceThreshold" class="form-input" min="0" max="100" step="0.01" value="40">
+                                    <small class="field-hint">“低于 40%”不包含 40%；需要包含 40% 时选择“低于或等于”。</small>
+                                </label>
+                                <label class="form-field">
+                                    <span>最小样本数</span>
+                                    <input type="number" id="notificationPerformanceMinSample" class="form-input" min="1" max="1000" step="1" value="100">
+                                </label>
+                                <label class="form-field">
+                                    <span>断档无效阈值</span>
+                                    <input type="number" id="notificationPerformanceInvalidateMissing" class="form-input" min="1" max="100000" step="1" value="3">
+                                    <small class="field-hint">相邻有效样本中间缺失达到该期数，整个窗口无效。</small>
+                                </label>
+                                <label class="form-field">
+                                    <span>冷却期数</span>
+                                    <input type="number" id="notificationPerformanceCooldownIssues" class="form-input" min="0" max="100000" step="1" value="20">
+                                </label>
+                            </div>
+                        </div>
                         <label class="form-field">
                             <span>订阅状态</span>
                             <select id="notificationSubscriptionEnabled" class="form-input">
@@ -512,8 +567,8 @@
                                     <th>方案</th>
                                     <th>接收端</th>
                                     <th>发送方</th>
-                                    <th>模式</th>
-                                    <th>下注策略</th>
+                                    <th>事件/模式</th>
+                                    <th>规则/下注策略</th>
                                     <th>状态</th>
                                     <th>操作</th>
                                 </tr>

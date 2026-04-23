@@ -231,6 +231,82 @@ class UserSettingsApiTests(unittest.TestCase):
             self.assertEqual(delete_response.status_code, 200)
             self.assertEqual(client.get('/api/notification-subscriptions').get_json(), [])
 
+    def test_pc28_performance_subscription_crud(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28', prediction_targets=['big_small'])
+
+            endpoint_response = client.post(
+                '/api/notification-endpoints',
+                json={
+                    'channel_type': 'telegram',
+                    'endpoint_key': '123456789',
+                    'endpoint_label': '我的 Telegram',
+                    'config': {'chat_type': 'private'},
+                    'is_default': True
+                }
+            )
+            endpoint_id = endpoint_response.get_json()['item']['id']
+
+            create_response = client.post(
+                '/api/notification-subscriptions',
+                json={
+                    'predictor_id': predictor_id,
+                    'endpoint_id': endpoint_id,
+                    'event_type': 'performance_threshold',
+                    'delivery_mode': 'follow_bet',
+                    'bet_profile_id': 999,
+                    'filter': {
+                        'rules': [{
+                            'metric': 'big_small',
+                            'window': {'size': 100},
+                            'validity': {
+                                'min_sample_count': 100,
+                                'invalidate_missing_gte': 3
+                            },
+                            'trigger': {
+                                'operator': 'lt',
+                                'value': 40
+                            },
+                            'cooldown': {'issues': 20}
+                        }]
+                    }
+                }
+            )
+            create_payload = create_response.get_json()
+            self.assertEqual(create_response.status_code, 200)
+            item = create_payload['item']
+            self.assertEqual(item['event_type'], 'performance_threshold')
+            self.assertEqual(item['delivery_mode'], 'notify_only')
+            self.assertIsNone(item['bet_profile_id'])
+            self.assertEqual(item['filter']['rules'][0]['trigger']['operator'], 'lt')
+            self.assertEqual(item['filter']['rules'][0]['trigger']['value'], 40)
+
+            update_response = client.put(
+                f"/api/notification-subscriptions/{item['id']}",
+                json={
+                    'filter': {
+                        'rules': [{
+                            'metric': 'big_small',
+                            'window': {'size': 100},
+                            'validity': {
+                                'min_sample_count': 100,
+                                'invalidate_missing_gte': 3
+                            },
+                            'trigger': {
+                                'operator': 'lte',
+                                'value': 40
+                            },
+                            'cooldown': {'issues': 10}
+                        }]
+                    }
+                }
+            )
+            update_payload = update_response.get_json()
+            self.assertEqual(update_response.status_code, 200)
+            self.assertEqual(update_payload['item']['filter']['rules'][0]['trigger']['operator'], 'lte')
+            self.assertEqual(update_payload['item']['filter']['rules'][0]['cooldown']['issues'], 10)
+
     def test_user_can_subscribe_public_predictor_from_another_account(self):
         with fresh_app_harness() as harness:
             owner_id = harness.db.create_user('owner', harness.module.hash_password('password'))

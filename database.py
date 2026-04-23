@@ -247,6 +247,25 @@ class Database:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS notification_rule_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subscription_id INTEGER NOT NULL,
+                rule_id TEXT NOT NULL,
+                last_evaluated_issue TEXT,
+                last_triggered_issue TEXT,
+                last_triggered_at TIMESTAMP,
+                last_status TEXT,
+                last_payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (subscription_id) REFERENCES notification_subscriptions(id),
+                UNIQUE(subscription_id, rule_id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS lottery_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lottery_type TEXT NOT NULL,
@@ -432,6 +451,7 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, predictor_id, enabled)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_deliveries_subscription ON notification_deliveries(subscription_id, created_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_delivery_jobs_status ON notification_delivery_jobs(status, available_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_rule_states_subscription ON notification_rule_states(subscription_id, rule_id)')
 
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
@@ -653,6 +673,15 @@ class Database:
     def delete_predictor(self, predictor_id: int):
         conn = self.get_connection()
         cursor = conn.cursor()
+        cursor.execute(
+            '''
+            DELETE FROM notification_rule_states
+            WHERE subscription_id IN (
+                SELECT id FROM notification_subscriptions WHERE predictor_id = ?
+            )
+            ''',
+            (predictor_id,)
+        )
         cursor.execute('DELETE FROM notification_deliveries WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM notification_subscriptions WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM predictor_runtime_state WHERE predictor_id = ?', (predictor_id,))
@@ -1675,6 +1704,29 @@ class Database:
         conn.close()
         return [self._prepare_prediction(row) for row in rows]
 
+    def get_recent_prediction_metric_samples(self, predictor_id: int, metric_key: str, limit: int = 100) -> list[dict]:
+        rows = self.get_recent_predictions(predictor_id, limit=None)
+        samples = []
+        for row in rows:
+            if row.get('status') != 'settled':
+                continue
+            hit_value = self._extract_metric_hit(row, metric_key)
+            if hit_value is None:
+                continue
+            samples.append({
+                'prediction_id': row.get('id'),
+                'predictor_id': row.get('predictor_id'),
+                'issue_no': row.get('issue_no'),
+                'metric_key': metric_key,
+                'hit': int(hit_value),
+                'settled_at': row.get('settled_at'),
+                'created_at': row.get('created_at'),
+                'updated_at': row.get('updated_at')
+            })
+            if len(samples) >= max(1, int(limit or 100)):
+                break
+        return samples
+
     def count_predictions(self, predictor_id: int) -> int:
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -2364,6 +2416,16 @@ class Database:
         cursor = conn.cursor()
         cursor.execute(
             '''
+            DELETE FROM notification_rule_states
+            WHERE subscription_id IN (
+                SELECT id FROM notification_subscriptions
+                WHERE endpoint_id = ? AND user_id = ?
+            )
+            ''',
+            (endpoint_id, user_id)
+        )
+        cursor.execute(
+            '''
             DELETE FROM notification_deliveries
             WHERE endpoint_id = ? AND user_id = ?
             ''',
@@ -2576,6 +2638,13 @@ class Database:
         cursor = conn.cursor()
         cursor.execute(
             '''
+            DELETE FROM notification_rule_states
+            WHERE subscription_id = ?
+            ''',
+            (subscription_id,)
+        )
+        cursor.execute(
+            '''
             DELETE FROM notification_deliveries
             WHERE subscription_id = ? AND user_id = ?
             ''',
@@ -2590,6 +2659,67 @@ class Database:
         )
         conn.commit()
         conn.close()
+
+    # ============ Notification Rule States ============
+
+    def get_notification_rule_state(self, subscription_id: int, rule_id: str) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM notification_rule_states
+            WHERE subscription_id = ? AND rule_id = ?
+            LIMIT 1
+            ''',
+            (subscription_id, str(rule_id or ''))
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_notification_rule_state(row) if row else None
+
+    def upsert_notification_rule_state(self, payload: dict) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO notification_rule_states (
+                subscription_id, rule_id, last_evaluated_issue, last_triggered_issue,
+                last_triggered_at, last_status, last_payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(subscription_id, rule_id) DO UPDATE SET
+                last_evaluated_issue = excluded.last_evaluated_issue,
+                last_triggered_issue = excluded.last_triggered_issue,
+                last_triggered_at = excluded.last_triggered_at,
+                last_status = excluded.last_status,
+                last_payload_json = excluded.last_payload_json,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (
+                int(payload['subscription_id']),
+                str(payload['rule_id']),
+                payload.get('last_evaluated_issue'),
+                payload.get('last_triggered_issue'),
+                payload.get('last_triggered_at'),
+                payload.get('last_status'),
+                json.dumps(payload.get('last_payload') or {}, ensure_ascii=False)
+            )
+        )
+        conn.commit()
+        state_id = cursor.lastrowid or 0
+        if not state_id:
+            cursor.execute(
+                '''
+                SELECT id FROM notification_rule_states
+                WHERE subscription_id = ? AND rule_id = ?
+                LIMIT 1
+                ''',
+                (int(payload['subscription_id']), str(payload['rule_id']))
+            )
+            row = cursor.fetchone()
+            state_id = int(row['id']) if row and row['id'] is not None else 0
+        conn.close()
+        return int(state_id)
 
     # ============ Notification Deliveries ============
 
@@ -3230,6 +3360,14 @@ class Database:
         data['attempt_count'] = int(data.get('attempt_count') or 0)
         data['last_response'] = self._decode_json_object(data.get('last_response_json'))
         data.pop('last_response_json', None)
+        return data
+
+    def _prepare_notification_rule_state(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+        data = dict(row)
+        data['last_payload'] = self._decode_json_object(data.get('last_payload_json'))
+        data.pop('last_payload_json', None)
         return data
 
     def _prepare_lottery_event(self, row) -> dict:

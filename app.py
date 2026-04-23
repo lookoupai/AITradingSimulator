@@ -30,6 +30,7 @@ from lotteries.registry import (
 from services.jingcai_football_service import JingcaiFootballService
 from services.bet_strategy import BET_MODE_LABELS, build_bet_strategy, build_bet_strategy_label
 from services.lottery_runtime import LotteryRuntime
+from services.notification_rule_engine import NotificationRuleEngine, PERFORMANCE_EVENT_TYPE
 from services.notification_service import NotificationService
 from services.pc28_service import PC28Service
 from services.profit_simulator import DEFAULT_ODDS_PROFILE, ProfitSimulator
@@ -82,9 +83,16 @@ PUBLIC_LOTTERY_PAGE_CONFIG = {
 db = Database(config.DATABASE_PATH)
 prediction_guard = PredictionGuardService(db)
 notification_service = NotificationService(db)
+notification_rule_engine = NotificationRuleEngine(db)
 pc28_service = PC28Service()
 jingcai_football_service = JingcaiFootballService(prediction_guard=prediction_guard, notification_service=notification_service)
-prediction_engine = PredictionEngine(db, pc28_service, prediction_guard=prediction_guard, notification_service=notification_service)
+prediction_engine = PredictionEngine(
+    db,
+    pc28_service,
+    prediction_guard=prediction_guard,
+    notification_service=notification_service,
+    notification_rule_engine=notification_rule_engine
+)
 lottery_runtime = LotteryRuntime(
     db,
     prediction_engine,
@@ -109,7 +117,8 @@ NOTIFICATION_STATUS_LABELS = {
     'disabled': '停用'
 }
 NOTIFICATION_EVENT_LABELS = {
-    'prediction_created': '预测生成'
+    'prediction_created': '预测生成',
+    PERFORMANCE_EVENT_TYPE: '表现告警'
 }
 NOTIFICATION_DELIVERY_MODE_LABELS = {
     'notify_only': '仅通知',
@@ -1468,6 +1477,9 @@ def _validate_notification_subscription_payload(
     filters = data.get('filter', existing_subscription.get('filter') if existing_subscription else {})
     filters = filters if isinstance(filters, dict) else {}
     enabled = _parse_bool(data.get('enabled'), bool(existing_subscription.get('enabled')) if existing_subscription else True)
+    if event_type == PERFORMANCE_EVENT_TYPE:
+        delivery_mode = 'notify_only'
+        bet_profile_id = None
 
     predictor = db.get_predictor(predictor_id, include_secret=False) if predictor_id else None
     endpoint = db.get_notification_endpoint(endpoint_id) if endpoint_id else None
@@ -1497,11 +1509,22 @@ def _validate_notification_subscription_payload(
         errors.append('通知发送方和接收端渠道必须一致')
 
     if event_type not in NOTIFICATION_EVENT_LABELS:
-        errors.append('当前仅支持预测生成通知事件')
+        errors.append('当前仅支持预测生成或表现告警通知事件')
     if delivery_mode not in NOTIFICATION_DELIVERY_MODE_LABELS:
         delivery_mode = 'notify_only'
     if delivery_mode == 'follow_bet' and not bet_profile_id:
         errors.append('启用下注策略模式时必须绑定下注策略')
+    if event_type == PERFORMANCE_EVENT_TYPE:
+        if predictor_lottery_type != 'pc28':
+            errors.append('表现告警当前仅支持 PC28 方案')
+        filters, rule_errors = notification_rule_engine.normalize_filter(filters, predictor_lottery_type)
+        errors.extend(rule_errors)
+    elif 'rules' in filters:
+        filters = {
+            key: value
+            for key, value in filters.items()
+            if key != 'rules'
+        }
 
     payload = {
         'predictor_id': predictor_id,

@@ -8,6 +8,64 @@ from tests.support import create_predictor, fresh_app_harness
 
 
 class NotificationServiceTests(unittest.TestCase):
+    def _seed_pc28_metric_predictions(self, harness, predictor_id: int, issue_numbers: list[int], hit_count: int):
+        for index, issue_no in enumerate(issue_numbers):
+            hit = 1 if index < hit_count else 0
+            harness.db.upsert_prediction({
+                'predictor_id': predictor_id,
+                'lottery_type': 'pc28',
+                'issue_no': str(issue_no),
+                'requested_targets': ['big_small'],
+                'prediction_number': 14,
+                'prediction_big_small': '大',
+                'prediction_odd_even': '双',
+                'prediction_combo': '大双',
+                'confidence': 0.8,
+                'reasoning_summary': 'test',
+                'raw_response': '{}',
+                'prompt_snapshot': 'prompt',
+                'status': 'settled',
+                'error_message': None,
+                'actual_number': 14 if hit else 3,
+                'actual_big_small': '大' if hit else '小',
+                'actual_odd_even': '双',
+                'actual_combo': '大双' if hit else '小双',
+                'hit_number': None,
+                'hit_big_small': hit,
+                'hit_odd_even': None,
+                'hit_combo': None,
+                'settled_at': '2026-04-23 12:00:00'
+            })
+
+    def _create_performance_subscription(self, harness, user_id: int, predictor_id: int, endpoint_id: int, operator: str = 'lt'):
+        return harness.db.create_notification_subscription(
+            user_id=user_id,
+            predictor_id=predictor_id,
+            endpoint_id=endpoint_id,
+            sender_mode='platform',
+            sender_account_id=None,
+            bet_profile_id=None,
+            event_type='performance_threshold',
+            delivery_mode='notify_only',
+            filters={
+                'rules': [{
+                    'metric': 'big_small',
+                    'window': {'size': 100},
+                    'validity': {
+                        'min_sample_count': 100,
+                        'invalidate_missing_gte': 3,
+                        'require_numeric_issue': True
+                    },
+                    'trigger': {
+                        'operator': operator,
+                        'value': 40
+                    },
+                    'cooldown': {'issues': 20}
+                }]
+            },
+            enabled=True
+        )
+
     def test_pc28_prediction_notification_is_delivered_once(self):
         with fresh_app_harness() as harness:
             _, user_id = harness.make_client()
@@ -85,6 +143,131 @@ class NotificationServiceTests(unittest.TestCase):
             deliveries = harness.db.list_notification_deliveries(user_id)
             self.assertEqual(len(deliveries), 1)
             self.assertEqual(deliveries[0]['status'], 'delivered')
+
+    def test_performance_notification_triggers_below_threshold_once(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(
+                harness,
+                user_id,
+                'pc28',
+                name='PC28 表现告警方案',
+                prediction_targets=['big_small'],
+                primary_metric='big_small'
+            )
+            endpoint_id = harness.db.create_notification_endpoint(
+                user_id=user_id,
+                channel_type='telegram',
+                endpoint_key='123456789',
+                endpoint_label='我的 TG',
+                config={'chat_type': 'private'},
+                status='active',
+                is_default=True
+            )
+            self._create_performance_subscription(harness, user_id, predictor_id, endpoint_id)
+            self._seed_pc28_metric_predictions(harness, predictor_id, list(range(1100, 1000, -1)), hit_count=39)
+            harness.module.notification_service.update_settings(
+                enabled=True,
+                telegram_bot_token='123456:abcdef',
+                telegram_bot_name='predictor_bot'
+            )
+
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = {'ok': True, 'result': {'message_id': 3001}}
+
+            with patch('services.notification_service.requests.post', return_value=response) as mocked_post:
+                first_results = harness.module.prediction_engine._evaluate_performance_notifications([{
+                    'predictor_id': predictor_id,
+                    'issue_no': '1100'
+                }])
+                first_process = harness.module.notification_service.process_delivery_jobs()
+                second_results = harness.module.prediction_engine._evaluate_performance_notifications([{
+                    'predictor_id': predictor_id,
+                    'issue_no': '1100'
+                }])
+                second_process = harness.module.notification_service.process_delivery_jobs()
+
+            self.assertEqual(first_results[0]['status'], 'triggered')
+            self.assertEqual(first_process['delivered_count'], 1)
+            self.assertEqual(second_results[0]['status'], 'cooldown')
+            self.assertEqual(second_process['delivered_count'], 0)
+            self.assertEqual(mocked_post.call_count, 1)
+            message_text = mocked_post.call_args.kwargs['json']['text']
+            self.assertIn('表现告警', message_text)
+            self.assertIn('命中率：39%', message_text)
+            deliveries = harness.db.list_notification_deliveries(user_id)
+            self.assertEqual(len(deliveries), 1)
+            self.assertEqual(deliveries[0]['event_type'], 'performance_threshold')
+
+    def test_performance_notification_strict_low_threshold_excludes_equal_value(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28', prediction_targets=['big_small'])
+            endpoint_id = harness.db.create_notification_endpoint(
+                user_id=user_id,
+                channel_type='telegram',
+                endpoint_key='123456789',
+                endpoint_label='我的 TG',
+                config={'chat_type': 'private'},
+                status='active',
+                is_default=True
+            )
+            self._create_performance_subscription(harness, user_id, predictor_id, endpoint_id, operator='lt')
+            self._seed_pc28_metric_predictions(harness, predictor_id, list(range(1100, 1000, -1)), hit_count=40)
+            harness.module.notification_service.update_settings(
+                enabled=True,
+                telegram_bot_token='123456:abcdef',
+                telegram_bot_name='predictor_bot'
+            )
+
+            with patch('services.notification_service.requests.post') as mocked_post:
+                results = harness.module.prediction_engine._evaluate_performance_notifications([{
+                    'predictor_id': predictor_id,
+                    'issue_no': '1100'
+                }])
+                process_result = harness.module.notification_service.process_delivery_jobs()
+
+            self.assertEqual(results[0]['status'], 'not_triggered')
+            self.assertEqual(process_result['processed_count'], 0)
+            self.assertEqual(mocked_post.call_count, 0)
+            self.assertEqual(harness.db.list_notification_deliveries(user_id), [])
+
+    def test_performance_notification_skips_invalid_gap_window(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28', prediction_targets=['big_small'])
+            endpoint_id = harness.db.create_notification_endpoint(
+                user_id=user_id,
+                channel_type='telegram',
+                endpoint_key='123456789',
+                endpoint_label='我的 TG',
+                config={'chat_type': 'private'},
+                status='active',
+                is_default=True
+            )
+            self._create_performance_subscription(harness, user_id, predictor_id, endpoint_id)
+            issue_numbers = [issue_no for issue_no in range(1203, 1100, -1) if issue_no not in {1150, 1151, 1152}]
+            self.assertEqual(len(issue_numbers), 100)
+            self._seed_pc28_metric_predictions(harness, predictor_id, issue_numbers, hit_count=39)
+            harness.module.notification_service.update_settings(
+                enabled=True,
+                telegram_bot_token='123456:abcdef',
+                telegram_bot_name='predictor_bot'
+            )
+
+            with patch('services.notification_service.requests.post') as mocked_post:
+                results = harness.module.prediction_engine._evaluate_performance_notifications([{
+                    'predictor_id': predictor_id,
+                    'issue_no': '1203'
+                }])
+                process_result = harness.module.notification_service.process_delivery_jobs()
+
+            self.assertEqual(results[0]['status'], 'invalid_window')
+            self.assertIn('最大断档 3 期', results[0]['error_message'])
+            self.assertEqual(process_result['processed_count'], 0)
+            self.assertEqual(mocked_post.call_count, 0)
+            self.assertEqual(harness.db.list_notification_deliveries(user_id), [])
 
     def test_prediction_notification_respects_confidence_filter(self):
         with fresh_app_harness() as harness:

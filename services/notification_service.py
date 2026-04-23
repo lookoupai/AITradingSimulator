@@ -12,6 +12,7 @@ import requests
 
 import config
 from services.bet_strategy import build_bet_strategy_label
+from services.notification_rule_engine import PERFORMANCE_EVENT_TYPE
 
 
 NOTIFICATION_ENABLED_KEY = 'notifications.enabled'
@@ -177,6 +178,28 @@ class NotificationService:
             results.append(result)
         return results
 
+    def notify_performance_threshold(self, predictor: dict, evaluation: dict) -> dict | None:
+        settings = self.get_settings()
+        if not settings.get('enabled'):
+            return None
+        if str((evaluation or {}).get('status') or '') != 'triggered':
+            return None
+
+        subscription = (evaluation or {}).get('subscription') or {}
+        event_payload = (evaluation or {}).get('event_payload') or {}
+        record_key = str(event_payload.get('record_key') or '').strip()
+        if not subscription or not record_key:
+            return None
+
+        return self._enqueue_notification_event(
+            subscription=subscription,
+            event_payload={
+                **event_payload,
+                'event_type': PERFORMANCE_EVENT_TYPE
+            },
+            record_key=record_key
+        )
+
     def build_delivery_payload(self, subscription: dict, event_payload: dict, record_key: str) -> dict:
         return {
             'subscription_id': int(subscription['id']),
@@ -215,6 +238,17 @@ class NotificationService:
                 'id': delivery_id
             }
 
+        return self._enqueue_notification_event(subscription, event_payload, record_key)
+
+    def _enqueue_notification_event(self, subscription: dict, event_payload: dict, record_key: str) -> dict:
+        delivery = self.db.get_notification_delivery(
+            int(subscription['id']),
+            str(subscription.get('event_type') or event_payload.get('event_type') or 'prediction_created'),
+            record_key
+        )
+        if delivery and delivery.get('status') == 'delivered':
+            return delivery
+
         endpoint_key = str(subscription.get('endpoint_key') or '').strip()
         if not endpoint_key:
             payload = self.build_delivery_payload(subscription, event_payload, record_key)
@@ -234,6 +268,11 @@ class NotificationService:
                 'status': 'failed',
                 'error_message': '当前仅支持 Telegram 渠道'
             })
+            delivery_id = self.db.upsert_notification_delivery(payload)
+            return self.db.get_notification_delivery(payload['subscription_id'], payload['event_type'], payload['record_key']) or {
+                **payload,
+                'id': delivery_id
+            }
         payload = self.build_delivery_payload(subscription, event_payload, record_key)
         payload.update({'status': 'pending'})
         delivery_id = self.db.upsert_notification_delivery(payload)
@@ -444,11 +483,30 @@ class NotificationService:
 
     def _build_message_text(self, subscription: dict, event_payload: dict, settings: dict, sender_context: dict | None = None) -> str:
         bot_name = str((sender_context or {}).get('bot_name') or settings.get('telegram_bot_name') or 'AITradingSimulator').strip() or 'AITradingSimulator'
-        lines = [f'[{bot_name}] 新预测通知']
+        event_type = str(event_payload.get('event_type') or subscription.get('event_type') or 'prediction_created').strip().lower()
+        title = '表现告警' if event_type == PERFORMANCE_EVENT_TYPE else '新预测通知'
+        lines = [f'[{bot_name}] {title}']
         lottery_type = str(event_payload.get('lottery_type') or '').strip().lower()
         lines.append(f"方案：{event_payload.get('predictor_name') or '--'}")
 
-        if lottery_type == 'jingcai_football':
+        if event_type == PERFORMANCE_EVENT_TYPE:
+            lines.append(f"规则：{event_payload.get('rule_name') or event_payload.get('rule_id') or '--'}")
+            lines.append(f"玩法：{event_payload.get('metric_label') or event_payload.get('metric') or '--'}")
+            lines.append(
+                f"窗口：最近 {event_payload.get('window_size') or '--'} 期，"
+                f"样本 {event_payload.get('sample_count') or 0} 条，"
+                f"命中 {event_payload.get('hit_count') or 0} 条"
+            )
+            lines.append(
+                f"命中率：{self._format_percent(event_payload.get('hit_rate'))}，"
+                f"{event_payload.get('operator_label') or '--'} {self._format_percent(event_payload.get('threshold'))}"
+            )
+            lines.append(f"最新结算期号：{event_payload.get('latest_issue') or '--'}")
+            lines.append(
+                f"断档：最大 {event_payload.get('max_missing_count') or 0} 期，"
+                f"累计 {event_payload.get('total_missing_count') or 0} 期"
+            )
+        elif lottery_type == 'jingcai_football':
             lines.append(f"批次：{event_payload.get('record_key') or '--'}")
             top_items = event_payload.get('top_items') or []
             if top_items:
@@ -610,6 +668,12 @@ class NotificationService:
         if parsed is None:
             return '--'
         return f'{parsed * 100:.1f}%'
+
+    def _format_percent(self, value) -> str:
+        parsed = self._parse_float(value)
+        if parsed is None:
+            return '--'
+        return f'{parsed:.2f}%'.replace('.00%', '%')
 
     def _display_value(self, value) -> str:
         if value in {None, ''}:

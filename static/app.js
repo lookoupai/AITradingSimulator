@@ -415,9 +415,13 @@ class PredictionApp {
         }
         this.bindEvent('saveNotificationSubscriptionBtn', 'click', () => this.submitNotificationSubscription());
         this.bindEvent('resetSubscriptionFormBtn', 'click', () => this.resetNotificationSubscriptionForm());
-        this.bindEvent('notificationSubscriptionPredictorId', 'change', () => this.syncSubscriptionBetProfileOptions());
+        this.bindEvent('notificationSubscriptionPredictorId', 'change', () => {
+            this.syncSubscriptionBetProfileOptions();
+            this.renderNotificationSubscriptionEventOptions();
+        });
         this.bindEvent('notificationSubscriptionSenderMode', 'change', () => this.syncSubscriptionSenderState());
         this.bindEvent('notificationSubscriptionDeliveryMode', 'change', () => this.syncSubscriptionBetProfileState());
+        this.bindEvent('notificationSubscriptionEventType', 'change', () => this.syncNotificationSubscriptionEventState());
         this.bindEvent('notificationSubscriptionsBody', 'click', (event) => this.handleNotificationSubscriptionTableClick(event));
         const notificationSubscriptionCards = this.getElement('notificationSubscriptionsCards');
         if (notificationSubscriptionCards) {
@@ -1140,10 +1144,12 @@ class PredictionApp {
             this.renderNotificationSubscriptions(this.notificationSubscriptions);
             this.renderNotificationDeliveries(this.notificationDeliveries);
             this.renderSubscriptionPredictorOptions();
+            this.renderNotificationSubscriptionEventOptions();
             this.renderNotificationSenderOptions();
             this.renderNotificationEndpointOptions();
             this.syncSubscriptionBetProfileOptions();
             this.syncSubscriptionSenderState();
+            this.syncNotificationSubscriptionEventState();
             this.syncBetProfileModeState();
         } catch (error) {
             console.error('Failed to load user settings:', error);
@@ -1807,16 +1813,25 @@ class PredictionApp {
         }
         document.getElementById('notificationSubscriptionId').value = '';
         this.renderSubscriptionPredictorOptions();
+        this.renderNotificationSubscriptionEventOptions();
         document.getElementById('notificationSubscriptionSenderMode').value = 'platform';
         this.renderNotificationSenderOptions();
         this.renderNotificationEndpointOptions();
         document.getElementById('notificationSubscriptionEventType').value = 'prediction_created';
         document.getElementById('notificationSubscriptionDeliveryMode').value = 'notify_only';
         document.getElementById('notificationSubscriptionConfidenceGte').value = '';
+        document.getElementById('notificationPerformanceMetric').value = 'big_small';
+        document.getElementById('notificationPerformanceWindow').value = '100';
+        document.getElementById('notificationPerformanceOperator').value = 'lt';
+        document.getElementById('notificationPerformanceThreshold').value = '40';
+        document.getElementById('notificationPerformanceMinSample').value = '100';
+        document.getElementById('notificationPerformanceInvalidateMissing').value = '3';
+        document.getElementById('notificationPerformanceCooldownIssues').value = '20';
         document.getElementById('notificationSubscriptionEnabled').value = 'true';
         this.syncSubscriptionBetProfileOptions();
         this.syncSubscriptionBetProfileState();
         this.syncSubscriptionSenderState();
+        this.syncNotificationSubscriptionEventState();
     }
 
     syncSubscriptionBetProfileOptions() {
@@ -1842,6 +1857,32 @@ class PredictionApp {
         this.syncSubscriptionBetProfileState();
     }
 
+    getSelectedSubscriptionPredictor() {
+        const predictorSelect = this.getElement('notificationSubscriptionPredictorId');
+        const predictorId = Number(predictorSelect?.value || 0);
+        return (this.predictors || []).find((item) => item.id === predictorId) || this.currentPredictor || null;
+    }
+
+    renderNotificationSubscriptionEventOptions(preferredValue = null) {
+        const select = this.getElement('notificationSubscriptionEventType');
+        if (!select) {
+            return;
+        }
+        const predictor = this.getSelectedSubscriptionPredictor();
+        const lotteryType = predictor?.lottery_type || this.currentLotteryType || 'pc28';
+        const currentValue = preferredValue || select.value || 'prediction_created';
+        const options = [
+            { value: 'prediction_created', label: '预测生成' }
+        ];
+        if (lotteryType === 'pc28') {
+            options.push({ value: 'performance_threshold', label: '表现告警' });
+        }
+        select.innerHTML = options.map((item) => `<option value="${item.value}">${this.escapeHtml(item.label)}</option>`).join('');
+        const nextValue = options.some((item) => item.value === currentValue) ? currentValue : 'prediction_created';
+        select.value = nextValue;
+        this.syncNotificationSubscriptionEventState();
+    }
+
     syncSubscriptionBetProfileState() {
         const modeInput = this.getElement('notificationSubscriptionDeliveryMode');
         const betProfileSelect = this.getElement('notificationSubscriptionBetProfileId');
@@ -1858,6 +1899,59 @@ class PredictionApp {
                 betProfileSelect.value = firstAvailable.value;
             }
         }
+    }
+
+    syncNotificationSubscriptionEventState() {
+        const eventInput = this.getElement('notificationSubscriptionEventType');
+        const deliveryModeInput = this.getElement('notificationSubscriptionDeliveryMode');
+        const confidenceField = this.getElement('notificationPredictionConfidenceField');
+        const confidenceInput = this.getElement('notificationSubscriptionConfidenceGte');
+        const performancePanel = this.getElement('notificationPerformanceRulePanel');
+        const betProfileSelect = this.getElement('notificationSubscriptionBetProfileId');
+        if (!eventInput || !deliveryModeInput || !confidenceField || !confidenceInput || !performancePanel) {
+            return;
+        }
+
+        const isPerformanceEvent = (eventInput.value || 'prediction_created') === 'performance_threshold';
+        confidenceField.hidden = isPerformanceEvent;
+        performancePanel.hidden = !isPerformanceEvent;
+
+        if (isPerformanceEvent) {
+            confidenceInput.value = '';
+            deliveryModeInput.value = 'notify_only';
+            deliveryModeInput.disabled = true;
+            if (betProfileSelect) {
+                betProfileSelect.value = '';
+            }
+        } else {
+            deliveryModeInput.disabled = false;
+        }
+        this.syncSubscriptionBetProfileState();
+    }
+
+    summarizePerformanceRule(rule) {
+        if (!rule) {
+            return '--';
+        }
+        const metricLabel = this.targetLabel(rule.metric || 'big_small', 'pc28');
+        const windowSize = Number(rule?.window?.size || 0) || '--';
+        const operatorLabelMap = {
+            lt: '低于',
+            lte: '低于或等于',
+            gt: '高于',
+            gte: '高于或等于',
+            eq: '等于'
+        };
+        const operator = operatorLabelMap[rule?.trigger?.operator || 'lt'] || (rule?.trigger?.operator || '--');
+        const threshold = rule?.trigger?.value ?? '--';
+        const invalidateMissingGte = rule?.validity?.invalidate_missing_gte ?? '--';
+        const cooldownIssues = rule?.cooldown?.issues ?? '--';
+        return `${metricLabel} 最近${windowSize}期 ${operator} ${threshold}% · 断档≥${invalidateMissingGte}期无效 · 冷却${cooldownIssues}期`;
+    }
+
+    getPrimaryPerformanceRule(item) {
+        const rules = Array.isArray(item?.filter?.rules) ? item.filter.rules : [];
+        return rules[0] || null;
     }
 
     syncSubscriptionSenderState() {
@@ -1933,16 +2027,24 @@ class PredictionApp {
                         <div>${this.escapeHtml(item.sender_mode === 'user_sender' ? (item.sender_account_name || '--') : '平台机器人')}</div>
                     </div>
                     <div class="detail-row">
-                        <span class="detail-label">模式</span>
-                        <div>${this.escapeHtml(item.delivery_mode_label || '--')}</div>
+                        <span class="detail-label">事件</span>
+                        <div>${this.escapeHtml(item.event_label || '--')} · ${this.escapeHtml(item.delivery_mode_label || '--')}</div>
                     </div>
                     <div class="detail-row">
-                        <span class="detail-label">下注策略</span>
-                        <div>${this.escapeHtml(item.bet_profile_name || '未绑定')}</div>
+                        <span class="detail-label">规则</span>
+                        <div>${this.escapeHtml(
+                            item.event_type === 'performance_threshold'
+                                ? this.summarizePerformanceRule(this.getPrimaryPerformanceRule(item))
+                                : (item.bet_profile_name || '未绑定')
+                        )}</div>
                     </div>
                     <div class="detail-row">
-                        <span class="detail-label">最低置信度</span>
-                        <div>${this.escapeHtml(String((item.filter || {}).confidence_gte ?? '未设置'))}</div>
+                        <span class="detail-label">过滤条件</span>
+                        <div>${this.escapeHtml(
+                            item.event_type === 'performance_threshold'
+                                ? `当前规则数 ${(item.filter?.rules || []).length || 0}`
+                                : String((item.filter || {}).confidence_gte ?? '未设置')
+                        )}</div>
                     </div>
                 </div>
             </article>
@@ -1974,8 +2076,12 @@ class PredictionApp {
                 </td>
                 <td>${this.escapeHtml(item.endpoint_label || '--')}</td>
                 <td>${this.escapeHtml(item.sender_mode === 'user_sender' ? (item.sender_account_name || '--') : '平台机器人')}</td>
-                <td>${this.escapeHtml(item.delivery_mode_label || '--')}</td>
-                <td>${this.escapeHtml(item.bet_profile_name || '--')}</td>
+                <td>${this.escapeHtml(`${item.event_label || '--'} / ${item.delivery_mode_label || '--'}`)}</td>
+                <td>${this.escapeHtml(
+                    item.event_type === 'performance_threshold'
+                        ? this.summarizePerformanceRule(this.getPrimaryPerformanceRule(item))
+                        : (item.bet_profile_name || '--')
+                )}</td>
                 <td><span class="status-chip ${item.enabled ? 'enabled' : 'disabled'}">${item.enabled ? '启用' : '停用'}</span></td>
                 <td>
                     <div class="predictor-actions">
@@ -1992,9 +2098,23 @@ class PredictionApp {
                 sections: [
                     { label: '接收端', content: this.escapeHtml(item.endpoint_label || '--') },
                     { label: '发送方', content: this.escapeHtml(item.sender_mode === 'user_sender' ? (item.sender_account_name || '--') : '平台机器人') },
-                    { label: '模式', content: this.escapeHtml(item.delivery_mode_label || '--') },
-                    { label: '下注策略', content: this.escapeHtml(item.bet_profile_name || '--') },
-                    { label: '最低置信度', content: this.escapeHtml(String((item.filter || {}).confidence_gte ?? '--')) }
+                    { label: '事件/模式', content: this.escapeHtml(`${item.event_label || '--'} / ${item.delivery_mode_label || '--'}`) },
+                    {
+                        label: item.event_type === 'performance_threshold' ? '规则' : '下注策略',
+                        content: this.escapeHtml(
+                            item.event_type === 'performance_threshold'
+                                ? this.summarizePerformanceRule(this.getPrimaryPerformanceRule(item))
+                                : (item.bet_profile_name || '--')
+                        )
+                    },
+                    {
+                        label: item.event_type === 'performance_threshold' ? '规则数' : '最低置信度',
+                        content: this.escapeHtml(
+                            item.event_type === 'performance_threshold'
+                                ? String((item.filter?.rules || []).length || 0)
+                                : String((item.filter || {}).confidence_gte ?? '--')
+                        )
+                    }
                 ],
                 footer: `
                     <div class="predictor-actions">
@@ -2032,14 +2152,24 @@ class PredictionApp {
         document.getElementById('notificationSubscriptionId').value = String(item.id);
         this.renderSubscriptionPredictorOptions();
         document.getElementById('notificationSubscriptionPredictorId').value = String(item.predictor_id);
+        this.renderNotificationSubscriptionEventOptions(item.event_type || 'prediction_created');
         document.getElementById('notificationSubscriptionSenderMode').value = item.sender_mode || 'platform';
         this.renderNotificationSenderOptions();
         document.getElementById('notificationSubscriptionSenderAccountId').value = item.sender_account_id ? String(item.sender_account_id) : '';
         this.renderNotificationEndpointOptions();
         document.getElementById('notificationSubscriptionEndpointId').value = String(item.endpoint_id);
         document.getElementById('notificationSubscriptionEventType').value = item.event_type || 'prediction_created';
+        this.syncNotificationSubscriptionEventState();
         document.getElementById('notificationSubscriptionDeliveryMode').value = item.delivery_mode || 'notify_only';
         document.getElementById('notificationSubscriptionConfidenceGte').value = (item.filter || {}).confidence_gte ?? '';
+        const primaryRule = this.getPrimaryPerformanceRule(item);
+        document.getElementById('notificationPerformanceMetric').value = primaryRule?.metric || 'big_small';
+        document.getElementById('notificationPerformanceWindow').value = String(primaryRule?.window?.size ?? 100);
+        document.getElementById('notificationPerformanceOperator').value = primaryRule?.trigger?.operator || 'lt';
+        document.getElementById('notificationPerformanceThreshold').value = String(primaryRule?.trigger?.value ?? 40);
+        document.getElementById('notificationPerformanceMinSample').value = String(primaryRule?.validity?.min_sample_count ?? 100);
+        document.getElementById('notificationPerformanceInvalidateMissing').value = String(primaryRule?.validity?.invalidate_missing_gte ?? 3);
+        document.getElementById('notificationPerformanceCooldownIssues').value = String(primaryRule?.cooldown?.issues ?? 20);
         document.getElementById('notificationSubscriptionEnabled').value = item.enabled ? 'true' : 'false';
         this.syncSubscriptionBetProfileOptions();
         document.getElementById('notificationSubscriptionBetProfileId').value = item.bet_profile_id ? String(item.bet_profile_id) : '';
@@ -2050,6 +2180,7 @@ class PredictionApp {
     async submitNotificationSubscription() {
         const subscriptionId = document.getElementById('notificationSubscriptionId').value;
         const confidenceGteText = document.getElementById('notificationSubscriptionConfidenceGte').value.trim();
+        const eventType = document.getElementById('notificationSubscriptionEventType').value || 'prediction_created';
         const payload = {
             predictor_id: Number(document.getElementById('notificationSubscriptionPredictorId').value || 0),
             endpoint_id: Number(document.getElementById('notificationSubscriptionEndpointId').value || 0),
@@ -2060,12 +2191,33 @@ class PredictionApp {
             bet_profile_id: document.getElementById('notificationSubscriptionBetProfileId').value
                 ? Number(document.getElementById('notificationSubscriptionBetProfileId').value)
                 : null,
-            event_type: document.getElementById('notificationSubscriptionEventType').value || 'prediction_created',
+            event_type: eventType,
             delivery_mode: document.getElementById('notificationSubscriptionDeliveryMode').value || 'notify_only',
             enabled: document.getElementById('notificationSubscriptionEnabled').value === 'true',
             filter: {}
         };
-        if (confidenceGteText !== '') {
+        if (eventType === 'performance_threshold') {
+            payload.filter.rules = [{
+                metric: document.getElementById('notificationPerformanceMetric').value || 'big_small',
+                window: {
+                    type: 'settled_metric_samples',
+                    size: Number(document.getElementById('notificationPerformanceWindow').value || 100)
+                },
+                validity: {
+                    min_sample_count: Number(document.getElementById('notificationPerformanceMinSample').value || 100),
+                    invalidate_missing_gte: Number(document.getElementById('notificationPerformanceInvalidateMissing').value || 3),
+                    require_numeric_issue: true
+                },
+                trigger: {
+                    field: 'hit_rate',
+                    operator: document.getElementById('notificationPerformanceOperator').value || 'lt',
+                    value: Number(document.getElementById('notificationPerformanceThreshold').value || 40)
+                },
+                cooldown: {
+                    issues: Number(document.getElementById('notificationPerformanceCooldownIssues').value || 20)
+                }
+            }];
+        } else if (confidenceGteText !== '') {
             payload.filter.confidence_gte = Number(confidenceGteText);
         }
         const url = subscriptionId ? `/api/notification-subscriptions/${subscriptionId}` : '/api/notification-subscriptions';
