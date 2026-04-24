@@ -57,6 +57,15 @@ from utils.pc28 import (
     normalize_injection_mode,
     normalize_share_level
 )
+from utils.predictor_engine import (
+    get_algorithm_label,
+    get_algorithm_description,
+    get_engine_type_label,
+    normalize_algorithm_key,
+    normalize_engine_type,
+    resolve_execution_description,
+    resolve_execution_label
+)
 from utils.timezone import get_current_beijing_time_str, utc_to_beijing
 
 
@@ -269,6 +278,10 @@ def _serialize_predictor(predictor: dict) -> dict:
     default_profit_rule_id = profit_simulator.get_default_rule_id(predictor) if supports_profit_simulation(lottery_type) else ''
     default_profit_period_key = profit_simulator.get_default_period_key(predictor) if supports_profit_simulation(lottery_type) else ''
     runtime_status, runtime_status_label = _resolve_predictor_runtime_status(predictor)
+    engine_type = normalize_engine_type(predictor.get('engine_type'))
+    algorithm_key = normalize_algorithm_key(lottery_type, engine_type, predictor.get('algorithm_key'))
+    algorithm_label = get_algorithm_label(lottery_type, engine_type, algorithm_key)
+    algorithm_description = get_algorithm_description(lottery_type, engine_type, algorithm_key)
     data = {
         'id': predictor['id'],
         'user_id': predictor['user_id'],
@@ -277,6 +290,23 @@ def _serialize_predictor(predictor: dict) -> dict:
         'lottery_label': lottery_definition.label,
         'api_url': predictor['api_url'],
         'model_name': predictor['model_name'],
+        'engine_type': engine_type,
+        'engine_type_label': get_engine_type_label(engine_type),
+        'algorithm_key': algorithm_key,
+        'algorithm_label': algorithm_label,
+        'algorithm_description': algorithm_description,
+        'execution_label': resolve_execution_label({
+            **predictor,
+            'engine_type': engine_type,
+            'algorithm_key': algorithm_key,
+            'algorithm_label': algorithm_label
+        }),
+        'execution_description': resolve_execution_description({
+            **predictor,
+            'engine_type': engine_type,
+            'algorithm_key': algorithm_key,
+            'algorithm_label': algorithm_label
+        }),
         'api_mode': predictor.get('api_mode') or 'auto',
         'primary_metric': predictor.get('primary_metric') or (lottery_definition.primary_metric_options[0][0] if lottery_definition.primary_metric_options else ''),
         'primary_metric_label': get_target_label(lottery_type, predictor.get('primary_metric') or ''),
@@ -834,12 +864,33 @@ def _serialize_admin_predictor(item: dict) -> dict:
     lottery_type = normalize_lottery_type(item.get('lottery_type'))
     default_profit_rule_id = profit_simulator.get_default_rule_id(lottery_type=lottery_type) if supports_profit_simulation(lottery_type) else ''
     runtime_status, runtime_status_label = _resolve_predictor_runtime_status(item)
+    engine_type = normalize_engine_type(item.get('engine_type'))
+    algorithm_key = normalize_algorithm_key(lottery_type, engine_type, item.get('algorithm_key'))
+    algorithm_label = get_algorithm_label(lottery_type, engine_type, algorithm_key)
+    algorithm_description = get_algorithm_description(lottery_type, engine_type, algorithm_key)
     return {
         'id': item['id'],
         'user_id': item['user_id'],
         'username': item.get('username'),
         'name': item['name'],
         'model_name': item.get('model_name'),
+        'engine_type': engine_type,
+        'engine_type_label': get_engine_type_label(engine_type),
+        'algorithm_key': algorithm_key,
+        'algorithm_label': algorithm_label,
+        'algorithm_description': algorithm_description,
+        'execution_label': resolve_execution_label({
+            **item,
+            'engine_type': engine_type,
+            'algorithm_key': algorithm_key,
+            'algorithm_label': algorithm_label
+        }),
+        'execution_description': resolve_execution_description({
+            **item,
+            'engine_type': engine_type,
+            'algorithm_key': algorithm_key,
+            'algorithm_label': algorithm_label
+        }),
         'primary_metric': item.get('primary_metric'),
         'primary_metric_label': get_target_label(lottery_type, item.get('primary_metric')),
         'profit_default_metric': item.get('profit_default_metric') or item.get('primary_metric'),
@@ -1546,6 +1597,8 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     lottery_definition = get_lottery_definition(lottery_type)
 
     fallback_name = existing_predictor.get('name') if existing_predictor else ''
+    fallback_engine_type = existing_predictor.get('engine_type') if existing_predictor else 'ai'
+    fallback_algorithm_key = existing_predictor.get('algorithm_key') if existing_predictor else ''
     fallback_api_url = existing_predictor.get('api_url') if existing_predictor else ''
     fallback_model_name = existing_predictor.get('model_name') if existing_predictor else ''
     fallback_api_mode = existing_predictor.get('api_mode') if existing_predictor else 'auto'
@@ -1558,6 +1611,12 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
     fallback_injection_mode = existing_predictor.get('data_injection_mode') if existing_predictor else 'summary'
 
     name = str(data.get('name') or fallback_name).strip()
+    engine_type = normalize_engine_type(data.get('engine_type') or fallback_engine_type)
+    algorithm_key = normalize_algorithm_key(
+        lottery_type,
+        engine_type,
+        data.get('algorithm_key') or fallback_algorithm_key
+    )
     api_key = str(data.get('api_key') or '').strip()
     api_url = str(data.get('api_url') or fallback_api_url).strip()
     model_name = str(data.get('model_name') or fallback_model_name).strip()
@@ -1581,16 +1640,19 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
         errors.append('方案名称不能为空')
 
     if existing_predictor is None and not api_key:
-        errors.append('API Key 不能为空')
+        if engine_type == 'ai':
+            errors.append('API Key 不能为空')
 
     if existing_predictor is not None and not api_key:
         api_key = existing_predictor.get('api_key', '')
 
-    if not api_url:
+    if engine_type == 'ai' and not api_url:
         errors.append('API 地址不能为空')
 
-    if not model_name:
+    if engine_type == 'ai' and not model_name:
         errors.append('模型名称不能为空')
+    if engine_type == 'machine' and not algorithm_key:
+        errors.append('机器算法不能为空')
 
     if primary_metric not in prediction_targets:
         errors.append('主玩法必须包含在预测目标中')
@@ -1613,6 +1675,8 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
 
     payload = {
         'name': name,
+        'engine_type': engine_type,
+        'algorithm_key': algorithm_key,
         'api_key': api_key,
         'api_url': api_url,
         'model_name': model_name,
@@ -1815,6 +1879,8 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
         existing = db.get_predictor(predictor_id, include_secret=True)
 
     fallback_name = existing.get('name') if existing else ''
+    fallback_engine_type = existing.get('engine_type') if existing else 'ai'
+    fallback_algorithm_key = existing.get('algorithm_key') if existing else ''
     fallback_api_url = existing.get('api_url') if existing else ''
     fallback_model_name = existing.get('model_name') if existing else ''
     fallback_api_mode = existing.get('api_mode') if existing else 'auto'
@@ -1840,6 +1906,12 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
         'predictor_id': predictor_id,
         'name': str(data.get('name') or fallback_name).strip(),
         'lottery_type': lottery_type,
+        'engine_type': normalize_engine_type(data.get('engine_type') or fallback_engine_type),
+        'algorithm_key': normalize_algorithm_key(
+            lottery_type,
+            data.get('engine_type') or fallback_engine_type,
+            data.get('algorithm_key') or fallback_algorithm_key
+        ),
         'api_key': str(data.get('api_key') or '').strip() or (existing.get('api_key') if existing else ''),
         'api_url': str(data.get('api_url') or fallback_api_url).strip(),
         'model_name': str(data.get('model_name') or fallback_model_name).strip(),
@@ -2832,7 +2904,9 @@ def create_predictor():
         history_window=payload['history_window'],
         temperature=payload['temperature'],
         enabled=payload['enabled'],
-        lottery_type=payload['lottery_type']
+        lottery_type=payload['lottery_type'],
+        engine_type=payload['engine_type'],
+        algorithm_key=payload['algorithm_key']
     )
 
     predictor = db.get_predictor(predictor_id, include_secret=True)
@@ -2857,6 +2931,23 @@ def test_predictor():
     api_url = resolved['api_url']
     model_name = resolved['model_name']
     api_mode = resolved['api_mode']
+    engine_type = normalize_engine_type(resolved.get('engine_type'))
+
+    if engine_type == 'machine':
+        algorithm_label = get_algorithm_label(
+            resolved['lottery_type'],
+            engine_type,
+            resolved.get('algorithm_key')
+        )
+        return jsonify({
+            'message': '内置机器算法检查通过',
+            'api_mode': None,
+            'response_model': algorithm_label,
+            'finish_reason': 'builtin_machine',
+            'latency_ms': 0,
+            'response_preview': f'当前方案将使用 {algorithm_label}，无需 API 连通性测试。',
+            'raw_response': ''
+        })
 
     if not api_key:
         return jsonify({'error': '请填写 API Key，或在编辑已有方案时使用已保存的 Key'}), 400
@@ -2899,6 +2990,20 @@ def check_predictor_prompt():
     except PermissionError as exc:
         return jsonify({'error': str(exc)}), 403
 
+    if normalize_engine_type(resolved.get('engine_type')) != 'ai':
+        return jsonify({
+            'risk_level': 'low',
+            'summary': '当前方案使用内置机器算法，不依赖提示词与模型调用。',
+            'issues': [],
+            'detected_placeholders': [],
+            'unknown_placeholders': [],
+            'recommended_variables': [],
+            'recommended_snippets': [],
+            'prediction_targets': resolved['prediction_targets'],
+            'data_injection_mode': resolved['data_injection_mode'],
+            'primary_metric': resolved['primary_metric']
+        })
+
     if not supports_prompt_assistant(resolved['lottery_type']):
         return jsonify({
             'risk_level': 'low',
@@ -2933,6 +3038,9 @@ def optimize_predictor_prompt():
         _, resolved = _resolve_predictor_form_context(user_id, data)
     except PermissionError as exc:
         return jsonify({'error': str(exc)}), 403
+
+    if normalize_engine_type(resolved.get('engine_type')) != 'ai':
+        return jsonify({'error': '当前方案使用内置机器算法，不支持提示词优化'}), 400
 
     if not supports_prompt_assistant(resolved['lottery_type']):
         return jsonify({'error': '当前彩种暂不支持内置 AI 提示词优化'}), 400
@@ -2997,6 +3105,9 @@ def build_predictor_prompt_template():
     except PermissionError as exc:
         return jsonify({'error': str(exc)}), 403
 
+    if normalize_engine_type(resolved.get('engine_type')) != 'ai':
+        return jsonify({'error': '当前方案使用内置机器算法，不需要生成网页 AI 提示词模板'}), 400
+
     return jsonify({
         'prompt_template': build_external_prompt_template(resolved, lottery_type=resolved['lottery_type'])
     })
@@ -3020,6 +3131,8 @@ def update_predictor(predictor_id: int):
 
     updates = {
         'name': payload['name'],
+        'engine_type': payload['engine_type'],
+        'algorithm_key': payload['algorithm_key'],
         'api_key': payload['api_key'],
         'api_url': payload['api_url'],
         'model_name': payload['model_name'],

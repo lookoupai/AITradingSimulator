@@ -8,8 +8,10 @@ from typing import Optional
 
 import config
 from ai_trader import AIPredictor
+from services import machine_prediction
 from services.prediction_guard import AIPredictionError, PredictionGuardService
 from utils.pc28 import next_issue_no, normalize_target_list
+from utils.predictor_engine import uses_ai_engine
 from utils.timezone import get_current_utc_time_str
 
 
@@ -223,19 +225,21 @@ class PredictionEngine:
             else:
                 return existing_prediction
 
-        predictor_client = AIPredictor(
-            api_key=predictor['api_key'],
-            api_url=predictor['api_url'],
-            model_name=predictor['model_name'],
-            api_mode=predictor.get('api_mode', 'auto'),
-            temperature=predictor['temperature']
-        )
-
         prompt_snapshot = ''
         raw_response = ''
         normalized_targets = normalize_target_list(predictor.get('prediction_targets'))
         try:
-            prediction, raw_response, prompt_snapshot = predictor_client.predict_next_issue(context, predictor)
+            if uses_ai_engine(predictor):
+                predictor_client = AIPredictor(
+                    api_key=predictor['api_key'],
+                    api_url=predictor['api_url'],
+                    model_name=predictor['model_name'],
+                    api_mode=predictor.get('api_mode', 'auto'),
+                    temperature=predictor['temperature']
+                )
+                prediction, raw_response, prompt_snapshot = predictor_client.predict_next_issue(context, predictor)
+            else:
+                prediction, raw_response, prompt_snapshot = machine_prediction.predict_pc28(context, predictor)
             payload = {
                 'predictor_id': predictor['id'],
                 'lottery_type': predictor.get('lottery_type', 'pc28'),
@@ -262,7 +266,7 @@ class PredictionEngine:
                 'settled_at': None
             }
             self.db.upsert_prediction(payload)
-            if self.prediction_guard:
+            if self.prediction_guard and uses_ai_engine(predictor):
                 self.prediction_guard.record_success(predictor['id'])
             saved = self.db.get_prediction_by_issue(predictor['id'], issue_no) or payload
             if self.notification_service and saved.get('status') == 'pending':
@@ -301,7 +305,7 @@ class PredictionEngine:
                 'settled_at': None
             }
             self.db.upsert_prediction(payload)
-            if auto_mode and getattr(exc, 'category', '') != 'deadline':
+            if auto_mode and uses_ai_engine(predictor) and getattr(exc, 'category', '') != 'deadline':
                 self.prediction_guard.record_ai_failure(
                     predictor['id'],
                     exc,

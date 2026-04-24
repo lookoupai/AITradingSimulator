@@ -10,6 +10,7 @@ import requests
 
 from ai_trader import AIPredictor
 import config
+from services import machine_prediction
 from services.prediction_guard import AIPredictionError, PredictionGuardService
 from utils import jingcai_football as football_utils
 from utils.jingcai_sources import (
@@ -20,6 +21,7 @@ from utils.jingcai_sources import (
     build_sina_detail_params,
     build_sina_match_list_params
 )
+from utils.predictor_engine import uses_ai_engine
 from utils.timezone import get_current_beijing_time, parse_beijing_time
 
 
@@ -482,22 +484,38 @@ class JingcaiFootballService:
             predictor.get('history_window') or 40
         )
         enriched_matches = self.enrich_matches_for_prediction(db, target_matches)
-        predictor_client = AIPredictor(
-            api_key=predictor['api_key'],
-            api_url=predictor['api_url'],
-            model_name=predictor['model_name'],
-            api_mode=predictor.get('api_mode', 'auto'),
-            temperature=predictor['temperature']
-        )
+        if uses_ai_engine(predictor):
+            predictor_client = AIPredictor(
+                api_key=predictor['api_key'],
+                api_url=predictor['api_url'],
+                model_name=predictor['model_name'],
+                api_mode=predictor.get('api_mode', 'auto'),
+                temperature=predictor['temperature']
+            )
 
-        batch_results = self._predict_in_batches(
-            predictor_client=predictor_client,
-            predictor=predictor,
-            run_key=run_key,
-            matches=enriched_matches,
-            history_matches=history_matches,
-            data_injection_mode=predictor.get('data_injection_mode') or 'summary'
-        )
+            batch_results = self._predict_in_batches(
+                predictor_client=predictor_client,
+                predictor=predictor,
+                run_key=run_key,
+                matches=enriched_matches,
+                history_matches=history_matches,
+                data_injection_mode=predictor.get('data_injection_mode') or 'summary'
+            )
+        else:
+            items_payload, raw_response, prompt_snapshot = machine_prediction.predict_jingcai(
+                run_key,
+                enriched_matches,
+                predictor
+            )
+            batch_results = [{
+                'batch_label': 'machine.1',
+                'matches': enriched_matches,
+                'item_order_offset': 0,
+                'items_payload': items_payload,
+                'raw_response': raw_response,
+                'prompt_snapshot': prompt_snapshot,
+                'error_message': None
+            }]
         raw_response = self._compose_batch_trace(batch_results, field_name='raw_response')
         prompt_snapshot = self._compose_batch_trace(batch_results, field_name='prompt_snapshot')
         run_payload = {
@@ -576,8 +594,11 @@ class JingcaiFootballService:
             self._refresh_run_summary(db, run_id)
 
         if not pending_items:
-            failure = AIPredictionError(error_message or 'AI 未返回任何有效预测项', category='parse')
-            if auto_mode and self.prediction_guard:
+            failure_message = error_message or (
+                'AI 未返回任何有效预测项' if uses_ai_engine(predictor) else '机器算法未生成任何有效预测项'
+            )
+            failure = AIPredictionError(failure_message, category='parse')
+            if auto_mode and self.prediction_guard and uses_ai_engine(predictor):
                 self.prediction_guard.record_ai_failure(
                     predictor['id'],
                     failure,
@@ -585,7 +606,7 @@ class JingcaiFootballService:
                 )
             return db.get_prediction_run(run_id) or final_run_payload
 
-        if self.prediction_guard:
+        if self.prediction_guard and uses_ai_engine(predictor):
             self.prediction_guard.record_success(predictor['id'])
         saved = db.get_prediction_run(run_id) or final_run_payload
         if self.notification_service and saved.get('status') == 'pending' and not existing_run:

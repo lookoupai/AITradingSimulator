@@ -137,6 +137,23 @@ const LOTTERY_UI_CONFIG = {
             { key: 'pc28_netdisk', label: '加拿大28网盘：默认规则更直，13/14 正常赔付' },
             { key: 'pc28_high', label: '加拿大28高倍：大小单双/组合命中且遇特殊号时退本金' }
         ],
+        machineAlgorithms: [
+            {
+                key: 'pc28_frequency_v1',
+                label: '频次趋势 V1',
+                description: '基于最近开奖的加权频次、遗漏和组合偏好做 deterministic 预测。'
+            },
+            {
+                key: 'pc28_omission_reversion_v1',
+                label: '遗漏回补 V1',
+                description: '更重视和值遗漏、冷热切换和组合回补，适合偏反转风格。'
+            },
+            {
+                key: 'pc28_combo_markov_v1',
+                label: '组合马尔可夫 V1',
+                description: '按大单/大双/小单/小双的历史转移关系预测下一组合，再反推和值。'
+            }
+        ],
         defaultPrimaryMetric: 'big_small',
         targetHint: '单点固定开启，号码是主预测结果；大/小、单/双、组合投注围绕号码展开。'
     },
@@ -161,6 +178,28 @@ const LOTTERY_UI_CONFIG = {
         ],
         profitRuleOptions: [
             { key: 'jingcai_snapshot', label: '竞彩足球赔率快照：按预测批次落库赔率做收益模拟' }
+        ],
+        machineAlgorithms: [
+            {
+                key: 'football_odds_baseline_v1',
+                label: '赔率基线 V1',
+                description: '按市场赔率隐含概率输出胜平负与让球胜平负，不依赖 LLM。'
+            },
+            {
+                key: 'football_odds_form_weighted_v1',
+                label: '赔率+状态加权 V1',
+                description: '在赔率基线上叠加近期战绩、积分排名、伤停和欧赔变动做稳健修正。'
+            },
+            {
+                key: 'football_handicap_consistency_v1',
+                label: '让球一致性 V1',
+                description: '更重视让球方向、SPF 与 RQSPF 一致性，以及欧赔/亚盘共振。'
+            },
+            {
+                key: 'football_value_edge_v1',
+                label: '价值优势 V1',
+                description: '按模型概率相对赔率隐含概率的 edge/EV 筛选，过滤低赔率热门。'
+            }
         ],
         defaultPrimaryMetric: 'spf',
         targetHint: '竞彩足球支持胜平负与让球胜平负预测；收益模拟会基于预测批次赔率快照计算单关与默认二串一。'
@@ -189,6 +228,8 @@ class PredictionApp {
         this.notificationDeliveries = [];
         this.currentLotteryType = 'pc28';
         this.formLotteryType = 'pc28';
+        this.selectedPredictorEngineFilter = 'all';
+        this.selectedPredictorStyleFilter = 'all';
         this.formStateByLottery = this.buildInitialFormStateByLottery();
         this.currentPredictions = [];
         this.currentStats = null;
@@ -303,6 +344,15 @@ class PredictionApp {
         this.bindEvent('footballManualSettleBtn', 'click', () => this.manualSettleFootball());
         this.bindEvent('footballReplayBtn', 'click', () => this.replayFootballScheduleByDate());
         this.bindEvent('togglePresetListBtn', 'click', () => this.togglePresetList());
+        this.bindEvent('predictorEngineFilter', 'change', (event) => {
+            this.selectedPredictorEngineFilter = event.target.value || 'all';
+            this.syncPredictorStyleFilterOptions();
+            this.renderPredictorList(this.getFilteredPredictors());
+        });
+        this.bindEvent('predictorStyleFilter', 'change', (event) => {
+            this.selectedPredictorStyleFilter = event.target.value || 'all';
+            this.renderPredictorList(this.getFilteredPredictors());
+        });
         this.bindEvent('statsMetricView', 'change', (event) => {
             this.selectedStatsMetric = event.target.value;
             if (this.currentStats) {
@@ -314,6 +364,7 @@ class PredictionApp {
             this.formLotteryType = event.target.value || 'pc28';
             this.updateLotteryForm();
         });
+        this.bindEvent('engineType', 'change', () => this.updateLotteryForm());
         this.bindEvent('primaryMetric', 'change', () => this.syncProfitMetricOptions());
         ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo'].forEach((id) => {
             this.bindEvent(id, 'change', () => this.syncProfitMetricOptions());
@@ -549,6 +600,49 @@ class PredictionApp {
         return document.getElementById('lotteryType')?.value || this.formLotteryType || 'pc28';
     }
 
+    getFormEngineType() {
+        return document.getElementById('engineType')?.value || 'ai';
+    }
+
+    getMachineAlgorithmOptions(lotteryType = this.getFormLotteryType()) {
+        return this.getLotteryConfig(lotteryType).machineAlgorithms || [];
+    }
+
+    isMachineEngineSelected() {
+        return this.getFormEngineType() === 'machine';
+    }
+
+    syncMachineAlgorithmOptions(lotteryType = this.getFormLotteryType(), preferredValue = null) {
+        const select = document.getElementById('algorithmKey');
+        const hint = document.getElementById('algorithmHint');
+        if (!select) {
+            return;
+        }
+
+        const options = this.getMachineAlgorithmOptions(lotteryType);
+        if (!options.length) {
+            select.innerHTML = '<option value="">当前彩种暂无可用机器算法</option>';
+            select.disabled = true;
+            if (hint) {
+                hint.textContent = '当前彩种暂未提供内置机器算法。';
+            }
+            return;
+        }
+
+        select.innerHTML = options.map((item) => `
+            <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
+        `).join('');
+        select.disabled = false;
+        const nextValue = options.some((item) => item.key === preferredValue)
+            ? preferredValue
+            : options[0].key;
+        select.value = nextValue;
+        const selectedOption = options.find((item) => item.key === nextValue) || options[0];
+        if (hint) {
+            hint.textContent = selectedOption?.description || '选择当前方案要使用的内置机器算法。';
+        }
+    }
+
     getSelectedFormTargets() {
         return ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo']
             .map((id) => document.getElementById(id))
@@ -657,7 +751,9 @@ class PredictionApp {
         const hasSelectedPrimaryMetric = Object.prototype.hasOwnProperty.call(options, 'selectedPrimaryMetric');
         const hasSelectedProfitRuleId = Object.prototype.hasOwnProperty.call(options, 'selectedProfitRuleId');
         const hasSelectedProfitDefaultMetric = Object.prototype.hasOwnProperty.call(options, 'selectedProfitDefaultMetric');
+        const hasSelectedAlgorithmKey = Object.prototype.hasOwnProperty.call(options, 'selectedAlgorithmKey');
         const currentType = document.getElementById('lotteryType')?.value || this.formLotteryType || 'pc28';
+        const currentEngineType = this.getFormEngineType();
         this.formLotteryType = currentType;
         const config = this.getLotteryConfig(currentType);
         const nextState = {
@@ -704,17 +800,34 @@ class PredictionApp {
         document.getElementById('historyWindowLabel').textContent = config.historyWindowLabel || '历史窗口';
         document.getElementById('historyWindowHint').textContent = config.historyWindowHint || '';
         this.renderPrimaryMetricOptions(currentType, nextState.primaryMetric);
+        this.syncMachineAlgorithmOptions(
+            currentType,
+            hasSelectedAlgorithmKey
+                ? options.selectedAlgorithmKey
+                : (document.getElementById('algorithmKey')?.value || null)
+        );
 
         const showProfit = config.supportsProfitSimulation;
         document.getElementById('profitRuleField').style.display = showProfit ? '' : 'none';
         document.getElementById('profitMetricField').style.display = showProfit ? '' : 'none';
         document.getElementById('profitPanel').style.display = showProfit ? '' : 'none';
 
-        const showPromptAssistant = config.supportsPromptAssistant;
+        const showMachineAlgorithm = currentEngineType === 'machine';
+        const showPromptAssistant = config.supportsPromptAssistant && !showMachineAlgorithm;
+        const showPresets = config.supportsPresets && !showMachineAlgorithm;
+        document.getElementById('algorithmField').style.display = showMachineAlgorithm ? '' : 'none';
+        ['apiUrlField', 'modelNameField', 'apiModeField', 'apiKeyField', 'temperatureField', 'dataInjectionModeField', 'systemPromptField']
+            .forEach((id) => {
+                const element = document.getElementById(id);
+                if (element) {
+                    element.style.display = showMachineAlgorithm ? 'none' : '';
+                }
+            });
         document.getElementById('promptAssistantActions').style.display = showPromptAssistant ? 'flex' : 'none';
         document.getElementById('promptVariablesBlock').style.display = showPromptAssistant ? '' : 'none';
         document.getElementById('externalPromptBlock').style.display = showPromptAssistant ? '' : 'none';
-        document.getElementById('presetBlock').style.display = config.supportsPresets ? '' : 'none';
+        document.getElementById('presetBlock').style.display = showPresets ? '' : 'none';
+        document.getElementById('testPredictorBtn').textContent = showMachineAlgorithm ? '检查算法' : '测试模型';
 
         if (!showPromptAssistant) {
             this.hidePromptAssistantResult();
@@ -723,7 +836,7 @@ class PredictionApp {
         this.updatePromptVariableVisibility(currentType);
         this.updatePromptTemplateExample(currentType);
 
-        if (!config.supportsPresets) {
+        if (!showPresets) {
             document.getElementById('presetCards').innerHTML = '<div class="empty-panel">当前彩种暂未提供内置方案示例</div>';
             document.getElementById('togglePresetListBtn').style.display = 'none';
         } else {
@@ -1094,6 +1207,7 @@ class PredictionApp {
 
             const predictors = await response.json();
             this.predictors = predictors;
+            this.syncPredictorStyleFilterOptions();
 
             if (!predictors.length) {
                 this.currentPredictorId = null;
@@ -1109,7 +1223,7 @@ class PredictionApp {
                 }
             }
 
-            this.renderPredictorList(predictors);
+            this.renderPredictorList(this.getFilteredPredictors());
         } catch (error) {
             console.error('Failed to load predictors:', error);
         }
@@ -2335,26 +2449,128 @@ class PredictionApp {
         }
     }
 
+    predictorStyleFilterKey(predictor) {
+        if (!predictor) {
+            return '';
+        }
+        if (predictor.engine_type === 'machine') {
+            return `machine:${predictor.algorithm_key || predictor.execution_label || predictor.id}`;
+        }
+        return `ai:${(predictor.prediction_method || predictor.execution_label || predictor.id || '').trim()}`;
+    }
+
+    predictorStyleFilterLabel(predictor) {
+        if (!predictor) {
+            return '--';
+        }
+        if (predictor.engine_type === 'machine') {
+            return `机器 / ${predictor.algorithm_label || predictor.execution_label || '--'}`;
+        }
+        return `AI / ${predictor.prediction_method || predictor.execution_label || '--'}`;
+    }
+
+    syncPredictorStyleFilterOptions() {
+        const select = this.getElement('predictorStyleFilter');
+        const engineSelect = this.getElement('predictorEngineFilter');
+        if (!select) {
+            return;
+        }
+
+        const predictors = (this.predictors || []).filter((predictor) => {
+            if (this.selectedPredictorEngineFilter === 'all') {
+                return true;
+            }
+            return (predictor.engine_type || 'ai') === this.selectedPredictorEngineFilter;
+        });
+        const optionMap = new Map();
+        predictors.forEach((predictor) => {
+            const key = this.predictorStyleFilterKey(predictor);
+            if (!key || optionMap.has(key)) {
+                return;
+            }
+            optionMap.set(key, this.predictorStyleFilterLabel(predictor));
+        });
+
+        const options = Array.from(optionMap.entries());
+        select.innerHTML = [
+            '<option value="all">全部风格</option>',
+            ...options.map(([value, label]) => `<option value="${this.escapeHtml(value)}">${this.escapeHtml(label)}</option>`)
+        ].join('');
+        if (!options.some(([value]) => value === this.selectedPredictorStyleFilter)) {
+            this.selectedPredictorStyleFilter = 'all';
+        }
+        select.value = this.selectedPredictorStyleFilter;
+        if (engineSelect) {
+            engineSelect.value = this.selectedPredictorEngineFilter;
+        }
+    }
+
+    getFilteredPredictors() {
+        return (this.predictors || []).filter((predictor) => {
+            const engineMatches = this.selectedPredictorEngineFilter === 'all'
+                || (predictor.engine_type || 'ai') === this.selectedPredictorEngineFilter;
+            if (!engineMatches) {
+                return false;
+            }
+            if (this.selectedPredictorStyleFilter === 'all') {
+                return true;
+            }
+            return this.predictorStyleFilterKey(predictor) === this.selectedPredictorStyleFilter;
+        });
+    }
+
+    renderPredictorFilterSummary(visiblePredictors) {
+        const summary = this.getElement('predictorFilterSummary');
+        if (!summary) {
+            return;
+        }
+        const total = (this.predictors || []).length;
+        const visibleCount = (visiblePredictors || []).length;
+        if (!total) {
+            summary.textContent = '当前没有可用方案';
+            return;
+        }
+        let text = `显示 ${visibleCount} / ${total} 个方案`;
+        const isCurrentHidden = Boolean(this.currentPredictorId)
+            && !(visiblePredictors || []).some((item) => item.id === this.currentPredictorId);
+        if (isCurrentHidden) {
+            text += '，当前已选方案被筛选隐藏';
+        }
+        summary.textContent = text;
+    }
+
     renderPredictorList(predictors) {
         const container = document.getElementById('predictorList');
+        this.renderPredictorFilterSummary(predictors);
         if (!predictors.length) {
-            container.innerHTML = '<div class="empty-panel">暂无预测方案</div>';
+            const hasAnyPredictor = Boolean((this.predictors || []).length);
+            container.innerHTML = hasAnyPredictor
+                ? '<div class="empty-panel">当前筛选条件下暂无预测方案</div>'
+                : '<div class="empty-panel">暂无预测方案</div>';
             return;
         }
 
         container.innerHTML = predictors.map((predictor) => {
             const status = this.predictorStatusMeta(predictor);
+            const styleDescription = this.predictorStyleDescription(predictor);
+            const engineBadge = `<span class="tag">${this.escapeHtml(this.predictorEngineLabel(predictor))}</span>`;
+            const executionBadge = predictor.engine_type === 'machine'
+                ? `<span class="tag">${this.escapeHtml(this.predictorExecutionLabel(predictor))}</span>`
+                : '';
             return `
                 <div class="predictor-item ${predictor.id === this.currentPredictorId ? 'active' : ''}" data-id="${predictor.id}">
                     <div class="predictor-head">
                         <div>
                             <div class="predictor-name">${this.escapeHtml(predictor.name)}</div>
-                            <div class="predictor-meta">${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</div>
+                            <div class="predictor-meta">${this.escapeHtml(this.predictorMetaLabel(predictor))}</div>
                         </div>
                         <span class="status-chip ${status.className}">${this.escapeHtml(status.label)}</span>
                     </div>
                     ${predictor.auto_paused ? `<div class="hint-text">${this.escapeHtml(`AI 连续失败 ${predictor.consecutive_ai_failures || 0} 次，已自动暂停`)}</div>` : ''}
+                    ${styleDescription ? `<div class="hint-text">${this.escapeHtml(styleDescription)}</div>` : ''}
                     <div class="predictor-tags">
+                        ${engineBadge}
+                        ${executionBadge}
                         ${(predictor.prediction_targets || []).map((target) => `<span class="tag">${this.escapeHtml(this.targetLabel(target, predictor.lottery_type || 'pc28'))}</span>`).join('')}
                     </div>
                     <div class="predictor-actions">
@@ -2567,7 +2783,7 @@ class PredictionApp {
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">当前方案</span>
-                    <strong>${this.escapeHtml(predictor.name || '--')} / ${this.escapeHtml(predictor.model_name || '--')}</strong>
+                    <strong>${this.escapeHtml(predictor.name || '--')} / ${this.escapeHtml(this.predictorExecutionLabel(predictor))}</strong>
                 </div>
             </div>
         `;
@@ -2794,11 +3010,12 @@ class PredictionApp {
                 <div class="summary-head">
                     <div>
                         <h4>${this.escapeHtml(predictor.name)}</h4>
-                        <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
+                        <p>${this.escapeHtml(this.predictorMetaLabel(predictor))}</p>
                     </div>
                     <div class="badge-row">${targetTags}</div>
                 </div>
                 ${this.renderPredictorGuardNotice(predictor)}
+                ${this.renderPredictorExecutionPanel(predictor)}
                 <p>当前尚无预测记录，点击“立即预测”或等待自动轮询。</p>
             `;
             return;
@@ -2829,7 +3046,7 @@ class PredictionApp {
             <div class="summary-head">
                 <div>
                     <h4>${this.escapeHtml(predictor.name)}</h4>
-                    <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
+                    <p>${this.escapeHtml(this.predictorMetaLabel(predictor))}</p>
                 </div>
                 <div class="badge-row">
                     ${targetTags}
@@ -2838,6 +3055,7 @@ class PredictionApp {
             </div>
             ${this.renderPredictorGuardNotice(predictor)}
             ${errorBlock}
+            ${this.renderPredictorExecutionPanel(predictor)}
             <div class="metric-hint prediction-note">
                 <div class="metric-hint-head">
                     <div>
@@ -2941,11 +3159,12 @@ class PredictionApp {
                 <div class="summary-head">
                     <div>
                         <h4>${this.escapeHtml(predictor.name)}</h4>
-                        <p>${this.escapeHtml(predictor.model_name)} · ${this.escapeHtml(predictor.prediction_method || '自定义策略')}</p>
+                        <p>${this.escapeHtml(this.predictorMetaLabel(predictor))}</p>
                     </div>
                     <div class="badge-row">${targetTags}</div>
                 </div>
                 ${this.renderPredictorGuardNotice(predictor)}
+                ${this.renderPredictorExecutionPanel(predictor)}
                 <p>当前尚无竞彩足球预测记录，点击“立即预测”后会按当前批次生成多场比赛预测。</p>
             `;
             return;
@@ -3055,6 +3274,7 @@ class PredictionApp {
                 </div>
                 ${this.renderPredictorGuardNotice(predictor)}
                 ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
+                ${this.renderPredictorExecutionPanel(predictor)}
                 ${saleNoticeBlock}
                 ${this.renderFootballFailedBatchSection(failedBatches)}
                 <div class="prediction-grid prediction-grid-compact">
@@ -4276,7 +4496,9 @@ class PredictionApp {
         document.getElementById('lotteryType').disabled = true;
         this.formLotteryType = data.lottery_type || 'pc28';
         document.getElementById('predictorName').value = data.name || '';
+        document.getElementById('engineType').value = data.engine_type || 'ai';
         document.getElementById('predictionMethod').value = data.prediction_method || '';
+        document.getElementById('algorithmKey').value = data.algorithm_key || '';
         document.getElementById('apiUrl').value = data.api_url || '';
         document.getElementById('modelName').value = data.model_name || '';
         document.getElementById('apiMode').value = data.api_mode || 'auto';
@@ -4291,7 +4513,8 @@ class PredictionApp {
             selectedPrimaryMetric: data.primary_metric || null,
             selectedProfitRuleId: data.profit_rule_id || this.getLotteryConfig(this.formLotteryType).defaultProfitRuleId,
             selectedProfitDefaultMetric: data.profit_default_metric || data.default_simulation_metric || this.getLotteryConfig(this.formLotteryType).defaultProfitMetric,
-            selectedHistoryWindow: data.history_window || 60
+            selectedHistoryWindow: data.history_window || 60,
+            selectedAlgorithmKey: data.algorithm_key || ''
         });
         document.getElementById('historyWindow').value = data.history_window || 60;
         this.clearExternalPromptTemplate();
@@ -4312,10 +4535,12 @@ class PredictionApp {
 
     resetForm() {
         document.getElementById('lotteryType').value = 'pc28';
+        document.getElementById('engineType').value = 'ai';
         this.formLotteryType = 'pc28';
         this.formStateByLottery = this.buildInitialFormStateByLottery();
         document.getElementById('predictorName').value = '';
         document.getElementById('predictionMethod').value = '';
+        document.getElementById('algorithmKey').value = 'pc28_frequency_v1';
         document.getElementById('apiUrl').value = '';
         document.getElementById('modelName').value = '';
         document.getElementById('apiMode').value = 'auto';
@@ -4331,7 +4556,8 @@ class PredictionApp {
             selectedPrimaryMetric: 'big_small',
             selectedProfitRuleId: 'pc28_netdisk',
             selectedProfitDefaultMetric: 'big_small',
-            selectedHistoryWindow: 60
+            selectedHistoryWindow: 60,
+            selectedAlgorithmKey: 'pc28_frequency_v1'
         });
         this.hideTestResult();
         this.hidePromptAssistantResult();
@@ -4426,6 +4652,8 @@ class PredictionApp {
 
         return {
             lottery_type: document.getElementById('lotteryType').value || 'pc28',
+            engine_type: document.getElementById('engineType').value || 'ai',
+            algorithm_key: document.getElementById('algorithmKey').value || '',
             name: document.getElementById('predictorName').value.trim(),
             prediction_method: document.getElementById('predictionMethod').value.trim(),
             api_url: document.getElementById('apiUrl').value.trim(),
@@ -4507,11 +4735,12 @@ class PredictionApp {
         const predictorId = document.getElementById('predictorId').value;
         const payload = this.collectFormData();
         payload.predictor_id = predictorId ? Number(predictorId) : null;
+        const isMachineEngine = payload.engine_type === 'machine';
 
         const button = document.getElementById('testPredictorBtn');
         button.disabled = true;
-        button.textContent = '测试中...';
-        this.showTestResult('info', '正在测试模型连通性，请稍候...');
+        button.textContent = isMachineEngine ? '检查中...' : '测试中...';
+        this.showTestResult('info', isMachineEngine ? '正在检查机器算法配置，请稍候...' : '正在测试模型连通性，请稍候...');
 
         try {
             const response = await fetch('/api/predictors/test', {
@@ -4531,7 +4760,7 @@ class PredictionApp {
             this.showTestResult('error', error.message);
         } finally {
             button.disabled = false;
-            button.textContent = '测试模型';
+            button.textContent = isMachineEngine ? '检查算法' : '测试模型';
         }
     }
 
@@ -5199,6 +5428,58 @@ class PredictionApp {
 
     targetLabel(target, lotteryType = this.currentLotteryType) {
         return this.metricMeta(target, lotteryType).label;
+    }
+
+    predictorExecutionLabel(predictor) {
+        if (!predictor) {
+            return '--';
+        }
+        return predictor.execution_label || predictor.algorithm_label || predictor.model_name || '--';
+    }
+
+    predictorEngineLabel(predictor) {
+        if (!predictor) {
+            return '--';
+        }
+        return predictor.engine_type_label || (predictor.engine_type === 'machine' ? '机器算法' : 'AI 模型');
+    }
+
+    predictorStyleDescription(predictor) {
+        if (!predictor) {
+            return '';
+        }
+        return predictor.execution_description || predictor.algorithm_description || '';
+    }
+
+    predictorMetaLabel(predictor) {
+        if (!predictor) {
+            return '--';
+        }
+        const engineLabel = this.predictorExecutionLabel(predictor);
+        const methodLabel = predictor.prediction_method || (predictor.engine_type === 'machine' ? '内置机器算法' : '自定义策略');
+        return `${engineLabel} · ${methodLabel}`;
+    }
+
+    renderPredictorExecutionPanel(predictor) {
+        if (!predictor) {
+            return '';
+        }
+        return `
+            <div class="prediction-section">
+                <div class="prediction-section-head">
+                    <div>
+                        <span class="mini-label">执行方式</span>
+                        <p class="section-hint">这里说明当前方案到底是模型驱动，还是内置机器算法驱动。</p>
+                    </div>
+                </div>
+                <div class="prediction-grid prediction-grid-compact">
+                    ${this.renderCurrentPredictionCard('执行引擎', this.predictorEngineLabel(predictor))}
+                    ${this.renderCurrentPredictionCard('核心方案', this.predictorExecutionLabel(predictor))}
+                    ${this.renderCurrentPredictionCard('风格说明', this.predictorStyleDescription(predictor) || '--')}
+                    ${this.renderCurrentPredictionCard('策略名', predictor.prediction_method || '--')}
+                </div>
+            </div>
+        `;
     }
 
     predictionStatusLabel(status) {

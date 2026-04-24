@@ -105,7 +105,9 @@ def create_predictor(
         'history_window': 20,
         'temperature': 0.3,
         'enabled': True,
-        'lottery_type': lottery_type
+        'lottery_type': lottery_type,
+        'engine_type': 'ai',
+        'algorithm_key': ''
     }
     defaults.update(overrides)
     return harness.db.create_predictor(user_id=user_id, **defaults)

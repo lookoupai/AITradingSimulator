@@ -81,6 +81,17 @@
                     <div class="panel-header compact">
                         <h3>预测方案</h3>
                     </div>
+                    <div class="panel-actions table-filters sidebar-filter-bar">
+                        <select id="predictorEngineFilter" class="home-select">
+                            <option value="all">全部引擎</option>
+                            <option value="ai">只看 AI</option>
+                            <option value="machine">只看机器算法</option>
+                        </select>
+                        <select id="predictorStyleFilter" class="home-select">
+                            <option value="all">全部风格</option>
+                        </select>
+                    </div>
+                    <div id="predictorFilterSummary" class="field-hint">显示全部方案</div>
                     <div id="predictorList" class="predictor-list">
                         <div class="empty-panel">暂无预测方案</div>
                     </div>
@@ -612,18 +623,31 @@
                     <input type="text" id="predictorName" placeholder="例如：Gemini 数学概率">
                 </label>
                 <label class="form-field">
+                    <span>执行引擎</span>
+                    <select id="engineType" class="form-input">
+                        <option value="ai">AI 模型</option>
+                        <option value="machine">机器算法</option>
+                    </select>
+                    <small class="field-hint">AI 模型适合提示词驱动；机器算法适合低成本稳定运行。</small>
+                </label>
+                <label class="form-field">
                     <span>预测方法</span>
                     <input type="text" id="predictionMethod" placeholder="例如：常规概率 / 小六爻">
                 </label>
-                <label class="form-field">
+                <label class="form-field span-2" id="algorithmField" style="display: none;">
+                    <span>机器算法</span>
+                    <select id="algorithmKey" class="form-input"></select>
+                    <small class="field-hint" id="algorithmHint">选择当前方案要使用的内置机器算法。</small>
+                </label>
+                <label class="form-field" id="apiUrlField">
                     <span>API 地址</span>
                     <input type="text" id="apiUrl" placeholder="https://api.deepseek.com">
                 </label>
-                <label class="form-field">
+                <label class="form-field" id="modelNameField">
                     <span>模型名称</span>
                     <input type="text" id="modelName" placeholder="deepseek-chat / gemini-2.5-flash">
                 </label>
-                <label class="form-field span-2">
+                <label class="form-field span-2" id="apiModeField">
                     <span>API 模式</span>
                     <select id="apiMode" class="form-input">
                         <option value="auto">自动：OpenAI 官方直连优先 Responses，第三方网关默认 Chat Completions</option>
@@ -632,7 +656,7 @@
                     </select>
                     <small class="field-hint">不确定时先用自动；如果是 DeepSeek、LongCat、Gemini 兼容网关，通常优先 Chat Completions。</small>
                 </label>
-                <label class="form-field span-2">
+                <label class="form-field span-2" id="apiKeyField">
                     <span>API Key</span>
                     <input type="password" id="apiKey" placeholder="编辑时留空表示保持原值">
                 </label>
@@ -641,11 +665,11 @@
                     <input type="number" id="historyWindow" min="10" max="200" value="60">
                     <small class="field-hint" id="historyWindowHint">PC28 按最近 N 期历史开奖构造上下文。</small>
                 </label>
-                <label class="form-field">
+                <label class="form-field" id="temperatureField">
                     <span>温度</span>
                     <input type="number" id="temperature" min="0" max="1" step="0.1" value="0.7">
                 </label>
-                <label class="form-field span-2">
+                <label class="form-field span-2" id="dataInjectionModeField">
                     <span>数据注入模式</span>
                     <select id="dataInjectionMode" class="form-input">
                         <option value="summary">摘要模式：自动注入开奖摘要、遗漏、今日统计</option>
@@ -703,7 +727,7 @@
                 <button type="button" class="btn ghost compact" id="togglePresetListBtn">查看更多示例</button>
             </div>
 
-            <label class="form-field">
+            <label class="form-field" id="systemPromptField">
                 <span>自定义提示词</span>
                 <textarea id="systemPrompt" rows="8" placeholder="例如：偏重小六爻解释；或仅使用统计学、遗漏、热冷号分析。"></textarea>
                 <small class="field-hint">支持直接写自然语言，也支持填入变量占位符。未写变量时，平台会按你选择的“数据注入模式”自动把数据放进上下文。</small>

@@ -276,7 +276,9 @@ a {
 
 .pc28-sidebar.sticky {
     align-self: start;
+    height: calc(100vh - 20px);
     max-height: calc(100vh - 20px);
+    overflow: hidden;
 }
 
 .sticky {
@@ -302,6 +304,21 @@ a {
     flex: 1;
     flex-direction: column;
     min-height: 0;
+    overflow: hidden;
+}
+
+.sidebar-filter-bar {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.sidebar-filter-bar .home-select {
+    min-height: 36px;
+    padding: 0 10px;
+    border-radius: 10px;
+    font-size: 13px;
 }
 
 .sidebar-overview-panel {
@@ -443,6 +460,9 @@ a {
 
 .sidebar-overview-panel .overview-panel {
     gap: 12px;
+    max-height: min(40vh, 420px);
+    overflow-y: auto;
+    padding-right: 4px;
 }
 
 .overview-primary,
@@ -1608,7 +1628,13 @@ a {
     }
 
     .pc28-sidebar.sticky {
+        height: auto;
         max-height: none;
+        overflow: visible;
+    }
+
+    .sidebar-filter-bar {
+        grid-template-columns: 1fr;
     }
 
     .sidebar-predictors-panel,

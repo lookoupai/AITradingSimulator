@@ -17,6 +17,14 @@ from lotteries.registry import (
     normalize_profit_rule
 )
 from utils.pc28 import derive_double_group, derive_kill_group
+from utils.predictor_engine import (
+    get_algorithm_label,
+    get_default_machine_algorithm,
+    get_engine_type_label,
+    normalize_algorithm_key,
+    normalize_engine_type,
+    resolve_execution_label
+)
 
 
 class Database:
@@ -52,6 +60,8 @@ class Database:
                 user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 lottery_type TEXT NOT NULL DEFAULT 'pc28',
+                engine_type TEXT NOT NULL DEFAULT 'ai',
+                algorithm_key TEXT NOT NULL DEFAULT '',
                 api_key TEXT NOT NULL,
                 api_url TEXT NOT NULL,
                 model_name TEXT NOT NULL,
@@ -462,6 +472,14 @@ class Database:
         except Exception:
             pass
         try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN engine_type TEXT NOT NULL DEFAULT 'ai'")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN algorithm_key TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+        try:
             cursor.execute("ALTER TABLE predictors ADD COLUMN data_injection_mode TEXT NOT NULL DEFAULT 'summary'")
         except Exception:
             pass
@@ -588,25 +606,35 @@ class Database:
         history_window: int,
         temperature: float,
         enabled: bool,
-        lottery_type: str = 'pc28'
+        lottery_type: str = 'pc28',
+        engine_type: str = 'ai',
+        algorithm_key: str = ''
     ) -> int:
         normalized_lottery_type = normalize_lottery_type(lottery_type)
+        normalized_engine_type = normalize_engine_type(engine_type)
         normalized_targets = normalize_prediction_targets(normalized_lottery_type, prediction_targets)
+        normalized_algorithm_key = normalize_algorithm_key(
+            normalized_lottery_type,
+            normalized_engine_type,
+            algorithm_key
+        )
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
             '''
             INSERT INTO predictors (
-                user_id, name, lottery_type, api_key, api_url, model_name, api_mode, primary_metric, profit_default_metric, profit_rule_id, share_predictions, share_level,
+                user_id, name, lottery_type, engine_type, algorithm_key, api_key, api_url, model_name, api_mode, primary_metric, profit_default_metric, profit_rule_id, share_predictions, share_level,
                 prediction_method, system_prompt, data_injection_mode,
                 prediction_targets, history_window, temperature, enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 user_id,
                 name,
                 normalized_lottery_type,
+                normalized_engine_type,
+                normalized_algorithm_key,
                 api_key,
                 api_url,
                 model_name,
@@ -636,6 +664,7 @@ class Database:
 
         existing = self.get_predictor(predictor_id, include_secret=True) or {}
         lottery_type = normalize_lottery_type(fields.get('lottery_type') or existing.get('lottery_type'))
+        engine_type = normalize_engine_type(fields.get('engine_type') or existing.get('engine_type'))
         updates = []
         values = []
         for key, value in fields.items():
@@ -643,6 +672,12 @@ class Database:
                 value = json.dumps(normalize_prediction_targets(lottery_type, value), ensure_ascii=False)
             if key == 'lottery_type':
                 value = normalize_lottery_type(value)
+                lottery_type = value
+            if key == 'engine_type':
+                value = normalize_engine_type(value)
+                engine_type = value
+            if key == 'algorithm_key':
+                value = normalize_algorithm_key(lottery_type, engine_type, value)
             if key == 'primary_metric':
                 value = normalize_primary_metric(lottery_type, value)
             if key == 'profit_default_metric':
@@ -3219,6 +3254,12 @@ class Database:
         data = dict(row)
         lottery_type = normalize_lottery_type(data.get('lottery_type'))
         data['lottery_type'] = lottery_type
+        data['engine_type'] = normalize_engine_type(data.get('engine_type'))
+        data['algorithm_key'] = normalize_algorithm_key(
+            lottery_type,
+            data['engine_type'],
+            data.get('algorithm_key')
+        )
         data['prediction_targets'] = normalize_prediction_targets(lottery_type, self._decode_json_list(data.get('prediction_targets')))
         data['enabled'] = bool(data.get('enabled'))
         data['api_mode'] = data.get('api_mode') or 'auto'
@@ -3228,6 +3269,11 @@ class Database:
         data['share_level'] = data.get('share_level') or ('records' if data.get('share_predictions') else 'stats_only')
         data['share_predictions'] = bool(data.get('share_predictions'))
         data['data_injection_mode'] = data.get('data_injection_mode') or 'summary'
+        data['engine_type_label'] = get_engine_type_label(data['engine_type'])
+        data['algorithm_label'] = get_algorithm_label(lottery_type, data['engine_type'], data['algorithm_key'])
+        data['execution_label'] = resolve_execution_label(data)
+        if data['engine_type'] == 'machine' and not data['algorithm_key']:
+            data['algorithm_key'] = get_default_machine_algorithm(lottery_type)
         if not include_secret:
             data.pop('api_key', None)
         return data
