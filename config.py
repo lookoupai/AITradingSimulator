@@ -28,6 +28,10 @@ PC28_RECENT_SOURCE_ORDER = tuple(
     for item in os.getenv('PC28_RECENT_SOURCE_ORDER', 'official,jnd,feiji').split(',')
     if item.strip()
 )
+PC28_PREDICTION_RETENTION_DAYS = max(1, int(os.getenv('PC28_PREDICTION_RETENTION_DAYS', 60)))
+PC28_DRAW_RETENTION_DAYS = max(1, int(os.getenv('PC28_DRAW_RETENTION_DAYS', 60)))
+PC28_ARCHIVE_MAINTENANCE_INTERVAL = max(300, int(os.getenv('PC28_ARCHIVE_MAINTENANCE_INTERVAL', 21600)))
+PC28_ARCHIVE_VACUUM_INTERVAL = max(3600, int(os.getenv('PC28_ARCHIVE_VACUUM_INTERVAL', 86400)))
 
 # ============ 预测任务配置 ============
 AUTO_PREDICTION = os.getenv(

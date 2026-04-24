@@ -436,6 +436,39 @@ class Database:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS pc28_prediction_daily_summary (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                predictor_id INTEGER NOT NULL,
+                summary_date TEXT NOT NULL,
+                total_predictions INTEGER NOT NULL DEFAULT 0,
+                settled_predictions INTEGER NOT NULL DEFAULT 0,
+                failed_predictions INTEGER NOT NULL DEFAULT 0,
+                expired_predictions INTEGER NOT NULL DEFAULT 0,
+                latest_issue_no TEXT,
+                latest_settled_issue_no TEXT,
+                metric_segments_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (predictor_id) REFERENCES predictors(id),
+                UNIQUE(predictor_id, summary_date)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS pc28_draw_daily_summary (
+                summary_date TEXT PRIMARY KEY,
+                draw_count INTEGER NOT NULL DEFAULT 0,
+                latest_issue_no TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS scheduler_state (
                 name TEXT PRIMARY KEY,
                 owner_id TEXT NOT NULL,
@@ -454,6 +487,7 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_prediction_items_run ON prediction_items(run_id, event_key)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_predictor ON predictions(predictor_id, issue_no)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status, issue_no)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pc28_prediction_daily_summary_predictor ON pc28_prediction_daily_summary(predictor_id, summary_date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictor_runtime_state_paused ON predictor_runtime_state(auto_paused, predictor_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_sender_accounts_user ON notification_sender_accounts(user_id, channel_type, status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_bet_profiles_user ON bet_profiles(user_id, lottery_type, enabled)')
@@ -986,6 +1020,307 @@ class Database:
         )
         conn.commit()
         conn.close()
+
+    def run_pc28_data_retention_maintenance(self, prediction_retention_days: int, draw_retention_days: int) -> dict:
+        prediction_retention_days = max(1, int(prediction_retention_days or 1))
+        draw_retention_days = max(1, int(draw_retention_days or 1))
+        prediction_cutoff_date = self._get_beijing_cutoff_date(prediction_retention_days)
+        draw_cutoff_date = self._get_beijing_cutoff_date(draw_retention_days)
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        result = {
+            'prediction_cutoff_date': prediction_cutoff_date,
+            'draw_cutoff_date': draw_cutoff_date,
+            'archived_prediction_rows': 0,
+            'archived_prediction_days': 0,
+            'deleted_prediction_rows': 0,
+            'archived_draw_rows': 0,
+            'archived_draw_days': 0,
+            'deleted_draw_rows': 0
+        }
+
+        try:
+            prediction_result = self._archive_pc28_predictions_before_date(cursor, prediction_cutoff_date)
+            draw_result = self._archive_pc28_draws_before_date(cursor, draw_cutoff_date)
+            conn.commit()
+            result.update(prediction_result)
+            result.update(draw_result)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        return result
+
+    def vacuum(self):
+        conn = self.get_connection()
+        try:
+            conn.execute('VACUUM')
+        finally:
+            conn.close()
+
+    def _archive_pc28_predictions_before_date(self, cursor, cutoff_date: str) -> dict:
+        cursor.execute(
+            '''
+            SELECT
+                predictor_id,
+                issue_no,
+                status,
+                created_at,
+                date(datetime(created_at, '+8 hours')) AS summary_date,
+                hit_number,
+                hit_big_small,
+                hit_odd_even,
+                hit_combo,
+                prediction_combo,
+                actual_combo
+            FROM predictions
+            WHERE lottery_type = 'pc28'
+              AND status IN ('settled', 'failed', 'expired')
+              AND date(datetime(created_at, '+8 hours')) < ?
+            ORDER BY predictor_id ASC, summary_date DESC, CAST(issue_no AS INTEGER) DESC
+            ''',
+            (cutoff_date,)
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return {
+                'archived_prediction_rows': 0,
+                'archived_prediction_days': 0,
+                'deleted_prediction_rows': 0
+            }
+
+        daily_summary_map: dict[tuple[int, str], dict] = {}
+        metric_keys = ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group']
+
+        for row in rows:
+            predictor_id = int(row['predictor_id'])
+            summary_date = row['summary_date']
+            key = (predictor_id, summary_date)
+            bucket = daily_summary_map.get(key)
+            if bucket is None:
+                bucket = {
+                    'predictor_id': predictor_id,
+                    'summary_date': summary_date,
+                    'total_predictions': 0,
+                    'settled_predictions': 0,
+                    'failed_predictions': 0,
+                    'expired_predictions': 0,
+                    'latest_issue_no': None,
+                    'latest_settled_issue_no': None,
+                    'metrics': {}
+                }
+                daily_summary_map[key] = bucket
+
+            bucket['total_predictions'] += 1
+            status = str(row['status'] or '').strip().lower()
+            if bucket['latest_issue_no'] is None:
+                bucket['latest_issue_no'] = row['issue_no']
+            if status == 'settled':
+                bucket['settled_predictions'] += 1
+                if bucket['latest_settled_issue_no'] is None:
+                    bucket['latest_settled_issue_no'] = row['issue_no']
+                prepared_row = self._prepare_prediction(row)
+                for metric_key in metric_keys:
+                    outcome = self._extract_metric_hit(prepared_row, metric_key)
+                    if outcome is None:
+                        continue
+                    existing = bucket['metrics'].get(metric_key)
+                    bucket['metrics'][metric_key] = self._merge_sequence_summaries(
+                        existing,
+                        self._sequence_summary_from_outcome(int(outcome))
+                    )
+            elif status == 'failed':
+                bucket['failed_predictions'] += 1
+            elif status == 'expired':
+                bucket['expired_predictions'] += 1
+
+        for summary in daily_summary_map.values():
+            self._upsert_pc28_prediction_daily_summary(cursor, summary)
+
+        cursor.execute(
+            '''
+            DELETE FROM predictions
+            WHERE lottery_type = 'pc28'
+              AND status IN ('settled', 'failed', 'expired')
+              AND date(datetime(created_at, '+8 hours')) < ?
+            ''',
+            (cutoff_date,)
+        )
+
+        return {
+            'archived_prediction_rows': len(rows),
+            'archived_prediction_days': len(daily_summary_map),
+            'deleted_prediction_rows': cursor.rowcount if cursor.rowcount is not None else len(rows)
+        }
+
+    def _archive_pc28_draws_before_date(self, cursor, cutoff_date: str) -> dict:
+        cursor.execute(
+            '''
+            SELECT
+                issue_no,
+                COALESCE(NULLIF(draw_date, ''), date(datetime(created_at, '+8 hours'))) AS summary_date
+            FROM lottery_draws d
+            WHERE lottery_type = 'pc28'
+              AND COALESCE(NULLIF(draw_date, ''), date(datetime(created_at, '+8 hours'))) < ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM predictions p
+                  WHERE p.lottery_type = 'pc28'
+                    AND p.status = 'pending'
+                    AND p.issue_no = d.issue_no
+              )
+            ORDER BY summary_date DESC, CAST(issue_no AS INTEGER) DESC
+            ''',
+            (cutoff_date,)
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return {
+                'archived_draw_rows': 0,
+                'archived_draw_days': 0,
+                'deleted_draw_rows': 0
+            }
+
+        daily_summary_map: dict[str, dict] = {}
+        for row in rows:
+            summary_date = row['summary_date']
+            bucket = daily_summary_map.get(summary_date)
+            if bucket is None:
+                bucket = {
+                    'summary_date': summary_date,
+                    'draw_count': 0,
+                    'latest_issue_no': None
+                }
+                daily_summary_map[summary_date] = bucket
+            bucket['draw_count'] += 1
+            if bucket['latest_issue_no'] is None:
+                bucket['latest_issue_no'] = row['issue_no']
+
+        for summary in daily_summary_map.values():
+            self._upsert_pc28_draw_daily_summary(cursor, summary)
+
+        cursor.execute(
+            '''
+            DELETE FROM lottery_draws
+            WHERE lottery_type = 'pc28'
+              AND COALESCE(NULLIF(draw_date, ''), date(datetime(created_at, '+8 hours'))) < ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM predictions p
+                  WHERE p.lottery_type = 'pc28'
+                    AND p.status = 'pending'
+                    AND p.issue_no = lottery_draws.issue_no
+              )
+            ''',
+            (cutoff_date,)
+        )
+
+        return {
+            'archived_draw_rows': len(rows),
+            'archived_draw_days': len(daily_summary_map),
+            'deleted_draw_rows': cursor.rowcount if cursor.rowcount is not None else len(rows)
+        }
+
+    def _upsert_pc28_prediction_daily_summary(self, cursor, summary: dict):
+        cursor.execute(
+            '''
+            SELECT *
+            FROM pc28_prediction_daily_summary
+            WHERE predictor_id = ? AND summary_date = ?
+            LIMIT 1
+            ''',
+            (summary['predictor_id'], summary['summary_date'])
+        )
+        existing = cursor.fetchone()
+        existing_metrics = self._decode_metric_segments(existing['metric_segments_json']) if existing else {}
+        merged_metrics = dict(existing_metrics)
+
+        for metric_key, sequence_summary in (summary.get('metrics') or {}).items():
+            merged_metrics[metric_key] = self._merge_sequence_summaries(
+                merged_metrics.get(metric_key),
+                sequence_summary
+            )
+
+        latest_issue_no = summary.get('latest_issue_no')
+        latest_settled_issue_no = summary.get('latest_settled_issue_no')
+        if existing:
+            latest_issue_no = self._max_issue_no(existing['latest_issue_no'], latest_issue_no)
+            latest_settled_issue_no = self._max_issue_no(existing['latest_settled_issue_no'], latest_settled_issue_no)
+
+        cursor.execute(
+            '''
+            INSERT INTO pc28_prediction_daily_summary (
+                predictor_id,
+                summary_date,
+                total_predictions,
+                settled_predictions,
+                failed_predictions,
+                expired_predictions,
+                latest_issue_no,
+                latest_settled_issue_no,
+                metric_segments_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(predictor_id, summary_date) DO UPDATE SET
+                total_predictions = excluded.total_predictions,
+                settled_predictions = excluded.settled_predictions,
+                failed_predictions = excluded.failed_predictions,
+                expired_predictions = excluded.expired_predictions,
+                latest_issue_no = excluded.latest_issue_no,
+                latest_settled_issue_no = excluded.latest_settled_issue_no,
+                metric_segments_json = excluded.metric_segments_json,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (
+                summary['predictor_id'],
+                summary['summary_date'],
+                int(summary.get('total_predictions') or 0) + int(existing['total_predictions'] or 0) if existing else int(summary.get('total_predictions') or 0),
+                int(summary.get('settled_predictions') or 0) + int(existing['settled_predictions'] or 0) if existing else int(summary.get('settled_predictions') or 0),
+                int(summary.get('failed_predictions') or 0) + int(existing['failed_predictions'] or 0) if existing else int(summary.get('failed_predictions') or 0),
+                int(summary.get('expired_predictions') or 0) + int(existing['expired_predictions'] or 0) if existing else int(summary.get('expired_predictions') or 0),
+                latest_issue_no,
+                latest_settled_issue_no,
+                json.dumps(merged_metrics, ensure_ascii=False)
+            )
+        )
+
+    def _upsert_pc28_draw_daily_summary(self, cursor, summary: dict):
+        cursor.execute(
+            '''
+            SELECT *
+            FROM pc28_draw_daily_summary
+            WHERE summary_date = ?
+            LIMIT 1
+            ''',
+            (summary['summary_date'],)
+        )
+        existing = cursor.fetchone()
+        latest_issue_no = summary.get('latest_issue_no')
+        if existing:
+            latest_issue_no = self._max_issue_no(existing['latest_issue_no'], latest_issue_no)
+
+        cursor.execute(
+            '''
+            INSERT INTO pc28_draw_daily_summary (
+                summary_date,
+                draw_count,
+                latest_issue_no
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT(summary_date) DO UPDATE SET
+                draw_count = excluded.draw_count,
+                latest_issue_no = excluded.latest_issue_no,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (
+                summary['summary_date'],
+                int(summary.get('draw_count') or 0) + int(existing['draw_count'] or 0) if existing else int(summary.get('draw_count') or 0),
+                latest_issue_no
+            )
+        )
 
     def get_recent_draws(self, lottery_type: str = 'pc28', limit: Optional[int] = 20, offset: int = 0) -> list[dict]:
         conn = self.get_connection()
@@ -1794,6 +2129,52 @@ class Database:
         conn.close()
         return [self._prepare_prediction(row) for row in rows]
 
+    def get_pc28_prediction_archive_summary(self, predictor_id: int) -> dict:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT *
+            FROM pc28_prediction_daily_summary
+            WHERE predictor_id = ?
+            ORDER BY summary_date DESC
+            ''',
+            (predictor_id,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        aggregated_metrics: dict[str, dict] = {}
+        total_predictions = 0
+        settled_predictions = 0
+        failed_predictions = 0
+        expired_predictions = 0
+        latest_issue_no = None
+        latest_settled_issue_no = None
+
+        for row in rows:
+            total_predictions += int(row['total_predictions'] or 0)
+            settled_predictions += int(row['settled_predictions'] or 0)
+            failed_predictions += int(row['failed_predictions'] or 0)
+            expired_predictions += int(row['expired_predictions'] or 0)
+            latest_issue_no = self._max_issue_no(latest_issue_no, row['latest_issue_no'])
+            latest_settled_issue_no = self._max_issue_no(latest_settled_issue_no, row['latest_settled_issue_no'])
+            for metric_key, sequence_summary in self._decode_metric_segments(row['metric_segments_json']).items():
+                aggregated_metrics[metric_key] = self._merge_sequence_summaries(
+                    aggregated_metrics.get(metric_key),
+                    sequence_summary
+                )
+
+        return {
+            'total_predictions': total_predictions,
+            'settled_predictions': settled_predictions,
+            'failed_predictions': failed_predictions,
+            'expired_predictions': expired_predictions,
+            'latest_issue_no': latest_issue_no,
+            'latest_settled_issue_no': latest_settled_issue_no,
+            'metrics': aggregated_metrics
+        }
+
     def get_predictor_stats(self, predictor_id: int) -> dict:
         predictor = self.get_predictor(predictor_id, include_secret=True) or {}
         lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
@@ -1803,6 +2184,7 @@ class Database:
         rows = self.get_recent_predictions(predictor_id, limit=None)
         settled_rows = [row for row in rows if row['status'] == 'settled']
         latest_settled = settled_rows[0] if settled_rows else None
+        archived_summary = self.get_pc28_prediction_archive_summary(predictor_id)
 
         metric_keys = ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group']
         windows = {
@@ -1814,24 +2196,33 @@ class Database:
         metrics = {}
         metric_streaks = {}
         for metric_key in metric_keys:
+            recent_outcomes = self._extract_metric_outcomes(settled_rows, metric_key)
+            recent_sequence_summary = self._build_sequence_summary_from_outcomes(recent_outcomes)
+            overall_sequence_summary = self._merge_sequence_summaries(
+                recent_sequence_summary,
+                (archived_summary.get('metrics') or {}).get(metric_key)
+            )
             metrics[metric_key] = {
                 'label': self._metric_label(metric_key),
                 'recent_20': self._build_metric_stats(windows['recent_20'], metric_key),
                 'recent_100': self._build_metric_stats(windows['recent_100'], metric_key),
-                'overall': self._build_metric_stats(windows['overall'], metric_key)
+                'overall': self._build_metric_stats_from_sequence(overall_sequence_summary)
             }
-            metric_streaks[metric_key] = self._build_streak_stats(settled_rows, metric_key)
+            metric_streaks[metric_key] = self._build_streak_stats_from_sequence(
+                overall_sequence_summary,
+                recent_outcomes
+            )
 
         primary_metric = normalize_primary_metric(lottery_type, predictor.get('primary_metric'))
         streaks = metric_streaks[primary_metric]
 
         return {
-            'total_predictions': len(rows),
-            'settled_predictions': len(settled_rows),
+            'total_predictions': len(rows) + int(archived_summary.get('total_predictions') or 0),
+            'settled_predictions': len(settled_rows) + int(archived_summary.get('settled_predictions') or 0),
             'pending_predictions': len([row for row in rows if row['status'] == 'pending']),
-            'failed_predictions': len([row for row in rows if row['status'] == 'failed']),
-            'expired_predictions': len([row for row in rows if row['status'] == 'expired']),
-            'latest_settled_issue': latest_settled['issue_no'] if latest_settled else None,
+            'failed_predictions': len([row for row in rows if row['status'] == 'failed']) + int(archived_summary.get('failed_predictions') or 0),
+            'expired_predictions': len([row for row in rows if row['status'] == 'expired']) + int(archived_summary.get('expired_predictions') or 0),
+            'latest_settled_issue': latest_settled['issue_no'] if latest_settled else archived_summary.get('latest_settled_issue_no'),
             'primary_metric': primary_metric,
             'primary_metric_label': self._metric_label(primary_metric),
             'metrics': metrics,
@@ -3100,14 +3491,30 @@ class Database:
                 p.created_at,
                 p.updated_at,
                 u.username,
-                COALESCE(prediction_stats.prediction_count, 0) + COALESCE(run_stats.prediction_count, 0) AS prediction_count,
-                COALESCE(prediction_stats.failed_prediction_count, 0) + COALESCE(run_stats.failed_prediction_count, 0) AS failed_prediction_count,
+                COALESCE(prediction_stats.prediction_count, 0)
+                    + COALESCE(run_stats.prediction_count, 0)
+                    + CASE WHEN p.lottery_type = 'pc28' THEN COALESCE(archived_prediction_stats.prediction_count, 0) ELSE 0 END AS prediction_count,
+                COALESCE(prediction_stats.failed_prediction_count, 0)
+                    + COALESCE(run_stats.failed_prediction_count, 0)
+                    + CASE WHEN p.lottery_type = 'pc28' THEN COALESCE(archived_prediction_stats.failed_prediction_count, 0) ELSE 0 END AS failed_prediction_count,
                 CASE
+                    WHEN p.lottery_type = 'pc28'
+                        AND COALESCE(prediction_stats.latest_issue_no_num, 0) >= COALESCE(archived_prediction_stats.latest_issue_no_num, 0)
+                        THEN prediction_stats.latest_issue_no
+                    WHEN p.lottery_type = 'pc28'
+                        AND COALESCE(archived_prediction_stats.latest_issue_no_num, 0) > 0
+                        THEN CAST(archived_prediction_stats.latest_issue_no_num AS TEXT)
                     WHEN COALESCE(run_stats.latest_prediction_update, '') > COALESCE(prediction_stats.latest_prediction_update, '')
                         THEN run_stats.latest_issue_no
                     ELSE prediction_stats.latest_issue_no
                 END AS latest_issue_no,
                 CASE
+                    WHEN p.lottery_type = 'pc28'
+                        AND COALESCE(prediction_stats.latest_prediction_update, '') != ''
+                        THEN prediction_stats.latest_prediction_update
+                    WHEN p.lottery_type = 'pc28'
+                        AND COALESCE(archived_prediction_stats.latest_prediction_date, '') != ''
+                        THEN archived_prediction_stats.latest_prediction_date || ' 00:00:00'
                     WHEN COALESCE(run_stats.latest_prediction_update, '') > COALESCE(prediction_stats.latest_prediction_update, '')
                         THEN run_stats.latest_prediction_update
                     ELSE prediction_stats.latest_prediction_update
@@ -3119,6 +3526,7 @@ class Database:
                     predictor_id,
                     COUNT(*) AS prediction_count,
                     MAX(issue_no) AS latest_issue_no,
+                    MAX(CAST(issue_no AS INTEGER)) AS latest_issue_no_num,
                     MAX(updated_at) AS latest_prediction_update,
                     SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_prediction_count
                 FROM predictions
@@ -3134,6 +3542,16 @@ class Database:
                 FROM prediction_runs
                 GROUP BY predictor_id
             ) AS run_stats ON run_stats.predictor_id = p.id
+            LEFT JOIN (
+                SELECT
+                    predictor_id,
+                    SUM(total_predictions) AS prediction_count,
+                    SUM(failed_predictions) AS failed_prediction_count,
+                    MAX(CAST(COALESCE(NULLIF(latest_issue_no, ''), '0') AS INTEGER)) AS latest_issue_no_num,
+                    MAX(summary_date) AS latest_prediction_date
+                FROM pc28_prediction_daily_summary
+                GROUP BY predictor_id
+            ) AS archived_prediction_stats ON archived_prediction_stats.predictor_id = p.id
             ORDER BY p.updated_at DESC, p.id DESC
             '''
         )
@@ -3180,11 +3598,18 @@ class Database:
                     WHERE p.enabled = 1 AND COALESCE(prs.auto_paused, 0) = 1
                 ) AS auto_paused_predictors,
                 (SELECT COUNT(*) FROM predictors WHERE share_level != 'stats_only') AS shared_predictors,
-                (SELECT COUNT(*) FROM predictions) + (SELECT COUNT(*) FROM prediction_runs) AS total_predictions,
+                (SELECT COUNT(*) FROM predictions)
+                    + (SELECT COUNT(*) FROM prediction_runs)
+                    + (SELECT COALESCE(SUM(total_predictions), 0) FROM pc28_prediction_daily_summary) AS total_predictions,
                 (SELECT COUNT(*) FROM predictions WHERE status = 'pending') + (SELECT COUNT(*) FROM prediction_runs WHERE status = 'pending') AS pending_predictions,
-                (SELECT COUNT(*) FROM predictions WHERE status = 'failed') + (SELECT COUNT(*) FROM prediction_runs WHERE status = 'failed') AS failed_predictions,
-                (SELECT COUNT(*) FROM predictions WHERE status = 'settled') + (SELECT COUNT(*) FROM prediction_runs WHERE status = 'settled') AS settled_predictions,
-                (SELECT COUNT(*) FROM lottery_draws WHERE lottery_type = 'pc28') AS total_draws
+                (SELECT COUNT(*) FROM predictions WHERE status = 'failed')
+                    + (SELECT COUNT(*) FROM prediction_runs WHERE status = 'failed')
+                    + (SELECT COALESCE(SUM(failed_predictions), 0) FROM pc28_prediction_daily_summary) AS failed_predictions,
+                (SELECT COUNT(*) FROM predictions WHERE status = 'settled')
+                    + (SELECT COUNT(*) FROM prediction_runs WHERE status = 'settled')
+                    + (SELECT COALESCE(SUM(settled_predictions), 0) FROM pc28_prediction_daily_summary) AS settled_predictions,
+                (SELECT COUNT(*) FROM lottery_draws WHERE lottery_type = 'pc28')
+                    + (SELECT COALESCE(SUM(draw_count), 0) FROM pc28_draw_daily_summary) AS total_draws
             '''
         )
         row = cursor.fetchone()
@@ -3503,19 +3928,141 @@ class Database:
             return 1 if actual_combo != kill_group else 0
         return None
 
-    def _build_metric_stats(self, rows: list[dict], metric_key: str) -> dict:
+    def _extract_metric_outcomes(self, rows: list[dict], metric_key: str) -> list[int]:
         outcomes = [self._extract_metric_hit(row, metric_key) for row in rows]
-        attempted = [item for item in outcomes if item is not None]
-        hit_count = sum(attempted) if attempted else 0
-        sample_count = len(attempted)
-        hit_rate = round(hit_count / sample_count * 100, 2) if sample_count else None
+        return [int(item) for item in outcomes if item is not None]
 
+    def _empty_sequence_summary(self) -> dict:
+        return {
+            'sample_count': 0,
+            'hit_count': 0,
+            'first_outcome': None,
+            'first_streak_len': 0,
+            'last_outcome': None,
+            'last_streak_len': 0,
+            'max_hit_streak': 0,
+            'max_miss_streak': 0
+        }
+
+    def _sequence_summary_from_outcome(self, outcome: int) -> dict:
+        normalized = 1 if int(outcome) else 0
+        return {
+            'sample_count': 1,
+            'hit_count': normalized,
+            'first_outcome': normalized,
+            'first_streak_len': 1,
+            'last_outcome': normalized,
+            'last_streak_len': 1,
+            'max_hit_streak': 1 if normalized == 1 else 0,
+            'max_miss_streak': 1 if normalized == 0 else 0
+        }
+
+    def _build_sequence_summary_from_outcomes(self, outcomes: list[int]) -> dict:
+        summary = self._empty_sequence_summary()
+        for outcome in outcomes:
+            summary = self._merge_sequence_summaries(summary, self._sequence_summary_from_outcome(int(outcome)))
+        return summary
+
+    def _merge_sequence_summaries(self, newer: Optional[dict], older: Optional[dict]) -> dict:
+        newer_summary = self._normalize_sequence_summary(newer)
+        older_summary = self._normalize_sequence_summary(older)
+        if newer_summary['sample_count'] <= 0:
+            return older_summary
+        if older_summary['sample_count'] <= 0:
+            return newer_summary
+
+        merged = {
+            'sample_count': newer_summary['sample_count'] + older_summary['sample_count'],
+            'hit_count': newer_summary['hit_count'] + older_summary['hit_count'],
+            'first_outcome': newer_summary['first_outcome'],
+            'first_streak_len': newer_summary['first_streak_len'],
+            'last_outcome': older_summary['last_outcome'],
+            'last_streak_len': older_summary['last_streak_len'],
+            'max_hit_streak': max(newer_summary['max_hit_streak'], older_summary['max_hit_streak']),
+            'max_miss_streak': max(newer_summary['max_miss_streak'], older_summary['max_miss_streak'])
+        }
+
+        if (
+            newer_summary['first_streak_len'] == newer_summary['sample_count']
+            and newer_summary['first_outcome'] == older_summary['first_outcome']
+        ):
+            merged['first_streak_len'] = newer_summary['sample_count'] + older_summary['first_streak_len']
+
+        if (
+            older_summary['last_streak_len'] == older_summary['sample_count']
+            and older_summary['last_outcome'] == newer_summary['last_outcome']
+        ):
+            merged['last_streak_len'] = older_summary['sample_count'] + newer_summary['last_streak_len']
+
+        if newer_summary['last_outcome'] == older_summary['first_outcome'] == 1:
+            merged['max_hit_streak'] = max(
+                merged['max_hit_streak'],
+                newer_summary['last_streak_len'] + older_summary['first_streak_len']
+            )
+        if newer_summary['last_outcome'] == older_summary['first_outcome'] == 0:
+            merged['max_miss_streak'] = max(
+                merged['max_miss_streak'],
+                newer_summary['last_streak_len'] + older_summary['first_streak_len']
+            )
+
+        return merged
+
+    def _normalize_sequence_summary(self, value: Optional[dict]) -> dict:
+        base = self._empty_sequence_summary()
+        if not isinstance(value, dict):
+            return base
+        normalized = dict(base)
+        normalized['sample_count'] = max(0, int(value.get('sample_count') or 0))
+        normalized['hit_count'] = max(0, int(value.get('hit_count') or 0))
+        normalized['first_streak_len'] = max(0, int(value.get('first_streak_len') or 0))
+        normalized['last_streak_len'] = max(0, int(value.get('last_streak_len') or 0))
+        normalized['max_hit_streak'] = max(0, int(value.get('max_hit_streak') or 0))
+        normalized['max_miss_streak'] = max(0, int(value.get('max_miss_streak') or 0))
+        first_outcome = value.get('first_outcome')
+        last_outcome = value.get('last_outcome')
+        normalized['first_outcome'] = int(first_outcome) if first_outcome in {0, 1, '0', '1'} else None
+        normalized['last_outcome'] = int(last_outcome) if last_outcome in {0, 1, '0', '1'} else None
+        if normalized['sample_count'] <= 0:
+            return base
+        return normalized
+
+    def _decode_metric_segments(self, value: Any) -> dict[str, dict]:
+        payload = self._decode_json_object(value)
+        decoded = {}
+        for metric_key, sequence_summary in payload.items():
+            decoded[str(metric_key)] = self._normalize_sequence_summary(sequence_summary)
+        return decoded
+
+    def _build_metric_stats_from_sequence(self, summary: Optional[dict]) -> dict:
+        sequence_summary = self._normalize_sequence_summary(summary)
+        sample_count = sequence_summary['sample_count']
+        hit_count = sequence_summary['hit_count']
+        hit_rate = round(hit_count / sample_count * 100, 2) if sample_count else None
         return {
             'hit_count': hit_count,
             'sample_count': sample_count,
             'hit_rate': hit_rate,
             'ratio_text': f'{hit_count}/{sample_count}' if sample_count else '--'
         }
+
+    def _build_streak_stats_from_sequence(self, summary: Optional[dict], recent_outcomes: list[int]) -> dict:
+        sequence_summary = self._normalize_sequence_summary(summary)
+        recent_100 = recent_outcomes[:100]
+        current_hit_streak = sequence_summary['first_streak_len'] if sequence_summary['first_outcome'] == 1 else 0
+        current_miss_streak = sequence_summary['first_streak_len'] if sequence_summary['first_outcome'] == 0 else 0
+        return {
+            'current_hit_streak': current_hit_streak,
+            'current_miss_streak': current_miss_streak,
+            'recent_100_max_hit_streak': self._max_streak(recent_100, 1),
+            'recent_100_max_miss_streak': self._max_streak(recent_100, 0),
+            'historical_max_hit_streak': sequence_summary['max_hit_streak'],
+            'historical_max_miss_streak': sequence_summary['max_miss_streak']
+        }
+
+    def _build_metric_stats(self, rows: list[dict], metric_key: str) -> dict:
+        return self._build_metric_stats_from_sequence(
+            self._build_sequence_summary_from_outcomes(self._extract_metric_outcomes(rows, metric_key))
+        )
 
     def _build_binary_metric_stats(self, outcomes: list[int]) -> dict:
         hit_count = sum(outcomes) if outcomes else 0
@@ -3530,32 +4077,11 @@ class Database:
         }
 
     def _build_streak_stats(self, rows: list[dict], metric_key: str) -> dict:
-        outcomes = [self._extract_metric_hit(row, metric_key) for row in rows]
-        attempted = [item for item in outcomes if item is not None]
-        recent_100 = attempted[:100]
-
-        current_hit_streak = 0
-        current_miss_streak = 0
-        for outcome in attempted:
-            if outcome == 1:
-                if current_miss_streak == 0:
-                    current_hit_streak += 1
-                else:
-                    break
-            else:
-                if current_hit_streak == 0:
-                    current_miss_streak += 1
-                else:
-                    break
-
-        return {
-            'current_hit_streak': current_hit_streak,
-            'current_miss_streak': current_miss_streak,
-            'recent_100_max_hit_streak': self._max_streak(recent_100, 1),
-            'recent_100_max_miss_streak': self._max_streak(recent_100, 0),
-            'historical_max_hit_streak': self._max_streak(attempted, 1),
-            'historical_max_miss_streak': self._max_streak(attempted, 0)
-        }
+        outcomes = self._extract_metric_outcomes(rows, metric_key)
+        return self._build_streak_stats_from_sequence(
+            self._build_sequence_summary_from_outcomes(outcomes),
+            outcomes
+        )
 
     def _max_streak(self, outcomes: list[int], expected: int) -> int:
         best = 0
@@ -3568,6 +4094,29 @@ class Database:
             else:
                 current = 0
         return best
+
+    def _max_issue_no(self, left: Any, right: Any) -> Optional[str]:
+        left_value = self._parse_issue_no(left)
+        right_value = self._parse_issue_no(right)
+        if left_value is None:
+            return str(right) if right_value is not None else None
+        if right_value is None:
+            return str(left) if left_value is not None else None
+        return str(left) if left_value >= right_value else str(right)
+
+    def _parse_issue_no(self, value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+    def _get_beijing_cutoff_date(self, retention_days: int) -> str:
+        retention_days = max(1, int(retention_days or 1))
+        beijing_now = datetime.utcnow() + timedelta(hours=8)
+        cutoff_date = (beijing_now - timedelta(days=retention_days)).date()
+        return cutoff_date.isoformat()
 
     def _parse_timestamp(self, value: Any) -> Optional[datetime]:
         if not value:

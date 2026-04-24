@@ -185,6 +185,8 @@ def prediction_loop():
         'pc28': 0.0,
         'jingcai_football': 0.0
     }
+    last_retention_maintenance_at = 0.0
+    last_vacuum_at = 0.0
 
     while config.AUTO_PREDICTION:
         try:
@@ -216,6 +218,30 @@ def prediction_loop():
                     'settled_count': total_settled,
                     'predictions': total_predictions
                 }
+
+                maintenance_interval = max(300, int(config.PC28_ARCHIVE_MAINTENANCE_INTERVAL))
+                if now_monotonic - last_retention_maintenance_at >= maintenance_interval:
+                    maintenance_result = db.run_pc28_data_retention_maintenance(
+                        config.PC28_PREDICTION_RETENTION_DAYS,
+                        config.PC28_DRAW_RETENTION_DAYS
+                    )
+                    last_retention_maintenance_at = now_monotonic
+
+                    deleted_prediction_rows = int(maintenance_result.get('deleted_prediction_rows') or 0)
+                    deleted_draw_rows = int(maintenance_result.get('deleted_draw_rows') or 0)
+                    if deleted_prediction_rows or deleted_draw_rows:
+                        print(
+                            f"[MAINTAIN] {get_current_beijing_time_str()} "
+                            f"predictions={deleted_prediction_rows} draws={deleted_draw_rows} "
+                            f"prediction_cutoff={maintenance_result.get('prediction_cutoff_date')} "
+                            f"draw_cutoff={maintenance_result.get('draw_cutoff_date')}"
+                        )
+                        vacuum_interval = max(3600, int(config.PC28_ARCHIVE_VACUUM_INTERVAL))
+                        if now_monotonic - last_vacuum_at >= vacuum_interval:
+                            db.vacuum()
+                            last_vacuum_at = now_monotonic
+                            print(f"[MAINTAIN] {get_current_beijing_time_str()} vacuum=completed")
+
                 db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
                 print(
                     f"[AUTO] {get_current_beijing_time_str()} settled={result['settled_count']} "
@@ -946,6 +972,10 @@ def _build_admin_dashboard_data() -> dict:
         'name': AUTO_PREDICTION_SCHEDULER,
         'auto_prediction_enabled': config.AUTO_PREDICTION,
         'poll_interval_seconds': config.PREDICTION_POLL_INTERVAL,
+        'pc28_prediction_retention_days': config.PC28_PREDICTION_RETENTION_DAYS,
+        'pc28_draw_retention_days': config.PC28_DRAW_RETENTION_DAYS,
+        'pc28_archive_maintenance_interval_seconds': config.PC28_ARCHIVE_MAINTENANCE_INTERVAL,
+        'pc28_archive_vacuum_interval_seconds': config.PC28_ARCHIVE_VACUUM_INTERVAL,
         'owner_id': scheduler.get('owner_id') if scheduler else None,
         'heartbeat_at': utc_to_beijing(scheduler['heartbeat_at']) if scheduler and scheduler.get('heartbeat_at') else None,
         'seconds_since_heartbeat': None
