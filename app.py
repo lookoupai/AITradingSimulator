@@ -774,8 +774,8 @@ def _build_pc28_analysis_signal_view(predictor: dict, prediction: dict) -> dict 
             'reasoning_summary': prediction.get('reasoning_summary') or ''
         },
         'performance': {
-            'recent_20_hit_rate': (metric_stats.get('recent20') or {}).get('hit_rate'),
-            'recent_100_hit_rate': (metric_stats.get('recent100') or {}).get('hit_rate'),
+            'recent_20_hit_rate': (metric_stats.get('recent_20') or {}).get('hit_rate'),
+            'recent_100_hit_rate': (metric_stats.get('recent_100') or {}).get('hit_rate'),
             'overall_hit_rate': (metric_stats.get('overall') or {}).get('hit_rate'),
             'settled_predictions': stats.get('settled_predictions')
         },
@@ -788,6 +788,39 @@ def _build_pc28_analysis_signal_view(predictor: dict, prediction: dict) -> dict 
             'prompt_snapshot': prediction.get('prompt_snapshot') or '',
             'raw_response': prediction.get('raw_response') or ''
         }
+    }
+
+
+def _build_pc28_performance_export_view(predictor: dict) -> dict | None:
+    if not predictor:
+        return None
+    if normalize_lottery_type(predictor.get('lottery_type')) != 'pc28':
+        return None
+
+    predictor_name = str(predictor.get('name') or '').strip() or f"predictor-{predictor.get('id')}"
+    stats = db.get_predictor_stats(predictor['id'])
+    metrics = {}
+    for metric_key in ['big_small', 'odd_even', 'combo']:
+        metric_stats = (stats.get('metrics') or {}).get(metric_key) or {}
+        recent_100 = metric_stats.get('recent_100') or {}
+        metrics[metric_key] = {
+            'label': metric_stats.get('label') or metric_key,
+            'recent_100': {
+                'hit_rate': recent_100.get('hit_rate'),
+                'sample_count': int(recent_100.get('sample_count') or 0),
+                'hit_count': int(recent_100.get('hit_count') or 0),
+                'ratio_text': recent_100.get('ratio_text') or '--',
+            },
+        }
+
+    return {
+        'schema_version': '1.0',
+        'predictor_id': predictor.get('id'),
+        'predictor_name': predictor_name,
+        'lottery_type': 'pc28',
+        'latest_settled_issue': stats.get('latest_settled_issue') or '',
+        'settled_predictions': int(stats.get('settled_predictions') or 0),
+        'metrics': metrics,
     }
 
 
@@ -3521,6 +3554,19 @@ def export_predictor_signals(predictor_id: int):
         'view': view,
         'items': [item] if item else []
     })
+
+
+@app.route('/api/export/predictors/<int:predictor_id>/performance', methods=['GET'])
+def export_predictor_performance(predictor_id: int):
+    predictor = db.get_predictor(predictor_id, include_secret=False)
+    if not predictor:
+        return jsonify({'error': '预测方案不存在'}), 404
+
+    lottery_type = normalize_lottery_type(predictor.get('lottery_type'))
+    if lottery_type != 'pc28':
+        return jsonify({'error': '当前仅支持导出 PC28 表现统计'}), 400
+
+    return jsonify(_build_pc28_performance_export_view(predictor))
 
 
 @app.route('/api/predictors/<int:predictor_id>/jingcai/settle', methods=['POST'])

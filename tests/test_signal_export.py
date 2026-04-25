@@ -88,6 +88,53 @@ class SignalExportTests(unittest.TestCase):
             self.assertEqual(data['items'][0]['prediction']['prediction_number'], 14)
             self.assertEqual(data['items'][0]['raw']['raw_response'], 'raw-analysis')
 
+    def test_export_performance_view_contains_recent_100_metrics(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28')
+            for index in range(100):
+                issue_no = f'20260408{index + 1:03d}'
+                hit_big_small = 1 if index < 38 else 0
+                hit_odd_even = 1 if index < 61 else 0
+                hit_combo = 1 if index < 19 else 0
+                harness.db.upsert_prediction({
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'pc28',
+                    'issue_no': issue_no,
+                    'requested_targets': ['big_small', 'odd_even', 'combo'],
+                    'prediction_number': None,
+                    'prediction_big_small': '大',
+                    'prediction_odd_even': '单',
+                    'prediction_combo': '大单',
+                    'confidence': 0.7,
+                    'reasoning_summary': '测试统计',
+                    'raw_response': 'raw',
+                    'prompt_snapshot': 'prompt',
+                    'status': 'settled',
+                    'error_message': None,
+                    'actual_number': 27 if hit_big_small else 4,
+                    'actual_big_small': '大' if hit_big_small else '小',
+                    'actual_odd_even': '单' if hit_odd_even else '双',
+                    'actual_combo': '大单' if hit_combo else '小双',
+                    'hit_number': None,
+                    'hit_big_small': hit_big_small,
+                    'hit_odd_even': hit_odd_even,
+                    'hit_combo': hit_combo,
+                    'settled_at': '2026-04-08T12:00:00Z'
+                })
+
+            response = client.get(f'/api/export/predictors/{predictor_id}/performance')
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(data['schema_version'], '1.0')
+            self.assertEqual(data['predictor_id'], predictor_id)
+            self.assertEqual(data['latest_settled_issue'], '20260408100')
+            self.assertEqual(data['metrics']['big_small']['recent_100']['sample_count'], 100)
+            self.assertEqual(data['metrics']['big_small']['recent_100']['hit_rate'], 38.0)
+            self.assertEqual(data['metrics']['odd_even']['recent_100']['hit_rate'], 61.0)
+            self.assertEqual(data['metrics']['combo']['recent_100']['hit_rate'], 19.0)
+
     def test_export_signals_rejects_non_pc28_predictor(self):
         with fresh_app_harness() as harness:
             client, user_id = harness.make_client()

@@ -165,6 +165,7 @@ LINUXDO_REDIRECT_URI=
 
 - `GET /api/export/predictors/<id>/signals?view=execution`
 - `GET /api/export/predictors/<id>/signals?view=analysis`
+- `GET /api/export/predictors/<id>/performance`
 
 ## 预测流程
 
