@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+import config
 from lotteries.registry import (
     get_target_label,
     normalize_lottery_type,
@@ -32,8 +33,13 @@ class Database:
         self.db_path = db_path
 
     def get_connection(self):
-        conn = sqlite3.connect(self.db_path)
+        timeout_seconds = max(
+            1.0,
+            float(getattr(config, 'SQLITE_BUSY_TIMEOUT_MS', 5000)) / 1000.0
+        )
+        conn = sqlite3.connect(self.db_path, timeout=timeout_seconds)
         conn.row_factory = sqlite3.Row
+        conn.execute(f'PRAGMA busy_timeout = {int(getattr(config, "SQLITE_BUSY_TIMEOUT_MS", 5000))}')
         return conn
 
     def init_db(self):
@@ -2283,10 +2289,31 @@ class Database:
     # ============ Scheduler Lease ============
 
     def try_acquire_scheduler(self, name: str, owner_id: str, stale_after_seconds: int = 60) -> bool:
+        result = self.try_acquire_scheduler_with_details(
+            name,
+            owner_id,
+            stale_after_seconds=stale_after_seconds
+        )
+        return bool(result.get('acquired'))
+
+    def try_acquire_scheduler_with_details(
+        self,
+        name: str,
+        owner_id: str,
+        stale_after_seconds: int = 60
+    ) -> dict:
         conn = self.get_connection()
         conn.isolation_level = None
         cursor = conn.cursor()
-        acquired = False
+        result = {
+            'acquired': False,
+            'scheduler_name': name,
+            'owner_id': owner_id,
+            'current_owner_id': None,
+            'current_heartbeat_at': None,
+            'is_stale': None,
+            'error': None
+        }
 
         try:
             cursor.execute('BEGIN IMMEDIATE')
@@ -2302,10 +2329,13 @@ class Database:
                     ''',
                     (name, owner_id)
                 )
-                acquired = True
+                result['acquired'] = True
             else:
                 last_heartbeat = self._parse_timestamp(row['heartbeat_at'])
                 is_stale = last_heartbeat is None or (now - last_heartbeat) > timedelta(seconds=stale_after_seconds)
+                result['current_owner_id'] = row['owner_id']
+                result['current_heartbeat_at'] = row['heartbeat_at']
+                result['is_stale'] = is_stale
                 if row['owner_id'] == owner_id or is_stale:
                     cursor.execute(
                         '''
@@ -2315,19 +2345,19 @@ class Database:
                         ''',
                         (owner_id, name)
                     )
-                    acquired = True
+                    result['acquired'] = True
 
             cursor.execute('COMMIT')
-        except Exception:
+        except Exception as exc:
             try:
                 cursor.execute('ROLLBACK')
             except Exception:
                 pass
-            acquired = False
+            result['error'] = str(exc)
         finally:
             conn.close()
 
-        return acquired
+        return result
 
     def heartbeat_scheduler(self, name: str, owner_id: str):
         conn = self.get_connection()

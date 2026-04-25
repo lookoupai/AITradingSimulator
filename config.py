@@ -102,6 +102,9 @@ LINUXDO_MIN_TRUST_LEVEL = int(os.getenv('LINUXDO_MIN_TRUST_LEVEL', 1))
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 LOG_FILE = 'pc28_predictor.log'
+LOG_MAX_BYTES = max(1024 * 1024, int(os.getenv('LOG_MAX_BYTES', 20 * 1024 * 1024)))
+LOG_BACKUP_COUNT = max(1, int(os.getenv('LOG_BACKUP_COUNT', 7)))
+SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.getenv('SQLITE_BUSY_TIMEOUT_MS', 5000)))
 
 # ============ 通知发送配置 ============
 NOTIFICATION_WORKER_ENABLED = os.getenv('NOTIFICATION_WORKER_ENABLED', 'True').lower() == 'true'

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -67,6 +68,7 @@ from utils.predictor_engine import (
     resolve_execution_label
 )
 from utils.timezone import get_current_beijing_time_str, utc_to_beijing
+from utils.logger import get_logger
 
 
 app = Flask(__name__)
@@ -137,6 +139,7 @@ NOTIFICATION_SENDER_MODE_LABELS = {
     'platform': '平台机器人',
     'user_sender': '我的机器人'
 }
+runtime_logger = get_logger('runtime')
 
 
 @app.context_processor
@@ -177,8 +180,38 @@ def initialize_application():
             _notification_worker_started = True
 
 
+def _log_runtime_event(level: str, event: str, **fields):
+    payload = {
+        'event': event,
+        'time_beijing': get_current_beijing_time_str(),
+        **fields
+    }
+    getattr(runtime_logger, level)(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _snapshot_pc28_draw_state() -> dict:
+    recent_draws = db.get_recent_draws('pc28', limit=2)
+    latest_draw = recent_draws[0] if recent_draws else None
+    previous_draw = recent_draws[1] if len(recent_draws) > 1 else None
+    next_issue = None
+    latest_issue = str((latest_draw or {}).get('issue_no') or '').strip()
+    if latest_issue.isdigit():
+        next_issue = str(int(latest_issue) + 1).zfill(len(latest_issue))
+    return {
+        'latest_draw_issue_no': latest_draw.get('issue_no') if latest_draw else None,
+        'latest_draw_open_time': latest_draw.get('open_time') if latest_draw else None,
+        'previous_draw_issue_no': previous_draw.get('issue_no') if previous_draw else None,
+        'next_issue_guess': next_issue
+    }
+
+
 def prediction_loop():
-    print(f'[INFO] 多彩种自动预测线程启动，进程={os.getpid()}')
+    _log_runtime_event(
+        'info',
+        'prediction_loop_started',
+        process_id=os.getpid(),
+        scheduler_name=AUTO_PREDICTION_SCHEDULER
+    )
     scheduler_name = AUTO_PREDICTION_SCHEDULER
     stale_after_seconds = max(config.PREDICTION_POLL_INTERVAL * 3, 60)
     last_cycle_at = {
@@ -190,29 +223,75 @@ def prediction_loop():
 
     while config.AUTO_PREDICTION:
         try:
-            acquired = db.try_acquire_scheduler(
+            loop_started_at = time.monotonic()
+            lock_result = db.try_acquire_scheduler_with_details(
                 scheduler_name,
                 _scheduler_owner_id,
                 stale_after_seconds=stale_after_seconds
             )
+            acquired = bool(lock_result.get('acquired'))
             if acquired:
                 db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
                 now_monotonic = time.monotonic()
                 total_settled = 0
                 total_predictions = []
+                pc28_cycle_summary = {
+                    'ran': False,
+                    'duration_ms': 0,
+                    'settled_count': 0,
+                    'prediction_count': 0
+                }
+                jingcai_cycle_summary = {
+                    'ran': False,
+                    'duration_ms': 0,
+                    'settled_count': 0,
+                    'prediction_count': 0
+                }
 
                 if now_monotonic - last_cycle_at['pc28'] >= max(config.PREDICTION_POLL_INTERVAL, 5):
+                    pc28_started_at = time.monotonic()
                     pc28_result = lottery_runtime.run_pc28_cycle()
+                    pc28_snapshot = _snapshot_pc28_draw_state()
                     total_settled += int(pc28_result.get('settled_count') or 0)
                     total_predictions.extend(pc28_result.get('predictions') or [])
                     last_cycle_at['pc28'] = now_monotonic
+                    pc28_cycle_summary = {
+                        'ran': True,
+                        'duration_ms': int((time.monotonic() - pc28_started_at) * 1000),
+                        'settled_count': int(pc28_result.get('settled_count') or 0),
+                        'prediction_count': len(pc28_result.get('predictions') or []),
+                        **pc28_snapshot
+                    }
+                    _log_runtime_event(
+                        'info',
+                        'pc28_cycle_completed',
+                        scheduler_name=scheduler_name,
+                        owner_id=_scheduler_owner_id,
+                        **pc28_cycle_summary
+                    )
 
                 jingcai_plan = jingcai_football_service.get_scheduler_plan(db)
                 if now_monotonic - last_cycle_at['jingcai_football'] >= max(int(jingcai_plan.get('interval_seconds') or 0), 5):
+                    jingcai_started_at = time.monotonic()
                     jingcai_result = lottery_runtime.run_lottery_cycle('jingcai_football')
                     total_settled += int(jingcai_result.get('settled_count') or 0)
                     total_predictions.extend(jingcai_result.get('predictions') or [])
                     last_cycle_at['jingcai_football'] = now_monotonic
+                    jingcai_cycle_summary = {
+                        'ran': True,
+                        'duration_ms': int((time.monotonic() - jingcai_started_at) * 1000),
+                        'settled_count': int(jingcai_result.get('settled_count') or 0),
+                        'prediction_count': len(jingcai_result.get('predictions') or []),
+                        'mode': jingcai_plan.get('mode'),
+                        'interval_seconds': int(jingcai_plan.get('interval_seconds') or 0)
+                    }
+                    _log_runtime_event(
+                        'info',
+                        'jingcai_cycle_completed',
+                        scheduler_name=scheduler_name,
+                        owner_id=_scheduler_owner_id,
+                        **jingcai_cycle_summary
+                    )
 
                 result = {
                     'settled_count': total_settled,
@@ -230,57 +309,126 @@ def prediction_loop():
                     deleted_prediction_rows = int(maintenance_result.get('deleted_prediction_rows') or 0)
                     deleted_draw_rows = int(maintenance_result.get('deleted_draw_rows') or 0)
                     if deleted_prediction_rows or deleted_draw_rows:
-                        print(
-                            f"[MAINTAIN] {get_current_beijing_time_str()} "
-                            f"predictions={deleted_prediction_rows} draws={deleted_draw_rows} "
-                            f"prediction_cutoff={maintenance_result.get('prediction_cutoff_date')} "
-                            f"draw_cutoff={maintenance_result.get('draw_cutoff_date')}"
+                        _log_runtime_event(
+                            'info',
+                            'pc28_retention_maintenance',
+                            scheduler_name=scheduler_name,
+                            owner_id=_scheduler_owner_id,
+                            deleted_prediction_rows=deleted_prediction_rows,
+                            deleted_draw_rows=deleted_draw_rows,
+                            prediction_cutoff_date=maintenance_result.get('prediction_cutoff_date'),
+                            draw_cutoff_date=maintenance_result.get('draw_cutoff_date')
                         )
                         vacuum_interval = max(3600, int(config.PC28_ARCHIVE_VACUUM_INTERVAL))
                         if now_monotonic - last_vacuum_at >= vacuum_interval:
                             db.vacuum()
                             last_vacuum_at = now_monotonic
-                            print(f"[MAINTAIN] {get_current_beijing_time_str()} vacuum=completed")
+                            _log_runtime_event(
+                                'info',
+                                'pc28_retention_vacuum_completed',
+                                scheduler_name=scheduler_name,
+                                owner_id=_scheduler_owner_id
+                            )
 
                 db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
-                print(
-                    f"[AUTO] {get_current_beijing_time_str()} settled={result['settled_count']} "
-                    f"predictions={len(result['predictions'])} "
-                    f"jingcai_mode={jingcai_plan.get('mode')} "
-                    f"jingcai_interval={jingcai_plan.get('interval_seconds')}s"
+                total_duration_ms = int((time.monotonic() - loop_started_at) * 1000)
+                cycle_level = 'warning' if total_duration_ms >= config.PREDICTION_POLL_INTERVAL * 1000 else 'info'
+                _log_runtime_event(
+                    cycle_level,
+                    'scheduler_cycle_completed',
+                    scheduler_name=scheduler_name,
+                    owner_id=_scheduler_owner_id,
+                    settled_count=result['settled_count'],
+                    prediction_count=len(result['predictions']),
+                    total_duration_ms=total_duration_ms,
+                    pc28_ran=pc28_cycle_summary.get('ran'),
+                    pc28_duration_ms=pc28_cycle_summary.get('duration_ms'),
+                    pc28_latest_draw_issue_no=pc28_cycle_summary.get('latest_draw_issue_no'),
+                    pc28_next_issue_guess=pc28_cycle_summary.get('next_issue_guess'),
+                    jingcai_ran=jingcai_cycle_summary.get('ran'),
+                    jingcai_duration_ms=jingcai_cycle_summary.get('duration_ms'),
+                    jingcai_mode=jingcai_plan.get('mode'),
+                    jingcai_interval_seconds=int(jingcai_plan.get('interval_seconds') or 0)
+                )
+            else:
+                log_level = 'warning' if lock_result.get('error') else 'debug'
+                _log_runtime_event(
+                    log_level,
+                    'scheduler_lock_skipped',
+                    scheduler_name=scheduler_name,
+                    owner_id=_scheduler_owner_id,
+                    current_owner_id=lock_result.get('current_owner_id'),
+                    current_heartbeat_at=lock_result.get('current_heartbeat_at'),
+                    is_stale=lock_result.get('is_stale'),
+                    error=lock_result.get('error')
                 )
 
             loop_tick_seconds = max(5, min(config.PREDICTION_POLL_INTERVAL, config.JINGCAI_NEAR_MATCH_INTERVAL))
             time.sleep(loop_tick_seconds)
         except Exception as exc:
-            print(f'[ERROR] 自动预测线程异常: {exc}')
+            runtime_logger.exception(
+                json.dumps(
+                    {
+                        'event': 'prediction_loop_error',
+                        'time_beijing': get_current_beijing_time_str(),
+                        'scheduler_name': scheduler_name,
+                        'owner_id': _scheduler_owner_id,
+                        'error': str(exc)
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True
+                )
+            )
             time.sleep(10)
 
 
 def notification_delivery_loop():
-    print(f'[INFO] 通知投递线程启动，进程={os.getpid()}')
+    _log_runtime_event(
+        'info',
+        'notification_loop_started',
+        process_id=os.getpid(),
+        scheduler_name=NOTIFICATION_DELIVERY_SCHEDULER
+    )
     scheduler_name = NOTIFICATION_DELIVERY_SCHEDULER
     stale_after_seconds = max(int(config.NOTIFICATION_RETRY_MAX_SECONDS), 60)
     while True:
         try:
-            acquired = db.try_acquire_scheduler(
+            lock_result = db.try_acquire_scheduler_with_details(
                 scheduler_name,
                 _scheduler_owner_id,
                 stale_after_seconds=stale_after_seconds
             )
+            acquired = bool(lock_result.get('acquired'))
             if acquired:
                 db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
                 result = notification_service.process_delivery_jobs(limit=config.NOTIFICATION_WORKER_BATCH_SIZE)
                 db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
                 if int(result.get('processed_count') or 0) > 0:
-                    print(
-                        f"[NOTIFY] {get_current_beijing_time_str()} processed={result.get('processed_count')} "
-                        f"delivered={result.get('delivered_count')} retrying={result.get('retrying_count')} "
-                        f"failed={result.get('failed_count')}"
+                    _log_runtime_event(
+                        'info',
+                        'notification_delivery_completed',
+                        scheduler_name=scheduler_name,
+                        owner_id=_scheduler_owner_id,
+                        processed_count=int(result.get('processed_count') or 0),
+                        delivered_count=int(result.get('delivered_count') or 0),
+                        retrying_count=int(result.get('retrying_count') or 0),
+                        failed_count=int(result.get('failed_count') or 0)
                     )
             time.sleep(max(0.2, float(config.NOTIFICATION_WORKER_POLL_INTERVAL)))
         except Exception as exc:
-            print(f'[ERROR] 通知投递线程异常: {exc}')
+            runtime_logger.exception(
+                json.dumps(
+                    {
+                        'event': 'notification_loop_error',
+                        'time_beijing': get_current_beijing_time_str(),
+                        'scheduler_name': scheduler_name,
+                        'owner_id': _scheduler_owner_id,
+                        'error': str(exc)
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True
+                )
+            )
             time.sleep(2)
 
 
@@ -3464,10 +3612,9 @@ initialize_application()
 
 
 if __name__ == '__main__':
-    print('\n' + '=' * 60)
-    print('AI Lottery Predictor')
-    print('=' * 60)
-    print(f'Server: http://localhost:{config.PORT}')
-    print(f'Auto Prediction: {config.AUTO_PREDICTION}')
-    print('=' * 60 + '\n')
+    runtime_logger.info('=' * 60)
+    runtime_logger.info('AI Lottery Predictor')
+    runtime_logger.info('Server: http://localhost:%s', config.PORT)
+    runtime_logger.info('Auto Prediction: %s', config.AUTO_PREDICTION)
+    runtime_logger.info('=' * 60)
     app.run(debug=config.DEBUG, host=config.HOST, port=config.PORT, use_reloader=False)
