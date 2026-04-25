@@ -904,6 +904,12 @@ a {
     max-height: 520px;
 }
 
+.profit-simulation-card-list:focus-visible {
+    border-radius: 16px;
+    outline: 2px solid var(--primary);
+    outline-offset: 3px;
+}
+
 .data-table {
     width: 100%;
     border-collapse: collapse;
@@ -1776,6 +1782,18 @@ a {
 
     .simulation-table-wrap {
         max-height: 420px;
+    }
+
+    .profit-simulation-card-list:not([hidden]) {
+        display: grid !important;
+        max-height: 420px;
+        max-height: clamp(280px, 48vh, 420px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-gutter: stable;
+        scrollbar-width: thin;
+        padding-right: 4px;
     }
 
     .mobile-card {
