@@ -104,6 +104,7 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 LOG_FILE = 'pc28_predictor.log'
 LOG_MAX_BYTES = max(1024 * 1024, int(os.getenv('LOG_MAX_BYTES', 20 * 1024 * 1024)))
 LOG_BACKUP_COUNT = max(1, int(os.getenv('LOG_BACKUP_COUNT', 7)))
+SQLITE_WAL_ENABLED = os.getenv('SQLITE_WAL_ENABLED', 'True').lower() == 'true'
 SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.getenv('SQLITE_BUSY_TIMEOUT_MS', 5000)))
 
 # ============ 通知发送配置 ============

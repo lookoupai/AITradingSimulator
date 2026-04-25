@@ -39,6 +39,8 @@ class Database:
         )
         conn = sqlite3.connect(self.db_path, timeout=timeout_seconds)
         conn.row_factory = sqlite3.Row
+        if bool(getattr(config, 'SQLITE_WAL_ENABLED', True)):
+            conn.execute('PRAGMA journal_mode = WAL')
         conn.execute(f'PRAGMA busy_timeout = {int(getattr(config, "SQLITE_BUSY_TIMEOUT_MS", 5000))}')
         return conn
 
