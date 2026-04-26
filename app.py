@@ -802,6 +802,7 @@ def _build_pc28_performance_export_view(predictor: dict) -> dict | None:
     metrics = {}
     for metric_key in ['big_small', 'odd_even', 'combo']:
         metric_stats = (stats.get('metrics') or {}).get(metric_key) or {}
+        metric_streaks = (stats.get('metric_streaks') or {}).get(metric_key) or {}
         recent_100 = metric_stats.get('recent_100') or {}
         metrics[metric_key] = {
             'label': metric_stats.get('label') or metric_key,
@@ -810,6 +811,14 @@ def _build_pc28_performance_export_view(predictor: dict) -> dict | None:
                 'sample_count': int(recent_100.get('sample_count') or 0),
                 'hit_count': int(recent_100.get('hit_count') or 0),
                 'ratio_text': recent_100.get('ratio_text') or '--',
+            },
+            'streaks': {
+                'current_hit_streak': int(metric_streaks.get('current_hit_streak') or 0),
+                'current_miss_streak': int(metric_streaks.get('current_miss_streak') or 0),
+                'recent_100_max_hit_streak': int(metric_streaks.get('recent_100_max_hit_streak') or 0),
+                'recent_100_max_miss_streak': int(metric_streaks.get('recent_100_max_miss_streak') or 0),
+                'historical_max_hit_streak': int(metric_streaks.get('historical_max_hit_streak') or 0),
+                'historical_max_miss_streak': int(metric_streaks.get('historical_max_miss_streak') or 0),
             },
         }
 

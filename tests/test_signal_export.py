@@ -134,6 +134,10 @@ class SignalExportTests(unittest.TestCase):
             self.assertEqual(data['metrics']['big_small']['recent_100']['hit_rate'], 38.0)
             self.assertEqual(data['metrics']['odd_even']['recent_100']['hit_rate'], 61.0)
             self.assertEqual(data['metrics']['combo']['recent_100']['hit_rate'], 19.0)
+            self.assertEqual(data['metrics']['big_small']['streaks']['current_miss_streak'], 62)
+            self.assertEqual(data['metrics']['odd_even']['streaks']['current_miss_streak'], 39)
+            self.assertEqual(data['metrics']['combo']['streaks']['current_miss_streak'], 81)
+            self.assertEqual(data['metrics']['big_small']['streaks']['recent_100_max_miss_streak'], 62)
 
     def test_export_signals_rejects_non_pc28_predictor(self):
         with fresh_app_harness() as harness:
