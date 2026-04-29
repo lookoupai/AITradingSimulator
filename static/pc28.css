@@ -309,9 +309,13 @@ a {
 
 .sidebar-filter-bar {
     display: grid;
-    grid-template-columns: 112px minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
     margin-bottom: 8px;
+}
+
+.sidebar-filter-bar #predictorStyleFilter {
+    grid-column: 1 / -1;
 }
 
 .sidebar-filter-bar .home-select {

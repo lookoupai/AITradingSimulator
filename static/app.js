@@ -228,6 +228,7 @@ class PredictionApp {
         this.notificationDeliveries = [];
         this.currentLotteryType = 'pc28';
         this.formLotteryType = 'pc28';
+        this.selectedPredictorLotteryFilter = 'all';
         this.selectedPredictorEngineFilter = 'all';
         this.selectedPredictorStyleFilter = 'all';
         this.formStateByLottery = this.buildInitialFormStateByLottery();
@@ -344,6 +345,11 @@ class PredictionApp {
         this.bindEvent('footballManualSettleBtn', 'click', () => this.manualSettleFootball());
         this.bindEvent('footballReplayBtn', 'click', () => this.replayFootballScheduleByDate());
         this.bindEvent('togglePresetListBtn', 'click', () => this.togglePresetList());
+        this.bindEvent('predictorLotteryFilter', 'change', (event) => {
+            this.selectedPredictorLotteryFilter = event.target.value || 'all';
+            this.syncPredictorStyleFilterOptions();
+            this.renderPredictorList(this.getFilteredPredictors());
+        });
         this.bindEvent('predictorEngineFilter', 'change', (event) => {
             this.selectedPredictorEngineFilter = event.target.value || 'all';
             this.syncPredictorStyleFilterOptions();
@@ -2469,19 +2475,48 @@ class PredictionApp {
         return `AI / ${predictor.prediction_method || predictor.execution_label || '--'}`;
     }
 
+    syncPredictorLotteryFilterOptions() {
+        const select = this.getElement('predictorLotteryFilter');
+        if (!select) {
+            return;
+        }
+
+        const optionMap = new Map();
+        (this.predictors || []).forEach((predictor) => {
+            const key = predictor.lottery_type || 'pc28';
+            if (!optionMap.has(key)) {
+                optionMap.set(key, predictor.lottery_label || this.getLotteryConfig(key).label || key);
+            }
+        });
+
+        const options = Array.from(optionMap.entries());
+        select.innerHTML = [
+            '<option value="all">全部彩种</option>',
+            ...options.map(([value, label]) => `<option value="${this.escapeHtml(value)}">${this.escapeHtml(label)}</option>`)
+        ].join('');
+        if (!options.some(([value]) => value === this.selectedPredictorLotteryFilter)) {
+            this.selectedPredictorLotteryFilter = 'all';
+        }
+        select.value = this.selectedPredictorLotteryFilter;
+    }
+
+    predictorMatchesSidebarFilters(predictor) {
+        const lotteryMatches = this.selectedPredictorLotteryFilter === 'all'
+            || (predictor.lottery_type || 'pc28') === this.selectedPredictorLotteryFilter;
+        const engineMatches = this.selectedPredictorEngineFilter === 'all'
+            || (predictor.engine_type || 'ai') === this.selectedPredictorEngineFilter;
+        return lotteryMatches && engineMatches;
+    }
+
     syncPredictorStyleFilterOptions() {
         const select = this.getElement('predictorStyleFilter');
+        this.syncPredictorLotteryFilterOptions();
         const engineSelect = this.getElement('predictorEngineFilter');
         if (!select) {
             return;
         }
 
-        const predictors = (this.predictors || []).filter((predictor) => {
-            if (this.selectedPredictorEngineFilter === 'all') {
-                return true;
-            }
-            return (predictor.engine_type || 'ai') === this.selectedPredictorEngineFilter;
-        });
+        const predictors = (this.predictors || []).filter((predictor) => this.predictorMatchesSidebarFilters(predictor));
         const optionMap = new Map();
         predictors.forEach((predictor) => {
             const key = this.predictorStyleFilterKey(predictor);
@@ -2507,9 +2542,7 @@ class PredictionApp {
 
     getFilteredPredictors() {
         return (this.predictors || []).filter((predictor) => {
-            const engineMatches = this.selectedPredictorEngineFilter === 'all'
-                || (predictor.engine_type || 'ai') === this.selectedPredictorEngineFilter;
-            if (!engineMatches) {
+            if (!this.predictorMatchesSidebarFilters(predictor)) {
                 return false;
             }
             if (this.selectedPredictorStyleFilter === 'all') {
@@ -2629,7 +2662,7 @@ class PredictionApp {
     async selectPredictor(predictorId, shouldLoad = true) {
         this.cancelPendingProfitSimulation();
         this.currentPredictorId = predictorId;
-        this.renderPredictorList(this.predictors || []);
+        this.renderPredictorList(this.getFilteredPredictors());
         if (shouldLoad) {
             await this.loadPredictorDashboard(predictorId);
         }
