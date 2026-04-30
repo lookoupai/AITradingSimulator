@@ -57,6 +57,8 @@ DEFAULT_MACHINE_ALGORITHMS = {
     'pc28': 'pc28_frequency_v1',
     'jingcai_football': 'football_odds_baseline_v1'
 }
+USER_ALGORITHM_PREFIX = 'user:'
+BUILTIN_ALGORITHM_PREFIX = 'builtin:'
 
 
 def normalize_engine_type(value) -> str:
@@ -81,6 +83,26 @@ def get_default_machine_algorithm(lottery_type: str) -> str:
     return DEFAULT_MACHINE_ALGORITHMS.get(normalized_lottery_type, '')
 
 
+def is_user_algorithm_key(value) -> bool:
+    text = str(value or '').strip()
+    if not text.startswith(USER_ALGORITHM_PREFIX):
+        return False
+    return text[len(USER_ALGORITHM_PREFIX):].isdigit()
+
+
+def get_user_algorithm_id(value) -> int | None:
+    if not is_user_algorithm_key(value):
+        return None
+    return int(str(value).strip()[len(USER_ALGORITHM_PREFIX):])
+
+
+def normalize_builtin_algorithm_key(value) -> str:
+    text = str(value or '').strip()
+    if text.startswith(BUILTIN_ALGORITHM_PREFIX):
+        return text[len(BUILTIN_ALGORITHM_PREFIX):].strip()
+    return text
+
+
 def normalize_algorithm_key(lottery_type: str, engine_type: str, value) -> str:
     normalized_engine_type = normalize_engine_type(engine_type)
     if normalized_engine_type != 'machine':
@@ -89,6 +111,9 @@ def normalize_algorithm_key(lottery_type: str, engine_type: str, value) -> str:
     options = list_machine_algorithms(lottery_type)
     allowed_keys = {item['key'] for item in options}
     text = str(value or '').strip()
+    if is_user_algorithm_key(text):
+        return text
+    text = normalize_builtin_algorithm_key(text)
     if text in allowed_keys:
         return text
     return get_default_machine_algorithm(lottery_type)
@@ -100,6 +125,8 @@ def get_algorithm_label(lottery_type: str, engine_type: str, algorithm_key) -> s
         return ''
 
     normalized_key = normalize_algorithm_key(lottery_type, normalized_engine_type, algorithm_key)
+    if is_user_algorithm_key(normalized_key):
+        return f'用户算法 #{get_user_algorithm_id(normalized_key)}'
     for item in list_machine_algorithms(lottery_type):
         if item['key'] == normalized_key:
             return item['label']
@@ -112,6 +139,8 @@ def get_algorithm_description(lottery_type: str, engine_type: str, algorithm_key
         return '按模型与提示词动态生成预测结果。'
 
     normalized_key = normalize_algorithm_key(lottery_type, normalized_engine_type, algorithm_key)
+    if is_user_algorithm_key(normalized_key):
+        return '使用当前用户自定义算法定义执行预测。'
     for item in list_machine_algorithms(lottery_type):
         if item['key'] == normalized_key:
             return str(item.get('description') or '').strip()

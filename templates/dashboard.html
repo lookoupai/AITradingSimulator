@@ -29,6 +29,10 @@
                     <i class="bi bi-arrow-clockwise"></i>
                     刷新
                 </button>
+                <button class="btn ghost" id="userAlgorithmsBtn">
+                    <i class="bi bi-diagram-3"></i>
+                    我的算法
+                </button>
                 <a class="btn ghost" href="/settings">
                     <i class="bi bi-sliders"></i>
                     设置
@@ -639,6 +643,10 @@
                 </label>
                 <label class="form-field span-2" id="algorithmField" style="display: none;">
                     <span>机器算法</span>
+                    <select id="algorithmSource" class="form-input">
+                        <option value="builtin">平台内置</option>
+                        <option value="user">我的算法</option>
+                    </select>
                     <select id="algorithmKey" class="form-input"></select>
                     <small class="field-hint" id="algorithmHint">选择当前方案要使用的内置机器算法。</small>
                 </label>
@@ -800,6 +808,92 @@
                 <button class="btn primary" id="savePredictorBtn">保存方案</button>
             </div>
             <div id="testPredictorResult" class="test-result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <div class="modal" id="userAlgorithmModal">
+        <div class="modal-card algorithm-modal-card">
+            <div class="panel-header">
+                <div>
+                    <h3>我的算法</h3>
+                    <p class="panel-subtitle">先用 JSON 定义竞彩足球算法，校验通过后可在预测方案中选择。</p>
+                </div>
+                <button class="icon-btn" id="closeUserAlgorithmModalBtn">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+
+            <div class="algorithm-manager-grid">
+                <section class="algorithm-list-panel">
+                    <div class="panel-actions algorithm-toolbar">
+                        <select id="userAlgorithmLotteryFilter" class="form-input">
+                            <option value="jingcai_football">竞彩足球</option>
+                            <option value="pc28">加拿大28 / PC28</option>
+                        </select>
+                        <button class="btn ghost compact" id="newUserAlgorithmBtn">新建</button>
+                    </div>
+                    <div id="userAlgorithmList" class="algorithm-list">
+                        <div class="empty-panel">暂无用户算法</div>
+                    </div>
+                </section>
+
+                <section class="algorithm-editor-panel">
+                    <input type="hidden" id="userAlgorithmId">
+                    <div class="form-grid">
+                        <label class="form-field">
+                            <span>算法名称</span>
+                            <input type="text" id="userAlgorithmName" placeholder="例如：进球率预测法">
+                        </label>
+                        <label class="form-field">
+                            <span>彩种</span>
+                            <select id="userAlgorithmLotteryType" class="form-input">
+                                <option value="jingcai_football">竞彩足球</option>
+                                <option value="pc28">加拿大28 / PC28</option>
+                            </select>
+                        </label>
+                    </div>
+                    <label class="form-field">
+                        <span>说明</span>
+                        <input type="text" id="userAlgorithmDescription" placeholder="简短描述算法思路">
+                    </label>
+                    <div class="form-field help-block">
+                        <span>AI 帮写算法</span>
+                        <small class="field-hint">使用你自己的 OpenAI 兼容 API 配置生成算法 DSL，平台不会使用统一 Key。</small>
+                        <div class="form-grid algorithm-ai-grid">
+                            <label class="form-field">
+                                <span>API 地址</span>
+                                <input type="text" id="algorithmAiApiUrl" placeholder="https://api.deepseek.com">
+                            </label>
+                            <label class="form-field">
+                                <span>模型名称</span>
+                                <input type="text" id="algorithmAiModelName" placeholder="deepseek-chat / gemini-2.5-flash">
+                            </label>
+                            <label class="form-field span-2">
+                                <span>API Key</span>
+                                <input type="password" id="algorithmAiApiKey" placeholder="仅用于本次生成请求">
+                            </label>
+                            <label class="form-field span-2">
+                                <span>算法思路</span>
+                                <textarea id="algorithmAiMessage" rows="4" placeholder="例如：我想做进球率预测法，重点看主队近6场进球率、客队近6场失球率，赔率低于1.35跳过。"></textarea>
+                            </label>
+                        </div>
+                        <div class="modal-actions left-actions">
+                            <button class="btn ghost" id="generateUserAlgorithmBtn">AI 生成草稿</button>
+                        </div>
+                    </div>
+                    <label class="form-field">
+                        <span>算法 JSON</span>
+                        <textarea id="userAlgorithmDefinition" class="code-textarea" rows="18" spellcheck="false"></textarea>
+                        <small class="field-hint">当前执行器只支持竞彩足球用户算法绑定方案；PC28 可先保存草稿。</small>
+                    </label>
+                    <div class="modal-actions left-actions">
+                        <button class="btn ghost" id="loadAlgorithmSampleBtn">填入示例</button>
+                        <button class="btn ghost" id="validateUserAlgorithmBtn">校验</button>
+                        <button class="btn primary" id="saveUserAlgorithmBtn">保存算法</button>
+                    </div>
+                    <div id="userAlgorithmResult" class="test-result" style="display: none;"></div>
+                </section>
+            </div>
         </div>
     </div>
 

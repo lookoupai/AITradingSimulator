@@ -55,6 +55,10 @@ docker-compose up -d --build
 - 附带脚本：`.agents/skills/jingcai-football-data/scripts/probe_jingcai_source.py`
 - 目的：让从 GitHub 拉取本项目的开发者，可以直接在仓库里复用这份领域知识，而不是依赖某台机器上的全局 skill 目录。
 
+## 设计文档
+
+- [用户自定义算法与 AI 方案设计](docs/user_algorithm_design.md)：设计 AI 聊天生成用户自定义预测算法、DSL 校验执行、回测和预测方案接入。
+
 ### 探测脚本示例
 
 探测新浪历史赛事列表：

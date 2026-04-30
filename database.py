@@ -22,6 +22,8 @@ from utils.predictor_engine import (
     get_algorithm_label,
     get_default_machine_algorithm,
     get_engine_type_label,
+    get_user_algorithm_id,
+    is_user_algorithm_key,
     normalize_algorithm_key,
     normalize_engine_type,
     resolve_execution_label
@@ -107,6 +109,44 @@ class Database:
                 last_counted_failure_key TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (predictor_id) REFERENCES predictors(id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_algorithms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                lottery_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                algorithm_type TEXT NOT NULL DEFAULT 'dsl',
+                definition_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                active_version INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_algorithm_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                algorithm_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                version INTEGER NOT NULL,
+                change_summary TEXT NOT NULL DEFAULT '',
+                definition_json TEXT NOT NULL,
+                validation_json TEXT NOT NULL DEFAULT '{}',
+                backtest_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (algorithm_id) REFERENCES user_algorithms(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(algorithm_id, version)
             )
             '''
         )
@@ -497,6 +537,8 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status, issue_no)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pc28_prediction_daily_summary_predictor ON pc28_prediction_daily_summary(predictor_id, summary_date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictor_runtime_state_paused ON predictor_runtime_state(auto_paused, predictor_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_algorithms_user ON user_algorithms(user_id, lottery_type, status)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_algorithm_versions_algorithm ON user_algorithm_versions(algorithm_id, version)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_sender_accounts_user ON notification_sender_accounts(user_id, channel_type, status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_bet_profiles_user ON bet_profiles(user_id, lottery_type, enabled)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_endpoints_user ON notification_endpoints(user_id, channel_type, status)')
@@ -839,6 +881,196 @@ class Database:
         cursor.execute(
             'SELECT 1 FROM predictors WHERE id = ? AND user_id = ?',
             (predictor_id, user_id)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row is not None
+
+    # ============ User Algorithm Management ============
+
+    def create_user_algorithm(
+        self,
+        user_id: int,
+        lottery_type: str,
+        name: str,
+        description: str,
+        definition: dict,
+        validation: dict | None = None,
+        status: str = 'draft',
+        algorithm_type: str = 'dsl',
+        change_summary: str = '初始版本'
+    ) -> int:
+        normalized_lottery_type = normalize_lottery_type(lottery_type)
+        normalized_status = self._normalize_user_algorithm_status(status)
+        definition_json = json.dumps(definition or {}, ensure_ascii=False)
+        validation_json = json.dumps(validation or {}, ensure_ascii=False)
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO user_algorithms (
+                user_id, lottery_type, name, description, algorithm_type,
+                definition_json, status, active_version
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            ''',
+            (
+                user_id,
+                normalized_lottery_type,
+                str(name or '').strip(),
+                str(description or '').strip(),
+                str(algorithm_type or 'dsl').strip() or 'dsl',
+                definition_json,
+                normalized_status
+            )
+        )
+        algorithm_id = int(cursor.lastrowid or 0)
+        cursor.execute(
+            '''
+            INSERT INTO user_algorithm_versions (
+                algorithm_id, user_id, version, change_summary,
+                definition_json, validation_json, backtest_json
+            )
+            VALUES (?, ?, 1, ?, ?, ?, '{}')
+            ''',
+            (
+                algorithm_id,
+                user_id,
+                str(change_summary or '').strip() or '初始版本',
+                definition_json,
+                validation_json
+            )
+        )
+        conn.commit()
+        conn.close()
+        return algorithm_id
+
+    def update_user_algorithm(
+        self,
+        algorithm_id: int,
+        user_id: int,
+        fields: dict,
+        create_version: bool = True,
+        change_summary: str = '更新算法定义'
+    ):
+        if not fields:
+            return
+
+        existing = self.get_user_algorithm_for_user(algorithm_id, user_id)
+        if not existing:
+            return
+
+        allowed_fields = {'name', 'description', 'definition_json', 'status'}
+        updates = []
+        values = []
+        for key, value in fields.items():
+            if key not in allowed_fields:
+                continue
+            if key == 'status':
+                value = self._normalize_user_algorithm_status(value)
+            updates.append(f'{key} = ?')
+            values.append(value)
+
+        if not updates:
+            return
+
+        next_version = int(existing.get('active_version') or 1)
+        if create_version and 'definition_json' in fields:
+            next_version += 1
+            updates.append('active_version = ?')
+            values.append(next_version)
+
+        updates.append('updated_at = CURRENT_TIMESTAMP')
+        values.extend([algorithm_id, user_id])
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            UPDATE user_algorithms
+            SET {', '.join(updates)}
+            WHERE id = ? AND user_id = ?
+            ''',
+            values
+        )
+        if create_version and 'definition_json' in fields:
+            cursor.execute(
+                '''
+                INSERT INTO user_algorithm_versions (
+                    algorithm_id, user_id, version, change_summary,
+                    definition_json, validation_json, backtest_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, '{}')
+                ''',
+                (
+                    algorithm_id,
+                    user_id,
+                    next_version,
+                    str(change_summary or '').strip() or '更新算法定义',
+                    fields['definition_json'],
+                    fields.get('validation_json') or '{}'
+                )
+            )
+        conn.commit()
+        conn.close()
+
+    def get_user_algorithm(self, algorithm_id: int) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM user_algorithms WHERE id = ?', (algorithm_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_user_algorithm(row)
+
+    def get_user_algorithm_for_user(self, algorithm_id: int, user_id: int) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM user_algorithms
+            WHERE id = ? AND user_id = ?
+            ''',
+            (algorithm_id, user_id)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_user_algorithm(row)
+
+    def get_user_algorithms_by_user(
+        self,
+        user_id: int,
+        lottery_type: str | None = None,
+        include_disabled: bool = False
+    ) -> list[dict]:
+        conditions = ['user_id = ?']
+        values: list[Any] = [user_id]
+        if lottery_type:
+            conditions.append('lottery_type = ?')
+            values.append(normalize_lottery_type(lottery_type))
+        if not include_disabled:
+            conditions.append("status != 'disabled'")
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            SELECT * FROM user_algorithms
+            WHERE {' AND '.join(conditions)}
+            ORDER BY updated_at DESC, id DESC
+            ''',
+            values
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_user_algorithm(row) for row in rows]
+
+    def user_algorithm_exists_for_user(self, algorithm_id: int, user_id: int) -> bool:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT 1 FROM user_algorithms WHERE id = ? AND user_id = ?',
+            (algorithm_id, user_id)
         )
         row = cursor.fetchone()
         conn.close()
@@ -3728,12 +3960,39 @@ class Database:
         data['data_injection_mode'] = data.get('data_injection_mode') or 'summary'
         data['engine_type_label'] = get_engine_type_label(data['engine_type'])
         data['algorithm_label'] = get_algorithm_label(lottery_type, data['engine_type'], data['algorithm_key'])
+        if is_user_algorithm_key(data['algorithm_key']):
+            user_algorithm_id = get_user_algorithm_id(data['algorithm_key'])
+            user_algorithm = self.get_user_algorithm(user_algorithm_id) if user_algorithm_id else None
+            data['user_algorithm_id'] = user_algorithm_id
+            data['user_algorithm'] = user_algorithm
+            if user_algorithm:
+                data['algorithm_label'] = user_algorithm.get('name') or data['algorithm_label']
+        else:
+            data['user_algorithm_id'] = None
+            data['user_algorithm'] = None
         data['execution_label'] = resolve_execution_label(data)
         if data['engine_type'] == 'machine' and not data['algorithm_key']:
             data['algorithm_key'] = get_default_machine_algorithm(lottery_type)
         if not include_secret:
             data.pop('api_key', None)
         return data
+
+    def _prepare_user_algorithm(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+
+        data = dict(row)
+        data['lottery_type'] = normalize_lottery_type(data.get('lottery_type'))
+        data['definition'] = self._decode_json_object(data.get('definition_json'))
+        data['key'] = f"user:{data['id']}"
+        data['status'] = self._normalize_user_algorithm_status(data.get('status'))
+        return data
+
+    def _normalize_user_algorithm_status(self, value) -> str:
+        text = str(value or '').strip().lower()
+        if text in {'draft', 'validated', 'disabled'}:
+            return text
+        return 'draft'
 
     def _default_predictor_runtime_state(self, predictor_id: int | None = None) -> dict:
         return {

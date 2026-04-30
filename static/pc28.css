@@ -1184,6 +1184,72 @@ a {
     box-shadow: var(--shadow);
 }
 
+.algorithm-modal-card {
+    width: min(1120px, 100%);
+}
+
+.algorithm-manager-grid {
+    display: grid;
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
+}
+
+.algorithm-list-panel,
+.algorithm-editor-panel {
+    min-width: 0;
+}
+
+.algorithm-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.algorithm-ai-grid .form-field {
+    margin-bottom: 0;
+}
+
+.algorithm-list {
+    display: grid;
+    gap: 10px;
+    max-height: 560px;
+    overflow: auto;
+    padding-right: 4px;
+}
+
+.algorithm-list-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--panel-soft);
+    cursor: pointer;
+}
+
+.algorithm-list-card:hover,
+.algorithm-list-card.selected {
+    border-color: color-mix(in srgb, var(--primary) 50%, var(--border) 50%);
+}
+
+.algorithm-list-card strong {
+    display: block;
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.algorithm-list-card p {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
 .form-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1756,6 +1822,7 @@ a {
     .insight-grid,
     .form-grid,
     .checkbox-grid,
+    .algorithm-manager-grid,
     .preset-grid,
     .streak-grid {
         grid-template-columns: 1fr;
@@ -1763,6 +1830,14 @@ a {
 
     .span-2 {
         grid-column: span 1;
+    }
+
+    .algorithm-toolbar {
+        grid-template-columns: 1fr;
+    }
+
+    .algorithm-list {
+        max-height: 260px;
     }
 
     .overview-primary,

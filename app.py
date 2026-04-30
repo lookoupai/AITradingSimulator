@@ -29,6 +29,8 @@ from lotteries.registry import (
     supports_public_pages
 )
 from services.jingcai_football_service import JingcaiFootballService
+from services.algorithm_chat_service import generate_algorithm_draft
+from services.algorithm_definition_validator import validate_algorithm_definition
 from services.bet_strategy import BET_MODE_LABELS, build_bet_strategy, build_bet_strategy_label
 from services.lottery_runtime import LotteryRuntime
 from services.notification_rule_engine import NotificationRuleEngine, PERFORMANCE_EVENT_TYPE
@@ -59,9 +61,11 @@ from utils.pc28 import (
     normalize_share_level
 )
 from utils.predictor_engine import (
+    get_user_algorithm_id,
     get_algorithm_label,
     get_algorithm_description,
     get_engine_type_label,
+    is_user_algorithm_key,
     normalize_algorithm_key,
     normalize_engine_type,
     resolve_execution_description,
@@ -456,6 +460,10 @@ def _serialize_predictor(predictor: dict) -> dict:
     algorithm_key = normalize_algorithm_key(lottery_type, engine_type, predictor.get('algorithm_key'))
     algorithm_label = get_algorithm_label(lottery_type, engine_type, algorithm_key)
     algorithm_description = get_algorithm_description(lottery_type, engine_type, algorithm_key)
+    user_algorithm = predictor.get('user_algorithm') if is_user_algorithm_key(algorithm_key) else None
+    if user_algorithm:
+        algorithm_label = user_algorithm.get('name') or algorithm_label
+        algorithm_description = user_algorithm.get('description') or algorithm_description
     data = {
         'id': predictor['id'],
         'user_id': predictor['user_id'],
@@ -467,6 +475,10 @@ def _serialize_predictor(predictor: dict) -> dict:
         'engine_type': engine_type,
         'engine_type_label': get_engine_type_label(engine_type),
         'algorithm_key': algorithm_key,
+        'algorithm_source': 'user' if is_user_algorithm_key(algorithm_key) else ('builtin' if engine_type == 'machine' else ''),
+        'user_algorithm_id': get_user_algorithm_id(algorithm_key) if is_user_algorithm_key(algorithm_key) else None,
+        'user_algorithm_name': user_algorithm.get('name') if user_algorithm else '',
+        'user_algorithm_status': user_algorithm.get('status') if user_algorithm else '',
         'algorithm_label': algorithm_label,
         'algorithm_description': algorithm_description,
         'execution_label': resolve_execution_label({
@@ -1084,6 +1096,10 @@ def _serialize_admin_predictor(item: dict) -> dict:
     algorithm_key = normalize_algorithm_key(lottery_type, engine_type, item.get('algorithm_key'))
     algorithm_label = get_algorithm_label(lottery_type, engine_type, algorithm_key)
     algorithm_description = get_algorithm_description(lottery_type, engine_type, algorithm_key)
+    user_algorithm = item.get('user_algorithm') if is_user_algorithm_key(algorithm_key) else None
+    if user_algorithm:
+        algorithm_label = user_algorithm.get('name') or algorithm_label
+        algorithm_description = user_algorithm.get('description') or algorithm_description
     return {
         'id': item['id'],
         'user_id': item['user_id'],
@@ -1093,6 +1109,10 @@ def _serialize_admin_predictor(item: dict) -> dict:
         'engine_type': engine_type,
         'engine_type_label': get_engine_type_label(engine_type),
         'algorithm_key': algorithm_key,
+        'algorithm_source': 'user' if is_user_algorithm_key(algorithm_key) else ('builtin' if engine_type == 'machine' else ''),
+        'user_algorithm_id': get_user_algorithm_id(algorithm_key) if is_user_algorithm_key(algorithm_key) else None,
+        'user_algorithm_name': user_algorithm.get('name') if user_algorithm else '',
+        'user_algorithm_status': user_algorithm.get('status') if user_algorithm else '',
         'algorithm_label': algorithm_label,
         'algorithm_description': algorithm_description,
         'execution_label': resolve_execution_label({
@@ -1811,7 +1831,11 @@ def _validate_notification_subscription_payload(
     return payload, errors
 
 
-def _validate_predictor_payload(data: dict, existing_predictor: dict | None = None) -> tuple[dict, list[str]]:
+def _validate_predictor_payload(
+    data: dict,
+    existing_predictor: dict | None = None,
+    user_id: int | None = None
+) -> tuple[dict, list[str]]:
     errors = []
     lottery_type = normalize_lottery_type(data.get('lottery_type') or (existing_predictor.get('lottery_type') if existing_predictor else 'pc28'))
     lottery_definition = get_lottery_definition(lottery_type)
@@ -1873,6 +1897,17 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
         errors.append('模型名称不能为空')
     if engine_type == 'machine' and not algorithm_key:
         errors.append('机器算法不能为空')
+    if engine_type == 'machine' and is_user_algorithm_key(algorithm_key):
+        user_algorithm_id = get_user_algorithm_id(algorithm_key)
+        user_algorithm = db.get_user_algorithm_for_user(user_algorithm_id, user_id) if user_id and user_algorithm_id else None
+        if not user_algorithm:
+            errors.append('无权使用此用户算法')
+        elif user_algorithm.get('lottery_type') != lottery_type:
+            errors.append('用户算法彩种与预测方案彩种不一致')
+        elif user_algorithm.get('status') != 'validated':
+            errors.append('用户算法尚未通过校验，不能用于预测方案')
+        elif lottery_type != 'jingcai_football':
+            errors.append('当前仅支持竞彩足球用户算法绑定预测方案')
 
     if primary_metric not in prediction_targets:
         errors.append('主玩法必须包含在预测目标中')
@@ -1916,6 +1951,63 @@ def _validate_predictor_payload(data: dict, existing_predictor: dict | None = No
         'lottery_type': lottery_type
     }
     return payload, errors
+
+
+def _validate_user_algorithm_payload(data: dict, existing_algorithm: dict | None = None) -> tuple[dict, list[str]]:
+    errors = []
+    fallback_lottery_type = existing_algorithm.get('lottery_type') if existing_algorithm else 'pc28'
+    fallback_name = existing_algorithm.get('name') if existing_algorithm else ''
+    fallback_description = existing_algorithm.get('description') if existing_algorithm else ''
+    fallback_definition = existing_algorithm.get('definition') if existing_algorithm else {}
+
+    lottery_type = normalize_lottery_type(data.get('lottery_type') or fallback_lottery_type)
+    name = str(data.get('name') or fallback_name).strip()
+    description = str(data.get('description') or fallback_description).strip()
+    definition = data.get('definition', fallback_definition)
+    if isinstance(definition, str):
+        try:
+            definition = json.loads(definition)
+        except json.JSONDecodeError:
+            definition = {}
+            errors.append('算法定义必须是有效 JSON')
+    if not isinstance(definition, dict):
+        definition = {}
+        errors.append('算法定义必须是 JSON 对象')
+
+    if not name:
+        errors.append('算法名称不能为空')
+
+    validation = validate_algorithm_definition(definition, lottery_type=lottery_type)
+    status = 'validated' if validation['valid'] and not errors else 'draft'
+    payload = {
+        'lottery_type': lottery_type,
+        'name': name,
+        'description': description,
+        'definition': validation['normalized_definition'] if validation['normalized_definition'] else definition,
+        'validation': validation,
+        'status': status,
+        'change_summary': str(data.get('change_summary') or '').strip()
+    }
+    return payload, errors
+
+
+def _serialize_user_algorithm(item: dict | None) -> dict:
+    if not item:
+        return {}
+    return {
+        'id': item['id'],
+        'key': item.get('key') or f"user:{item['id']}",
+        'user_id': item['user_id'],
+        'lottery_type': item['lottery_type'],
+        'name': item['name'],
+        'description': item.get('description') or '',
+        'algorithm_type': item.get('algorithm_type') or 'dsl',
+        'definition': item.get('definition') or {},
+        'status': item.get('status') or 'draft',
+        'active_version': item.get('active_version') or 1,
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None
+    }
 
 
 def _get_predictor_dashboard_data(predictor_id: int) -> dict:
@@ -2145,6 +2237,14 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
         'prediction_targets': normalize_prediction_targets(lottery_type, data.get('prediction_targets', fallback_targets)),
         'history_window': history_window
     }
+    if resolved['engine_type'] == 'machine' and is_user_algorithm_key(resolved['algorithm_key']):
+        user_algorithm_id = get_user_algorithm_id(resolved['algorithm_key'])
+        user_algorithm = db.get_user_algorithm_for_user(user_algorithm_id, user_id) if user_algorithm_id else None
+        if not user_algorithm:
+            raise PermissionError('无权使用此用户算法')
+        if user_algorithm.get('lottery_type') != lottery_type:
+            raise PermissionError('用户算法彩种与预测方案彩种不一致')
+        resolved['user_algorithm'] = user_algorithm
 
     return existing, resolved
 
@@ -3075,6 +3175,193 @@ def resume_admin_predictor_auto_pause(predictor_id: int):
     })
 
 
+@app.route('/api/user-algorithms', methods=['GET'])
+@login_required
+def get_user_algorithms():
+    user_id = get_current_user_id()
+    lottery_type = request.args.get('lottery_type')
+    include_disabled = _parse_bool(request.args.get('include_disabled'), default=False)
+    algorithms = db.get_user_algorithms_by_user(
+        user_id,
+        lottery_type=lottery_type,
+        include_disabled=include_disabled
+    )
+    return jsonify([_serialize_user_algorithm(item) for item in algorithms])
+
+
+@app.route('/api/user-algorithms', methods=['POST'])
+@login_required
+def create_user_algorithm():
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+    payload, errors = _validate_user_algorithm_payload(data)
+    if errors:
+        return jsonify({'error': '；'.join(errors), 'validation': payload.get('validation')}), 400
+
+    algorithm_id = db.create_user_algorithm(
+        user_id=user_id,
+        lottery_type=payload['lottery_type'],
+        name=payload['name'],
+        description=payload['description'],
+        definition=payload['definition'],
+        validation=payload['validation'],
+        status=payload['status'],
+        change_summary=payload['change_summary'] or '初始版本'
+    )
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    status_message = '用户算法创建成功' if payload['status'] == 'validated' else '用户算法已保存为草稿'
+    return jsonify({
+        'id': algorithm_id,
+        'message': status_message,
+        'algorithm': _serialize_user_algorithm(algorithm),
+        'validation': payload['validation']
+    })
+
+
+@app.route('/api/user-algorithms/validate', methods=['POST'])
+@login_required
+def validate_user_algorithm_draft():
+    data = request.get_json() or {}
+    definition = data.get('definition') or {}
+    lottery_type = normalize_lottery_type(data.get('lottery_type') or (definition.get('lottery_type') if isinstance(definition, dict) else 'pc28'))
+    if isinstance(definition, str):
+        try:
+            definition = json.loads(definition)
+        except json.JSONDecodeError:
+            return jsonify({'valid': False, 'errors': ['算法定义必须是有效 JSON'], 'warnings': []}), 400
+    validation = validate_algorithm_definition(definition, lottery_type=lottery_type)
+    return jsonify(validation)
+
+
+@app.route('/api/user-algorithms/ai-draft', methods=['POST'])
+@login_required
+def generate_user_algorithm_ai_draft():
+    data = request.get_json() or {}
+    api_key = str(data.get('api_key') or '').strip()
+    api_url = str(data.get('api_url') or '').strip()
+    model_name = str(data.get('model_name') or '').strip()
+    api_mode = normalize_api_mode(data.get('api_mode') or 'auto')
+    lottery_type = normalize_lottery_type(data.get('lottery_type') or 'jingcai_football')
+    user_message = str(data.get('message') or '').strip()
+    current_definition = data.get('current_definition') if isinstance(data.get('current_definition'), dict) else None
+
+    if not api_key:
+        return jsonify({'error': 'AI 算法助手需要 API Key'}), 400
+    if not api_url:
+        return jsonify({'error': 'AI 算法助手需要 API 地址'}), 400
+    if not model_name:
+        return jsonify({'error': 'AI 算法助手需要模型名称'}), 400
+    if not user_message:
+        return jsonify({'error': '请先描述你的算法思路'}), 400
+
+    try:
+        result = generate_algorithm_draft(
+            api_key=api_key,
+            api_url=api_url,
+            model_name=model_name,
+            api_mode=api_mode,
+            lottery_type=lottery_type,
+            user_message=user_message,
+            current_definition=current_definition,
+            temperature=0.2
+        )
+        payload = result['payload']
+        return jsonify({
+            'message': payload.get('message') or 'AI 已生成算法草稿',
+            'reply_type': payload.get('reply_type') or 'draft_algorithm',
+            'questions': payload.get('questions') or [],
+            'algorithm': result['algorithm'],
+            'change_summary': payload.get('change_summary') or '',
+            'risk_notes': payload.get('risk_notes') or [],
+            'validation': result['validation'],
+            'api_mode': result['api_mode'],
+            'response_model': result['response_model'],
+            'finish_reason': result['finish_reason'],
+            'latency_ms': result['latency_ms'],
+            'raw_response': result['raw_response'][:1200]
+        })
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>', methods=['GET'])
+@login_required
+def get_user_algorithm(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权访问'}), 404
+    return jsonify(_serialize_user_algorithm(algorithm))
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>', methods=['PUT'])
+@login_required
+def update_user_algorithm(algorithm_id: int):
+    user_id = get_current_user_id()
+    existing = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not existing:
+        return jsonify({'error': '用户算法不存在或无权操作'}), 404
+
+    data = request.get_json() or {}
+    payload, errors = _validate_user_algorithm_payload(data, existing_algorithm=existing)
+    if errors:
+        return jsonify({'error': '；'.join(errors), 'validation': payload.get('validation')}), 400
+
+    db.update_user_algorithm(
+        algorithm_id=algorithm_id,
+        user_id=user_id,
+        fields={
+            'name': payload['name'],
+            'description': payload['description'],
+            'definition_json': json.dumps(payload['definition'], ensure_ascii=False),
+            'validation_json': json.dumps(payload['validation'], ensure_ascii=False),
+            'status': payload['status']
+        },
+        create_version=True,
+        change_summary=payload['change_summary'] or '更新算法定义'
+    )
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    return jsonify({
+        'message': '用户算法更新成功' if payload['status'] == 'validated' else '用户算法已保存为草稿',
+        'algorithm': _serialize_user_algorithm(algorithm),
+        'validation': payload['validation']
+    })
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/validate', methods=['POST'])
+@login_required
+def validate_user_algorithm(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权操作'}), 404
+    data = request.get_json() or {}
+    definition = data.get('definition', algorithm.get('definition') or {})
+    lottery_type = normalize_lottery_type(data.get('lottery_type') or algorithm.get('lottery_type'))
+    if isinstance(definition, str):
+        try:
+            definition = json.loads(definition)
+        except json.JSONDecodeError:
+            return jsonify({'valid': False, 'errors': ['算法定义必须是有效 JSON'], 'warnings': []}), 400
+    validation = validate_algorithm_definition(definition, lottery_type=lottery_type)
+    return jsonify(validation)
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>', methods=['DELETE'])
+@login_required
+def disable_user_algorithm(algorithm_id: int):
+    user_id = get_current_user_id()
+    if not db.user_algorithm_exists_for_user(algorithm_id, user_id):
+        return jsonify({'error': '用户算法不存在或无权操作'}), 404
+    db.update_user_algorithm(
+        algorithm_id=algorithm_id,
+        user_id=user_id,
+        fields={'status': 'disabled'},
+        create_version=False
+    )
+    return jsonify({'message': '用户算法已停用'})
+
+
 @app.route('/api/predictors', methods=['GET'])
 @login_required
 def get_predictors():
@@ -3102,7 +3389,7 @@ def get_predictor(predictor_id: int):
 def create_predictor():
     user_id = get_current_user_id()
     data = request.get_json() or {}
-    payload, errors = _validate_predictor_payload(data)
+    payload, errors = _validate_predictor_payload(data, user_id=user_id)
     if errors:
         return jsonify({'error': '；'.join(errors)}), 400
 
@@ -3154,16 +3441,19 @@ def test_predictor():
     engine_type = normalize_engine_type(resolved.get('engine_type'))
 
     if engine_type == 'machine':
-        algorithm_label = get_algorithm_label(
-            resolved['lottery_type'],
-            engine_type,
-            resolved.get('algorithm_key')
+        user_algorithm = resolved.get('user_algorithm') if is_user_algorithm_key(resolved.get('algorithm_key')) else None
+        algorithm_label = (
+            user_algorithm.get('name') if user_algorithm else get_algorithm_label(
+                resolved['lottery_type'],
+                engine_type,
+                resolved.get('algorithm_key')
+            )
         )
         return jsonify({
-            'message': '内置机器算法检查通过',
+            'message': '用户算法检查通过' if user_algorithm else '内置机器算法检查通过',
             'api_mode': None,
             'response_model': algorithm_label,
-            'finish_reason': 'builtin_machine',
+            'finish_reason': 'user_algorithm' if user_algorithm else 'builtin_machine',
             'latency_ms': 0,
             'response_preview': f'当前方案将使用 {algorithm_label}，无需 API 连通性测试。',
             'raw_response': ''
@@ -3345,7 +3635,7 @@ def update_predictor(predictor_id: int):
         return jsonify({'error': '预测方案不存在'}), 404
 
     data = request.get_json() or {}
-    payload, errors = _validate_predictor_payload(data, existing_predictor=existing)
+    payload, errors = _validate_predictor_payload(data, existing_predictor=existing, user_id=user_id)
     if errors:
         return jsonify({'error': '；'.join(errors)}), 400
 

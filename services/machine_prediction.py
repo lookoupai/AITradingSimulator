@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import json
 
+from services.algorithm_executor import predict_jingcai_with_user_algorithm
 from utils import jingcai_football as football_utils
 from utils.pc28 import derive_pc28_attributes
-from utils.predictor_engine import get_algorithm_label, normalize_algorithm_key
+from utils.predictor_engine import get_algorithm_label, is_user_algorithm_key, normalize_algorithm_key
 
 
 def predict_pc28(context: dict, predictor: dict) -> tuple[dict, str, str]:
     algorithm_key = normalize_algorithm_key('pc28', predictor.get('engine_type'), predictor.get('algorithm_key'))
+    if is_user_algorithm_key(algorithm_key):
+        raise ValueError('PC28 用户自定义算法执行器暂未接入')
     if algorithm_key == 'pc28_frequency_v1':
         prediction, debug_payload = _predict_pc28_frequency_v1(context, predictor)
     elif algorithm_key == 'pc28_omission_reversion_v1':
@@ -30,7 +33,9 @@ def predict_jingcai(run_key: str, matches: list[dict], predictor: dict) -> tuple
         predictor.get('engine_type'),
         predictor.get('algorithm_key')
     )
-    if algorithm_key == 'football_odds_baseline_v1':
+    if is_user_algorithm_key(algorithm_key):
+        items_payload, debug_payload = predict_jingcai_with_user_algorithm(run_key, matches, predictor)
+    elif algorithm_key == 'football_odds_baseline_v1':
         items_payload, debug_payload = _predict_jingcai_odds_baseline_v1(run_key, matches)
     elif algorithm_key == 'football_odds_form_weighted_v1':
         items_payload, debug_payload = _predict_jingcai_odds_form_weighted_v1(run_key, matches)
@@ -40,7 +45,7 @@ def predict_jingcai(run_key: str, matches: list[dict], predictor: dict) -> tuple
         items_payload, debug_payload = _predict_jingcai_value_edge_v1(run_key, matches)
     else:
         raise ValueError(f'暂不支持的 竞彩足球机器算法: {algorithm_key}')
-    algorithm_label = get_algorithm_label('jingcai_football', 'machine', algorithm_key)
+    algorithm_label = (predictor.get('user_algorithm') or {}).get('name') or get_algorithm_label('jingcai_football', 'machine', algorithm_key)
     return items_payload, json.dumps(debug_payload, ensure_ascii=False), f'机器算法：{algorithm_label}'
 
 

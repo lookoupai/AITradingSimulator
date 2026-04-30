@@ -221,6 +221,8 @@ class PredictionApp {
         this.currentPredictorId = null;
         this.currentPredictor = null;
         this.predictors = [];
+        this.userAlgorithms = [];
+        this.selectedUserAlgorithmId = null;
         this.betProfiles = [];
         this.notificationSenders = [];
         this.notificationEndpoints = [];
@@ -330,8 +332,19 @@ class PredictionApp {
         });
         this.bindEvent('logoutBtn', 'click', () => this.logout());
         this.bindEvent('addPredictorBtn', 'click', () => this.openCreateModal());
+        this.bindEvent('userAlgorithmsBtn', 'click', () => this.openUserAlgorithmModal());
         this.bindEvent('closeModalBtn', 'click', () => this.hideModal());
         this.bindEvent('cancelModalBtn', 'click', () => this.hideModal());
+        this.bindEvent('closeUserAlgorithmModalBtn', 'click', () => this.hideUserAlgorithmModal());
+        this.bindEvent('newUserAlgorithmBtn', 'click', () => this.resetUserAlgorithmForm());
+        this.bindEvent('loadAlgorithmSampleBtn', 'click', () => this.loadUserAlgorithmSample());
+        this.bindEvent('generateUserAlgorithmBtn', 'click', () => this.generateUserAlgorithmDraft());
+        this.bindEvent('validateUserAlgorithmBtn', 'click', () => this.validateUserAlgorithmForm());
+        this.bindEvent('saveUserAlgorithmBtn', 'click', () => this.saveUserAlgorithm());
+        this.bindEvent('userAlgorithmLotteryFilter', 'change', async (event) => {
+            this.renderUserAlgorithmList(event.target.value || 'jingcai_football');
+        });
+        this.bindEvent('userAlgorithmLotteryType', 'change', () => this.loadUserAlgorithmSample());
         this.bindEvent('savePredictorBtn', 'click', () => this.submitPredictor());
         this.bindEvent('testPredictorBtn', 'click', () => this.testPredictorConfig());
         this.bindEvent('checkPromptBtn', 'click', () => this.checkPromptAssistant());
@@ -371,6 +384,7 @@ class PredictionApp {
             this.updateLotteryForm();
         });
         this.bindEvent('engineType', 'change', () => this.updateLotteryForm());
+        this.bindEvent('algorithmSource', 'change', () => this.updateLotteryForm());
         this.bindEvent('primaryMetric', 'change', () => this.syncProfitMetricOptions());
         ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo'].forEach((id) => {
             this.bindEvent(id, 'change', () => this.syncProfitMetricOptions());
@@ -514,6 +528,11 @@ class PredictionApp {
                 this.hideModal();
             }
         });
+        this.bindEvent('userAlgorithmModal', 'click', (event) => {
+            if (event.target.id === 'userAlgorithmModal') {
+                this.hideUserAlgorithmModal();
+            }
+        });
 
         if (this.getElement('lotteryType')) {
             this.renderPresetCards();
@@ -610,8 +629,17 @@ class PredictionApp {
         return document.getElementById('engineType')?.value || 'ai';
     }
 
+    getFormAlgorithmSource() {
+        return document.getElementById('algorithmSource')?.value || 'builtin';
+    }
+
     getMachineAlgorithmOptions(lotteryType = this.getFormLotteryType()) {
         return this.getLotteryConfig(lotteryType).machineAlgorithms || [];
+    }
+
+    getUserAlgorithmOptions(lotteryType = this.getFormLotteryType()) {
+        return (this.userAlgorithms || [])
+            .filter((item) => item.lottery_type === lotteryType && item.status === 'validated');
     }
 
     isMachineEngineSelected() {
@@ -622,6 +650,34 @@ class PredictionApp {
         const select = document.getElementById('algorithmKey');
         const hint = document.getElementById('algorithmHint');
         if (!select) {
+            return;
+        }
+
+        const source = this.getFormAlgorithmSource();
+        if (source === 'user') {
+            const userOptions = this.getUserAlgorithmOptions(lotteryType);
+            if (!userOptions.length) {
+                select.innerHTML = '<option value="">当前彩种暂无已校验用户算法</option>';
+                select.disabled = true;
+                if (hint) {
+                    hint.textContent = lotteryType === 'jingcai_football'
+                        ? '请先在“我的算法”中创建并通过校验。'
+                        : '当前仅支持竞彩足球用户算法绑定预测方案。';
+                }
+                return;
+            }
+            select.innerHTML = userOptions.map((item) => `
+                <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.name)}</option>
+            `).join('');
+            select.disabled = false;
+            const nextValue = userOptions.some((item) => item.key === preferredValue)
+                ? preferredValue
+                : userOptions[0].key;
+            select.value = nextValue;
+            const selectedOption = userOptions.find((item) => item.key === nextValue) || userOptions[0];
+            if (hint) {
+                hint.textContent = selectedOption?.description || '选择当前方案要使用的用户自定义算法。';
+            }
             return;
         }
 
@@ -760,6 +816,12 @@ class PredictionApp {
         const hasSelectedAlgorithmKey = Object.prototype.hasOwnProperty.call(options, 'selectedAlgorithmKey');
         const currentType = document.getElementById('lotteryType')?.value || this.formLotteryType || 'pc28';
         const currentEngineType = this.getFormEngineType();
+        const selectedAlgorithmKey = hasSelectedAlgorithmKey
+            ? (options.selectedAlgorithmKey || '')
+            : (document.getElementById('algorithmKey')?.value || '');
+        const algorithmSource = selectedAlgorithmKey.startsWith('user:')
+            ? 'user'
+            : this.getFormAlgorithmSource();
         this.formLotteryType = currentType;
         const config = this.getLotteryConfig(currentType);
         const nextState = {
@@ -806,11 +868,13 @@ class PredictionApp {
         document.getElementById('historyWindowLabel').textContent = config.historyWindowLabel || '历史窗口';
         document.getElementById('historyWindowHint').textContent = config.historyWindowHint || '';
         this.renderPrimaryMetricOptions(currentType, nextState.primaryMetric);
+        const algorithmSourceSelect = document.getElementById('algorithmSource');
+        if (algorithmSourceSelect) {
+            algorithmSourceSelect.value = algorithmSource === 'user' ? 'user' : 'builtin';
+        }
         this.syncMachineAlgorithmOptions(
             currentType,
-            hasSelectedAlgorithmKey
-                ? options.selectedAlgorithmKey
-                : (document.getElementById('algorithmKey')?.value || null)
+            selectedAlgorithmKey || null
         );
 
         const showProfit = config.supportsProfitSimulation;
@@ -934,6 +998,7 @@ class PredictionApp {
     }
 
     async refresh(forceReloadPredictorList = false, reloadUserSettings = false) {
+        await this.loadUserAlgorithms();
         await this.loadPredictors(forceReloadPredictorList);
         if (reloadUserSettings) {
             await this.loadUserSettings();
@@ -1232,6 +1297,27 @@ class PredictionApp {
             this.renderPredictorList(this.getFilteredPredictors());
         } catch (error) {
             console.error('Failed to load predictors:', error);
+        }
+    }
+
+    async loadUserAlgorithms() {
+        if (!this.isDashboardPage()) {
+            return;
+        }
+        try {
+            const response = await fetch('/api/user-algorithms?include_disabled=1', { credentials: 'include' });
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+            if (!response.ok) {
+                return;
+            }
+            this.userAlgorithms = await response.json();
+            const activeFilter = document.getElementById('userAlgorithmLotteryFilter')?.value || 'jingcai_football';
+            this.renderUserAlgorithmList(activeFilter);
+        } catch (error) {
+            console.error('Failed to load user algorithms:', error);
         }
     }
 
@@ -4566,6 +4652,337 @@ class PredictionApp {
         document.getElementById('predictorModal').classList.remove('show');
     }
 
+    async openUserAlgorithmModal() {
+        await this.loadUserAlgorithms();
+        this.resetUserAlgorithmForm();
+        document.getElementById('userAlgorithmModal').classList.add('show');
+    }
+
+    hideUserAlgorithmModal() {
+        document.getElementById('userAlgorithmModal').classList.remove('show');
+    }
+
+    resetUserAlgorithmForm() {
+        const lotteryType = document.getElementById('userAlgorithmLotteryFilter')?.value || 'jingcai_football';
+        this.selectedUserAlgorithmId = null;
+        document.getElementById('userAlgorithmId').value = '';
+        document.getElementById('userAlgorithmName').value = '';
+        document.getElementById('userAlgorithmDescription').value = '';
+        document.getElementById('userAlgorithmLotteryType').value = lotteryType;
+        this.loadUserAlgorithmSample();
+        this.hideUserAlgorithmResult();
+    }
+
+    loadUserAlgorithmSample() {
+        const lotteryType = document.getElementById('userAlgorithmLotteryType')?.value || 'jingcai_football';
+        const textarea = document.getElementById('userAlgorithmDefinition');
+        if (!textarea) {
+            return;
+        }
+        const sample = lotteryType === 'jingcai_football'
+            ? this.buildFootballAlgorithmSample()
+            : this.buildPc28AlgorithmSample();
+        textarea.value = JSON.stringify(sample, null, 2);
+    }
+
+    buildFootballAlgorithmSample() {
+        return {
+            schema_version: 1,
+            method_name: '进球率预测法',
+            lottery_type: 'jingcai_football',
+            targets: ['spf'],
+            data_window: {
+                recent_matches: 6,
+                history_matches: 30
+            },
+            filters: [
+                { field: 'spf_odds.win', op: 'gte', value: 1.35 },
+                { field: 'home_goals_per_match_6', op: 'gte', value: 1.2 }
+            ],
+            score: [
+                { feature: 'home_goals_per_match_6', transform: 'linear', weight: 0.34 },
+                { feature: 'away_conceded_per_match_6', transform: 'linear', weight: 0.28 },
+                { feature: 'implied_probability_spf_win', transform: 'linear', weight: 0.22 },
+                { feature: 'injury_advantage', transform: 'linear', weight: 0.16 }
+            ],
+            decision: {
+                target: 'spf',
+                pick: '胜',
+                min_confidence: 0.58,
+                allow_skip: true
+            },
+            explain: {
+                template: '主队近6场进球率 {home_goals_per_match_6}，客队失球率 {away_conceded_per_match_6}'
+            }
+        };
+    }
+
+    buildPc28AlgorithmSample() {
+        return {
+            schema_version: 1,
+            method_name: 'PC28 草稿算法',
+            lottery_type: 'pc28',
+            targets: ['number', 'big_small', 'odd_even', 'combo'],
+            data_window: {
+                history_matches: 60
+            },
+            filters: [],
+            score: [
+                { feature: 'number_omission', transform: 'linear', weight: 0.45 },
+                { feature: 'combo_frequency_n', transform: 'linear', weight: 0.35 },
+                { feature: 'combo_transition_score', transform: 'linear', weight: 0.2 }
+            ],
+            decision: {
+                target: 'combo',
+                pick: 'max_score',
+                min_confidence: 0.55,
+                allow_skip: true
+            }
+        };
+    }
+
+    renderUserAlgorithmList(lotteryType = 'jingcai_football') {
+        const container = document.getElementById('userAlgorithmList');
+        if (!container) {
+            return;
+        }
+        const algorithms = (this.userAlgorithms || []).filter((item) => item.lottery_type === lotteryType);
+        if (!algorithms.length) {
+            container.innerHTML = '<div class="empty-panel">暂无用户算法</div>';
+            return;
+        }
+        container.innerHTML = algorithms.map((item) => `
+            <article class="algorithm-list-card ${Number(item.id) === Number(this.selectedUserAlgorithmId) ? 'selected' : ''}" data-user-algorithm-id="${item.id}">
+                <div>
+                    <strong>${this.escapeHtml(item.name)}</strong>
+                    <p>${this.escapeHtml(item.description || '未填写说明')}</p>
+                </div>
+                <span class="status-chip ${item.status === 'validated' ? 'settled' : item.status === 'disabled' ? 'failed' : 'pending'}">${this.userAlgorithmStatusLabel(item.status)}</span>
+            </article>
+        `).join('');
+        container.querySelectorAll('[data-user-algorithm-id]').forEach((card) => {
+            card.addEventListener('click', () => this.selectUserAlgorithm(Number(card.dataset.userAlgorithmId)));
+        });
+    }
+
+    selectUserAlgorithm(algorithmId) {
+        const algorithm = (this.userAlgorithms || []).find((item) => Number(item.id) === Number(algorithmId));
+        if (!algorithm) {
+            return;
+        }
+        this.selectedUserAlgorithmId = algorithm.id;
+        document.getElementById('userAlgorithmId').value = algorithm.id;
+        document.getElementById('userAlgorithmName').value = algorithm.name || '';
+        document.getElementById('userAlgorithmDescription').value = algorithm.description || '';
+        document.getElementById('userAlgorithmLotteryType').value = algorithm.lottery_type || 'jingcai_football';
+        document.getElementById('userAlgorithmDefinition').value = JSON.stringify(algorithm.definition || {}, null, 2);
+        document.getElementById('userAlgorithmLotteryFilter').value = algorithm.lottery_type || 'jingcai_football';
+        this.renderUserAlgorithmList(algorithm.lottery_type || 'jingcai_football');
+        this.hideUserAlgorithmResult();
+    }
+
+    parseUserAlgorithmDefinition() {
+        const raw = document.getElementById('userAlgorithmDefinition')?.value || '';
+        try {
+            return JSON.parse(raw);
+        } catch (error) {
+            throw new Error('算法 JSON 格式错误');
+        }
+    }
+
+    async validateUserAlgorithmForm() {
+        const algorithmId = document.getElementById('userAlgorithmId').value;
+        const lotteryType = document.getElementById('userAlgorithmLotteryType').value || 'jingcai_football';
+        let definition;
+        try {
+            definition = this.parseUserAlgorithmDefinition();
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+            return;
+        }
+        const url = algorithmId ? `/api/user-algorithms/${algorithmId}/validate` : '/api/user-algorithms/0/validate';
+        if (!algorithmId) {
+            const localPayload = { definition, lottery_type: lotteryType };
+            try {
+                const result = await this.validateUserAlgorithmDraft(localPayload);
+                this.renderUserAlgorithmValidation(result);
+            } catch (error) {
+                this.showUserAlgorithmResult('error', error.message);
+            }
+            return;
+        }
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ definition, lottery_type: lotteryType })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || (data.errors || []).join('；') || '算法校验失败');
+            }
+            this.renderUserAlgorithmValidation(data);
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+        }
+    }
+
+    async generateUserAlgorithmDraft() {
+        const button = document.getElementById('generateUserAlgorithmBtn');
+        const lotteryType = document.getElementById('userAlgorithmLotteryType').value || 'jingcai_football';
+        const payload = {
+            lottery_type: lotteryType,
+            api_key: document.getElementById('algorithmAiApiKey').value.trim(),
+            api_url: document.getElementById('algorithmAiApiUrl').value.trim(),
+            model_name: document.getElementById('algorithmAiModelName').value.trim(),
+            api_mode: 'auto',
+            message: document.getElementById('algorithmAiMessage').value.trim()
+        };
+        try {
+            payload.current_definition = this.parseUserAlgorithmDefinition();
+        } catch (error) {
+            payload.current_definition = null;
+        }
+        if (!payload.api_key || !payload.api_url || !payload.model_name || !payload.message) {
+            this.showUserAlgorithmResult('error', '请填写 API Key、API 地址、模型名称和算法思路');
+            return;
+        }
+
+        button.disabled = true;
+        button.textContent = '生成中...';
+        this.showUserAlgorithmResult('info', '正在调用你的模型生成算法草稿...');
+        try {
+            const response = await fetch('/api/user-algorithms/ai-draft', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || 'AI 生成算法失败');
+            }
+            if (data.reply_type === 'need_clarification') {
+                const questions = (data.questions || []).map((item) => `- ${item}`).join('\n');
+                this.showUserAlgorithmResult('info', `${data.message || 'AI 需要补充信息'}\n${questions}`);
+                return;
+            }
+            document.getElementById('userAlgorithmDefinition').value = JSON.stringify(data.algorithm || {}, null, 2);
+            const currentName = document.getElementById('userAlgorithmName').value.trim();
+            if (!currentName && data.algorithm?.method_name) {
+                document.getElementById('userAlgorithmName').value = data.algorithm.method_name;
+            }
+            const notes = [
+                data.message || 'AI 已生成算法草稿',
+                data.change_summary ? `变更：${data.change_summary}` : '',
+                ...(data.risk_notes || []).map((item) => `提醒：${item}`)
+            ].filter(Boolean);
+            this.renderUserAlgorithmValidation(data.validation || { valid: false, errors: [], warnings: [] });
+            if (notes.length) {
+                this.showUserAlgorithmResult(
+                    data.validation?.valid ? 'success' : 'error',
+                    `${notes.join('\n')}\n\n${document.getElementById('userAlgorithmResult').textContent}`
+                );
+            }
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = 'AI 生成草稿';
+        }
+    }
+
+    async validateUserAlgorithmDraft(payload) {
+        const response = await fetch('/api/user-algorithms/validate', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || (data.errors || []).join('；') || '算法校验失败');
+        }
+        return data;
+    }
+
+    renderUserAlgorithmValidation(validation) {
+        const errors = validation.errors || [];
+        const warnings = validation.warnings || [];
+        const lines = [
+            validation.valid ? '校验通过，可以保存并用于竞彩足球预测方案。' : '校验未通过。',
+            ...errors.map((item) => `错误：${item}`),
+            ...warnings.map((item) => `提醒：${item}`)
+        ];
+        this.showUserAlgorithmResult(validation.valid ? 'success' : 'error', lines.join('\n'));
+    }
+
+    async saveUserAlgorithm() {
+        const algorithmId = document.getElementById('userAlgorithmId').value;
+        let definition;
+        try {
+            definition = this.parseUserAlgorithmDefinition();
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+            return;
+        }
+        const payload = {
+            name: document.getElementById('userAlgorithmName').value.trim(),
+            description: document.getElementById('userAlgorithmDescription').value.trim(),
+            lottery_type: document.getElementById('userAlgorithmLotteryType').value || 'jingcai_football',
+            definition
+        };
+        const url = algorithmId ? `/api/user-algorithms/${algorithmId}` : '/api/user-algorithms';
+        const method = algorithmId ? 'PUT' : 'POST';
+        try {
+            const response = await fetch(url, {
+                method,
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '保存用户算法失败');
+            }
+            await this.loadUserAlgorithms();
+            this.selectUserAlgorithm(data.algorithm.id);
+            this.renderUserAlgorithmValidation(data.validation || { valid: data.algorithm.status === 'validated', errors: [], warnings: [] });
+            this.updateLotteryForm();
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+        }
+    }
+
+    userAlgorithmStatusLabel(status) {
+        if (status === 'validated') {
+            return '已校验';
+        }
+        if (status === 'disabled') {
+            return '已停用';
+        }
+        return '草稿';
+    }
+
+    showUserAlgorithmResult(type, message) {
+        const element = document.getElementById('userAlgorithmResult');
+        if (!element) {
+            return;
+        }
+        element.style.display = 'block';
+        element.className = `test-result ${type}`;
+        element.textContent = message;
+    }
+
+    hideUserAlgorithmResult() {
+        const element = document.getElementById('userAlgorithmResult');
+        if (element) {
+            element.style.display = 'none';
+            element.textContent = '';
+        }
+    }
+
     resetForm() {
         document.getElementById('lotteryType').value = 'pc28';
         document.getElementById('engineType').value = 'ai';
@@ -4573,6 +4990,7 @@ class PredictionApp {
         this.formStateByLottery = this.buildInitialFormStateByLottery();
         document.getElementById('predictorName').value = '';
         document.getElementById('predictionMethod').value = '';
+        document.getElementById('algorithmSource').value = 'builtin';
         document.getElementById('algorithmKey').value = 'pc28_frequency_v1';
         document.getElementById('apiUrl').value = '';
         document.getElementById('modelName').value = '';
