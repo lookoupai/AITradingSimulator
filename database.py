@@ -85,12 +85,39 @@ class Database:
                 system_prompt TEXT DEFAULT '',
                 data_injection_mode TEXT NOT NULL DEFAULT 'summary',
                 prediction_targets TEXT NOT NULL DEFAULT '[]',
+                user_algorithm_fallback_strategy TEXT NOT NULL DEFAULT 'fail',
                 history_window INTEGER NOT NULL DEFAULT 60,
                 temperature REAL NOT NULL DEFAULT 0.7,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_algorithm_execution_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                algorithm_id INTEGER,
+                algorithm_version INTEGER,
+                predictor_id INTEGER,
+                run_key TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'succeeded',
+                match_count INTEGER NOT NULL DEFAULT 0,
+                prediction_count INTEGER NOT NULL DEFAULT 0,
+                skip_count INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                fallback_strategy TEXT NOT NULL DEFAULT 'fail',
+                fallback_used INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT,
+                debug_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (algorithm_id) REFERENCES user_algorithms(id),
+                FOREIGN KEY (predictor_id) REFERENCES predictors(id)
             )
             '''
         )
@@ -366,6 +393,28 @@ class Database:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS jingcai_history_backfill_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger_source TEXT NOT NULL DEFAULT 'manual',
+                status TEXT NOT NULL DEFAULT 'pending',
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                include_details INTEGER NOT NULL DEFAULT 1,
+                requested_days INTEGER NOT NULL DEFAULT 0,
+                match_count INTEGER NOT NULL DEFAULT 0,
+                detail_count INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS lottery_draws (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lottery_type TEXT NOT NULL,
@@ -404,6 +453,10 @@ class Database:
                 raw_response TEXT,
                 prompt_snapshot TEXT,
                 error_message TEXT,
+                algorithm_key TEXT NOT NULL DEFAULT '',
+                algorithm_version INTEGER,
+                algorithm_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                execution_log_json TEXT NOT NULL DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 settled_at TIMESTAMP,
@@ -526,8 +579,10 @@ class Database:
         )
 
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictors_user ON predictors(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_algorithm_execution_logs_algorithm ON user_algorithm_execution_logs(algorithm_id, created_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_lottery_events_lookup ON lottery_events(lottery_type, batch_key, event_time)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_lottery_event_details_lookup ON lottery_event_details(lottery_type, event_key, detail_type)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_jingcai_backfill_jobs_status ON jingcai_history_backfill_jobs(status, created_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_draws_issue ON lottery_draws(lottery_type, issue_no)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_prediction_runs_predictor ON prediction_runs(predictor_id, run_key)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_prediction_runs_status ON prediction_runs(lottery_type, status, run_key)')
@@ -565,6 +620,10 @@ class Database:
             pass
         try:
             cursor.execute("ALTER TABLE predictors ADD COLUMN data_injection_mode TEXT NOT NULL DEFAULT 'summary'")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN user_algorithm_fallback_strategy TEXT NOT NULL DEFAULT 'fail'")
         except Exception:
             pass
         try:
@@ -613,6 +672,22 @@ class Database:
             pass
         try:
             cursor.execute("ALTER TABLE predictor_runtime_state ADD COLUMN last_counted_failure_key TEXT")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE prediction_runs ADD COLUMN algorithm_key TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE prediction_runs ADD COLUMN algorithm_version INTEGER")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE prediction_runs ADD COLUMN algorithm_snapshot_json TEXT NOT NULL DEFAULT '{}'")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE prediction_runs ADD COLUMN execution_log_json TEXT NOT NULL DEFAULT '{}'")
         except Exception:
             pass
 
@@ -692,7 +767,8 @@ class Database:
         enabled: bool,
         lottery_type: str = 'pc28',
         engine_type: str = 'ai',
-        algorithm_key: str = ''
+        algorithm_key: str = '',
+        user_algorithm_fallback_strategy: str = 'fail'
     ) -> int:
         normalized_lottery_type = normalize_lottery_type(lottery_type)
         normalized_engine_type = normalize_engine_type(engine_type)
@@ -709,9 +785,9 @@ class Database:
             INSERT INTO predictors (
                 user_id, name, lottery_type, engine_type, algorithm_key, api_key, api_url, model_name, api_mode, primary_metric, profit_default_metric, profit_rule_id, share_predictions, share_level,
                 prediction_method, system_prompt, data_injection_mode,
-                prediction_targets, history_window, temperature, enabled
+                prediction_targets, user_algorithm_fallback_strategy, history_window, temperature, enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 user_id,
@@ -732,6 +808,7 @@ class Database:
                 system_prompt,
                 data_injection_mode,
                 json.dumps(normalized_targets, ensure_ascii=False),
+                self._normalize_user_algorithm_fallback_strategy(user_algorithm_fallback_strategy),
                 history_window,
                 temperature,
                 1 if enabled else 0
@@ -770,6 +847,8 @@ class Database:
                 value = normalize_profit_rule(lottery_type, value)
             if key == 'enabled':
                 value = 1 if value else 0
+            if key == 'user_algorithm_fallback_strategy':
+                value = self._normalize_user_algorithm_fallback_strategy(value)
             updates.append(f'{key} = ?')
             values.append(value)
 
@@ -1065,6 +1144,45 @@ class Database:
         conn.close()
         return [self._prepare_user_algorithm(row) for row in rows]
 
+    def count_user_algorithms_by_user(self, user_id: int, include_disabled: bool = False) -> int:
+        conditions = ['user_id = ?']
+        values: list[Any] = [user_id]
+        if not include_disabled:
+            conditions.append("status != 'disabled'")
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            SELECT COUNT(*) AS total
+            FROM user_algorithms
+            WHERE {' AND '.join(conditions)}
+            ''',
+            values
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return int(row['total'] or 0) if row else 0
+
+    def get_predictors_using_user_algorithm(self, user_id: int, algorithm_id: int) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT *
+            FROM predictors
+            WHERE user_id = ? AND engine_type = 'machine' AND algorithm_key = ?
+            ORDER BY updated_at DESC, id DESC
+            ''',
+            (user_id, f'user:{int(algorithm_id or 0)}')
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            item
+            for item in (self._prepare_predictor(row, include_secret=False) for row in rows)
+            if item
+        ]
+
     def get_user_algorithm_versions_for_user(self, algorithm_id: int, user_id: int) -> list[dict]:
         if not self.user_algorithm_exists_for_user(algorithm_id, user_id):
             return []
@@ -1082,6 +1200,57 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
         return [self._prepare_user_algorithm_version(row) for row in rows]
+
+    def create_user_algorithm_execution_log(self, payload: dict) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO user_algorithm_execution_logs (
+                user_id, algorithm_id, algorithm_version, predictor_id, run_key, status,
+                match_count, prediction_count, skip_count, duration_ms,
+                fallback_strategy, fallback_used, error_message, debug_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                payload.get('user_id'),
+                payload.get('algorithm_id'),
+                payload.get('algorithm_version'),
+                payload.get('predictor_id'),
+                str(payload.get('run_key') or ''),
+                str(payload.get('status') or 'succeeded'),
+                int(payload.get('match_count') or 0),
+                int(payload.get('prediction_count') or 0),
+                int(payload.get('skip_count') or 0),
+                int(payload.get('duration_ms') or 0),
+                self._normalize_user_algorithm_fallback_strategy(payload.get('fallback_strategy')),
+                1 if payload.get('fallback_used') else 0,
+                payload.get('error_message'),
+                json.dumps(payload.get('debug') or {}, ensure_ascii=False)
+            )
+        )
+        log_id = int(cursor.lastrowid or 0)
+        conn.commit()
+        conn.close()
+        return log_id
+
+    def get_user_algorithm_execution_logs_for_user(self, algorithm_id: int, user_id: int, limit: int = 50) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT *
+            FROM user_algorithm_execution_logs
+            WHERE algorithm_id = ? AND user_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            ''',
+            (algorithm_id, user_id, max(1, min(int(limit or 50), 200)))
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_user_algorithm_execution_log(row) for row in rows]
 
     def get_user_algorithm_version_for_user(self, algorithm_id: int, user_id: int, version: int) -> Optional[dict]:
         conn = self.get_connection()
@@ -1981,9 +2150,191 @@ class Database:
             for row in rows
         }
 
+    # ============ Jingcai History Backfill ============
+
+    def create_jingcai_backfill_job(
+        self,
+        trigger_source: str,
+        start_date: str,
+        end_date: str,
+        include_details: bool,
+        requested_days: int
+    ) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO jingcai_history_backfill_jobs (
+                trigger_source, status, start_date, end_date, include_details, requested_days
+            )
+            VALUES (?, 'pending', ?, ?, ?, ?)
+            ''',
+            (
+                str(trigger_source or 'manual').strip() or 'manual',
+                str(start_date or '').strip(),
+                str(end_date or '').strip(),
+                1 if include_details else 0,
+                int(requested_days or 0)
+            )
+        )
+        job_id = int(cursor.lastrowid or 0)
+        conn.commit()
+        conn.close()
+        return job_id
+
+    def update_jingcai_backfill_job(self, job_id: int, fields: dict) -> bool:
+        if not fields:
+            return False
+        allowed_fields = {
+            'status',
+            'match_count',
+            'detail_count',
+            'error_message',
+            'result_json',
+            'started_at',
+            'finished_at'
+        }
+        updates = []
+        values = []
+        for key, value in fields.items():
+            if key not in allowed_fields:
+                continue
+            if key == 'result_json' and not isinstance(value, str):
+                value = json.dumps(value or {}, ensure_ascii=False)
+            updates.append(f'{key} = ?')
+            values.append(value)
+        if not updates:
+            return False
+        updates.append('updated_at = CURRENT_TIMESTAMP')
+        values.append(int(job_id or 0))
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+            UPDATE jingcai_history_backfill_jobs
+            SET {', '.join(updates)}
+            WHERE id = ?
+            ''',
+            values
+        )
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return changed
+
+    def get_recent_jingcai_backfill_jobs(self, limit: int = 10) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT *
+            FROM jingcai_history_backfill_jobs
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            ''',
+            (max(1, min(int(limit or 10), 100)),)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_jingcai_backfill_job(row) for row in rows]
+
+    def get_latest_jingcai_backfill_job(self, status: str | None = None, trigger_source: str | None = None) -> Optional[dict]:
+        conditions = []
+        values: list[object] = []
+        if status:
+            conditions.append('status = ?')
+            values.append(str(status))
+        if trigger_source:
+            conditions.append('trigger_source = ?')
+            values.append(str(trigger_source))
+        query = 'SELECT * FROM jingcai_history_backfill_jobs'
+        if conditions:
+            query += f" WHERE {' AND '.join(conditions)}"
+        query += ' ORDER BY created_at DESC, id DESC LIMIT 1'
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, values)
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_jingcai_backfill_job(row) if row else None
+
+    def build_jingcai_data_health(self, sample_limit: int = 2000) -> dict:
+        normalized_lottery_type = 'jingcai_football'
+        sample_limit = max(1, min(int(sample_limit or 2000), 10000))
+        total_events = self.count_lottery_events(normalized_lottery_type, source_provider='sina')
+        events = self.get_recent_lottery_events(
+            normalized_lottery_type,
+            limit=sample_limit,
+            source_provider='sina'
+        )
+        event_keys = [item.get('event_key') for item in events if item.get('event_key')]
+        detail_coverage = self._build_lottery_detail_coverage(normalized_lottery_type, event_keys, 'sina')
+        counters = {
+            'settled': 0,
+            'spf_odds': 0,
+            'rqspf_odds': 0,
+            'recent_form': 0,
+            'injury': 0,
+            'euro_odds_snapshot': 0
+        }
+        earliest_date = None
+        latest_date = None
+        for event in events:
+            event_date = str(event.get('event_date') or event.get('event_time') or '').strip()[:10]
+            if event_date:
+                earliest_date = event_date if earliest_date is None else min(earliest_date, event_date)
+                latest_date = event_date if latest_date is None else max(latest_date, event_date)
+            meta_payload = event.get('meta_payload') or {}
+            result_payload = event.get('result_payload') or {}
+            if result_payload.get('score1') is not None and result_payload.get('score2') is not None:
+                counters['settled'] += 1
+            if self._has_complete_football_odds(meta_payload.get('spf_odds') or {}):
+                counters['spf_odds'] += 1
+            if self._has_complete_football_odds(((meta_payload.get('rqspf') or {}).get('odds') or {})):
+                counters['rqspf_odds'] += 1
+            if event.get('event_key') in detail_coverage.get('recent_form', set()):
+                counters['recent_form'] += 1
+            if event.get('event_key') in detail_coverage.get('injury', set()):
+                counters['injury'] += 1
+            if event.get('event_key') in detail_coverage.get('euro_odds_snapshot', set()):
+                counters['euro_odds_snapshot'] += 1
+
+        sample_count = len(events)
+        return {
+            'lottery_type': normalized_lottery_type,
+            'source_provider': 'sina',
+            'total_event_count': total_events,
+            'sample_count': sample_count,
+            'earliest_sample_date': earliest_date,
+            'latest_sample_date': latest_date,
+            'metrics': {
+                key: {
+                    'count': value,
+                    'rate': round(value / sample_count * 100, 2) if sample_count else None
+                }
+                for key, value in counters.items()
+            },
+            'enough_for_backtest': counters['settled'] >= 50 and counters['spf_odds'] >= 50,
+            'recent_jobs': self.get_recent_jingcai_backfill_jobs(limit=5)
+        }
+
     # ============ Predictions ============
 
     def upsert_prediction_run(self, payload: dict) -> int:
+        existing_payload = None
+        if payload.get('predictor_id') and payload.get('run_key') and not any(
+            key in payload
+            for key in ('algorithm_key', 'algorithm_version', 'algorithm_snapshot', 'execution_log')
+        ):
+            existing_payload = self.get_prediction_run_by_key(payload['predictor_id'], payload['run_key'])
+            if existing_payload:
+                payload = {
+                    **payload,
+                    'algorithm_key': existing_payload.get('algorithm_key') or '',
+                    'algorithm_version': existing_payload.get('algorithm_version'),
+                    'algorithm_snapshot': existing_payload.get('algorithm_snapshot') or {},
+                    'execution_log': existing_payload.get('execution_log') or {}
+                }
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -1991,9 +2342,10 @@ class Database:
             INSERT INTO prediction_runs (
                 predictor_id, lottery_type, run_key, title, requested_targets,
                 status, total_items, settled_items, hit_items, confidence,
-                reasoning_summary, raw_response, prompt_snapshot, error_message, settled_at
+                reasoning_summary, raw_response, prompt_snapshot, error_message, settled_at,
+                algorithm_key, algorithm_version, algorithm_snapshot_json, execution_log_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(predictor_id, run_key) DO UPDATE SET
                 requested_targets = excluded.requested_targets,
                 title = excluded.title,
@@ -2007,6 +2359,10 @@ class Database:
                 prompt_snapshot = excluded.prompt_snapshot,
                 error_message = excluded.error_message,
                 settled_at = excluded.settled_at,
+                algorithm_key = excluded.algorithm_key,
+                algorithm_version = excluded.algorithm_version,
+                algorithm_snapshot_json = excluded.algorithm_snapshot_json,
+                execution_log_json = excluded.execution_log_json,
                 updated_at = CURRENT_TIMESTAMP
             ''',
             (
@@ -2024,7 +2380,11 @@ class Database:
                 payload.get('raw_response'),
                 payload.get('prompt_snapshot'),
                 payload.get('error_message'),
-                payload.get('settled_at')
+                payload.get('settled_at'),
+                payload.get('algorithm_key', ''),
+                payload.get('algorithm_version'),
+                json.dumps(payload.get('algorithm_snapshot') or {}, ensure_ascii=False),
+                json.dumps(payload.get('execution_log') or {}, ensure_ascii=False)
             )
         )
         conn.commit()
@@ -4056,6 +4416,9 @@ class Database:
         data['share_level'] = data.get('share_level') or ('records' if data.get('share_predictions') else 'stats_only')
         data['share_predictions'] = bool(data.get('share_predictions'))
         data['data_injection_mode'] = data.get('data_injection_mode') or 'summary'
+        data['user_algorithm_fallback_strategy'] = self._normalize_user_algorithm_fallback_strategy(
+            data.get('user_algorithm_fallback_strategy')
+        )
         data['engine_type_label'] = get_engine_type_label(data['engine_type'])
         data['algorithm_label'] = get_algorithm_label(lottery_type, data['engine_type'], data['algorithm_key'])
         if is_user_algorithm_key(data['algorithm_key']):
@@ -4096,11 +4459,26 @@ class Database:
         data['backtest'] = self._decode_json_object(data.get('backtest_json'))
         return data
 
+    def _prepare_user_algorithm_execution_log(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+        data = dict(row)
+        data['fallback_used'] = bool(data.get('fallback_used'))
+        data['debug'] = self._decode_json_object(data.get('debug_json'))
+        data.pop('debug_json', None)
+        return data
+
     def _normalize_user_algorithm_status(self, value) -> str:
         text = str(value or '').strip().lower()
         if text in {'draft', 'validated', 'disabled'}:
             return text
         return 'draft'
+
+    def _normalize_user_algorithm_fallback_strategy(self, value) -> str:
+        text = str(value or '').strip().lower()
+        if text in {'fail', 'builtin_baseline', 'skip'}:
+            return text
+        return 'fail'
 
     def _default_predictor_runtime_state(self, predictor_id: int | None = None) -> dict:
         return {
@@ -4251,6 +4629,18 @@ class Database:
         data['payload'] = self._decode_json_value(data.get('payload'))
         return data
 
+    def _prepare_jingcai_backfill_job(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+        data = dict(row)
+        data['include_details'] = bool(data.get('include_details'))
+        data['requested_days'] = int(data.get('requested_days') or 0)
+        data['match_count'] = int(data.get('match_count') or 0)
+        data['detail_count'] = int(data.get('detail_count') or 0)
+        data['result'] = self._decode_json_object(data.get('result_json'))
+        data.pop('result_json', None)
+        return data
+
     def _prepare_draw(self, row) -> dict:
         return dict(row)
 
@@ -4259,6 +4649,10 @@ class Database:
             return None
         data = dict(row)
         data['requested_targets'] = self._decode_json_list(data.get('requested_targets'))
+        data['algorithm_snapshot'] = self._decode_json_object(data.get('algorithm_snapshot_json'))
+        data['execution_log'] = self._decode_json_object(data.get('execution_log_json'))
+        data.pop('algorithm_snapshot_json', None)
+        data.pop('execution_log_json', None)
         return data
 
     def _prepare_prediction_item(self, row) -> dict:
@@ -4311,6 +4705,53 @@ class Database:
             return parsed if isinstance(parsed, (dict, list)) else {}
         except (TypeError, json.JSONDecodeError):
             return {}
+
+    def _build_lottery_detail_coverage(self, lottery_type: str, event_keys: list[str], source_provider: str) -> dict[str, set[str]]:
+        coverage = {
+            'recent_form': set(),
+            'injury': set(),
+            'euro_odds_snapshot': set()
+        }
+        if not event_keys:
+            return coverage
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        unique_event_keys = list(dict.fromkeys(event_keys))
+        for start in range(0, len(unique_event_keys), 500):
+            batch = unique_event_keys[start:start + 500]
+            placeholders = ','.join('?' for _ in batch)
+            cursor.execute(
+                f'''
+                SELECT event_key, detail_type
+                FROM lottery_event_details
+                WHERE lottery_type = ?
+                  AND source_provider = ?
+                  AND event_key IN ({placeholders})
+                ''',
+                [normalize_lottery_type(lottery_type), source_provider, *batch]
+            )
+            for row in cursor.fetchall():
+                detail_type = row['detail_type']
+                event_key = row['event_key']
+                if detail_type in {'recent_form_team1', 'recent_form_team2'}:
+                    coverage['recent_form'].add(event_key)
+                if detail_type == 'injury':
+                    coverage['injury'].add(event_key)
+                if detail_type in {'odds_euro', 'odds_snapshots'}:
+                    coverage['euro_odds_snapshot'].add(event_key)
+        conn.close()
+        return coverage
+
+    def _has_complete_football_odds(self, odds_map: dict) -> bool:
+        if not isinstance(odds_map, dict):
+            return False
+        for outcome in ('胜', '平', '负'):
+            try:
+                if float(odds_map.get(outcome)) <= 0:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return True
 
     def _metric_label(self, metric_key: str, lottery_type: str = 'pc28') -> str:
         return get_target_label(lottery_type, metric_key)

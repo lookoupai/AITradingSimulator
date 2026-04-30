@@ -202,6 +202,48 @@ class JingcaiFootballServicePromptTests(unittest.TestCase):
         self.assertNotIn('{{match_batch_summary}}', prompt)
         self.assertIn('平台不再重复拼接整批比赛上下文', prompt)
 
+    def test_backfill_history_syncs_prized_dates_and_details(self):
+        with fresh_app_harness() as harness:
+            service = harness.module.jingcai_football_service
+            match = {
+                'event_key': 'BF001',
+                'match_no': '周六001',
+                'source_match_id': 'match-1',
+                'raw_item': {'matchId': 'match-1'}
+            }
+            with mock.patch.object(service, 'sync_matches', side_effect=[
+                {'batch_key': '2026-04-24', 'matches': [match]},
+                {'batch_key': '2026-04-25', 'matches': [match]}
+            ]) as sync_matches, mock.patch.object(
+                service,
+                'get_or_fetch_match_detail_bundle',
+                return_value={'detail': {'matchId': 'match-1'}}
+            ) as fetch_details:
+                result = service.backfill_history(
+                    harness.db,
+                    start_date='2026-04-24',
+                    end_date='2026-04-25',
+                    include_details=True,
+                    max_days=3
+                )
+
+            self.assertEqual(result['day_count'], 2)
+            self.assertEqual(result['match_count'], 2)
+            self.assertEqual(result['detail_count'], 2)
+            self.assertEqual(sync_matches.call_args_list[0].kwargs['is_prized'], '1')
+            self.assertEqual(fetch_details.call_count, 2)
+
+    def test_backfill_history_rejects_large_ranges(self):
+        with fresh_app_harness() as harness:
+            service = harness.module.jingcai_football_service
+            with self.assertRaises(ValueError):
+                service.backfill_history(
+                    harness.db,
+                    start_date='2026-04-01',
+                    end_date='2026-04-10',
+                    max_days=3
+                )
+
     def test_split_prediction_batches_respects_max_matches(self):
         with fresh_app_harness() as harness, \
              mock.patch('services.jingcai_football_service.PREDICTION_BATCH_MAX_MATCHES', 2), \

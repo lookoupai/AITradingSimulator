@@ -78,6 +78,16 @@ class AdminPage {
                 this.sendNotificationTest();
             }
         });
+        const dataHealthPanel = document.getElementById('adminJingcaiDataHealthPanel');
+        if (dataHealthPanel) {
+            dataHealthPanel.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-action="run-jingcai-backfill"]');
+                if (!button) {
+                    return;
+                }
+                this.runJingcaiBackfill();
+            });
+        }
     }
 
     async checkAuth() {
@@ -116,6 +126,7 @@ class AdminPage {
 
             this.renderSummary(data.summary || {});
             this.renderScheduler(data.scheduler || {});
+            this.renderJingcaiDataHealth(data.jingcai_data_health || {});
             this.renderPredictionGuard(data.prediction_guard || {});
             this.renderNotificationSettings(data.notification_settings || {});
             this.renderUsers(data.users || []);
@@ -261,6 +272,98 @@ class AdminPage {
                     <span class="mini-label">持有者</span>
                     <strong class="share-link-text">${this.escapeHtml(scheduler.owner_id || '--')}</strong>
                 </div>
+            </div>
+        `;
+    }
+
+    renderJingcaiDataHealth(health) {
+        const container = document.getElementById('adminJingcaiDataHealthPanel');
+        if (!container) {
+            return;
+        }
+        const metrics = health.metrics || {};
+        const scheduler = health.scheduler || {};
+        const recentJobs = health.recent_jobs || [];
+        const metricRows = [
+            ['已开奖样本', metrics.settled],
+            ['SPF 赔率', metrics.spf_odds],
+            ['RQSPF 赔率', metrics.rqspf_odds],
+            ['近期战绩', metrics.recent_form],
+            ['伤停', metrics.injury],
+            ['欧赔快照', metrics.euro_odds_snapshot]
+        ];
+        const today = new Date();
+        const endDate = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+        const startDate = new Date(endDate.getTime() - 6 * 24 * 60 * 60 * 1000);
+        const formatDate = (date) => date.toISOString().slice(0, 10);
+        container.className = 'prediction-summary';
+        container.innerHTML = `
+            <div class="prediction-grid prediction-grid-compact">
+                <div class="prediction-card">
+                    <span class="mini-label">本地历史总场次</span>
+                    <strong>${this.escapeHtml(String(health.total_event_count || 0))}</strong>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">健康抽样</span>
+                    <strong>${this.escapeHtml(String(health.sample_count || 0))}</strong>
+                    <span class="card-hint">${this.escapeHtml(health.earliest_sample_date || '--')} 至 ${this.escapeHtml(health.latest_sample_date || '--')}</span>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">回测基础</span>
+                    <strong>${health.enough_for_backtest ? '可用' : '需补齐'}</strong>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">自动补齐</span>
+                    <strong>${scheduler.enabled ? '已启用' : '未启用'}</strong>
+                    <span class="card-hint">最近 ${this.escapeHtml(String(scheduler.lookback_days || 0))} 天</span>
+                </div>
+            </div>
+            <div class="form-grid">
+                ${metricRows.map(([label, metric]) => `
+                    <div class="metric-hint">
+                        <div class="metric-hint-head">
+                            <div><strong>${this.escapeHtml(label)}</strong></div>
+                            <span class="tag">${metric?.rate === null || metric?.rate === undefined ? '--' : `${this.escapeHtml(String(metric.rate))}%`}</span>
+                        </div>
+                        <p>覆盖样本：${this.escapeHtml(String(metric?.count || 0))} / ${this.escapeHtml(String(health.sample_count || 0))}</p>
+                    </div>
+                `).join('')}
+            </div>
+            <div class="form-grid">
+                <label class="form-field">
+                    <span>开始日期</span>
+                    <input type="date" id="adminJingcaiBackfillStartDate" value="${this.escapeHtml(formatDate(startDate))}">
+                </label>
+                <label class="form-field">
+                    <span>结束日期</span>
+                    <input type="date" id="adminJingcaiBackfillEndDate" value="${this.escapeHtml(formatDate(endDate))}">
+                </label>
+                <label class="toggle-row">
+                    <span>补齐详情字段</span>
+                    <input type="checkbox" id="adminJingcaiBackfillIncludeDetails" checked>
+                </label>
+                <div class="panel-actions">
+                    <button class="btn primary" data-action="run-jingcai-backfill">
+                        <i class="bi bi-cloud-arrow-down"></i>
+                        补齐历史数据
+                    </button>
+                </div>
+            </div>
+            <div class="metric-hint">
+                <div class="metric-hint-head">
+                    <div><strong>最近补齐任务</strong></div>
+                    <span class="tag">${this.escapeHtml(String(recentJobs.length || 0))}</span>
+                </div>
+                ${recentJobs.length ? recentJobs.map((job) => `
+                    <p>
+                        #${this.escapeHtml(String(job.id || '--'))}
+                        ${this.escapeHtml(job.start_date || '--')} 至 ${this.escapeHtml(job.end_date || '--')}
+                        · ${this.escapeHtml(job.status || '--')}
+                        · 场次 ${this.escapeHtml(String(job.match_count || 0))}
+                        · 详情 ${this.escapeHtml(String(job.detail_count || 0))}
+                        ${job.error_message ? `· ${this.escapeHtml(job.error_message)}` : ''}
+                    </p>
+                `).join('') : '<p class="metric-hint-foot">暂无补齐任务</p>'}
             </div>
         `;
     }
@@ -549,6 +652,32 @@ class AdminPage {
                 throw new Error(data.error || '发送测试消息失败');
             }
             alert(data.message || '测试消息发送成功');
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async runJingcaiBackfill() {
+        const start_date = document.getElementById('adminJingcaiBackfillStartDate')?.value || '';
+        const end_date = document.getElementById('adminJingcaiBackfillEndDate')?.value || start_date;
+        const include_details = document.getElementById('adminJingcaiBackfillIncludeDetails')?.checked ?? true;
+        try {
+            const response = await fetch('/api/jingcai-football/history-backfill', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    start_date,
+                    end_date,
+                    include_details
+                })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '补齐历史数据失败');
+            }
+            alert(data.message || '补齐历史数据完成');
+            await this.loadDashboard();
         } catch (error) {
             alert(error.message);
         }

@@ -34,12 +34,14 @@ def predict_jingcai_with_user_algorithm(run_key: str, matches: list[dict], predi
             confidence_value = None
             reasoning_summary = '未满足用户算法过滤条件，跳过预测'
             status = 'skipped'
+            skip_reason = 'filter_not_matched'
         elif confidence < min_confidence and allow_skip:
             predicted_spf = None
             predicted_rqspf = None
             confidence_value = confidence
             reasoning_summary = '用户算法评分低于最低信心阈值，跳过预测'
             status = 'skipped'
+            skip_reason = 'low_confidence'
         else:
             predicted_spf = _resolve_spf_pick(pick_rule, match)
             predicted_rqspf = _resolve_rqspf_pick(match) if 'rqspf' in targets else None
@@ -48,6 +50,7 @@ def predict_jingcai_with_user_algorithm(run_key: str, matches: list[dict], predi
             confidence_value = confidence
             reasoning_summary = _build_reasoning_summary(user_algorithm, score, field_values)
             status = 'pending'
+            skip_reason = ''
 
         items_payload.append({
             'event_key': match.get('event_key') or '',
@@ -63,6 +66,7 @@ def predict_jingcai_with_user_algorithm(run_key: str, matches: list[dict], predi
             'score': round(score, 4),
             'confidence': confidence_value,
             'status': status,
+            'skip_reason': skip_reason,
             'filter_failures': filter_failures,
             'predicted_spf': predicted_spf,
             'predicted_rqspf': predicted_rqspf

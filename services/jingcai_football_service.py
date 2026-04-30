@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import re
+import time
 
 import requests
 
@@ -21,7 +22,7 @@ from utils.jingcai_sources import (
     build_sina_detail_params,
     build_sina_match_list_params
 )
-from utils.predictor_engine import uses_ai_engine
+from utils.predictor_engine import is_user_algorithm_key, uses_ai_engine
 from utils.timezone import get_current_beijing_time, parse_beijing_time
 
 
@@ -141,6 +142,129 @@ class JingcaiFootballService:
         db.upsert_lottery_events(events)
         return payload
 
+    def backfill_history(
+        self,
+        db,
+        start_date: str,
+        end_date: str,
+        include_details: bool = True,
+        max_days: int = 31
+    ) -> dict:
+        start = self._parse_date(start_date)
+        end = self._parse_date(end_date)
+        if not start or not end:
+            raise ValueError('补齐任务需要 YYYY-MM-DD 格式的开始和结束日期')
+        if end < start:
+            raise ValueError('结束日期不能早于开始日期')
+
+        days = (end - start).days + 1
+        if days > max(1, int(max_days or 31)):
+            raise ValueError(f'单次最多补齐 {max_days} 天历史数据')
+
+        results = []
+        total_matches = 0
+        total_details = 0
+        for offset in range(days):
+            current_date = (start + timedelta(days=offset)).strftime('%Y-%m-%d')
+            payload = self.sync_matches(db, date=current_date, is_prized='1', game_types='spf', cache_bust=True)
+            matches = payload.get('matches') or []
+            detail_count = 0
+            if include_details:
+                for match in matches:
+                    bundle = self.get_or_fetch_match_detail_bundle(db, match, force_refresh=False)
+                    if bundle:
+                        detail_count += 1
+            total_matches += len(matches)
+            total_details += detail_count
+            results.append({
+                'date': current_date,
+                'batch_key': payload.get('batch_key') or current_date,
+                'match_count': len(matches),
+                'detail_count': detail_count
+            })
+
+        return {
+            'lottery_type': self.lottery_type,
+            'source_provider': 'sina',
+            'start_date': start.strftime('%Y-%m-%d'),
+            'end_date': end.strftime('%Y-%m-%d'),
+            'day_count': days,
+            'match_count': total_matches,
+            'detail_count': total_details,
+            'results': results
+        }
+
+    def run_backfill_job(
+        self,
+        db,
+        start_date: str,
+        end_date: str,
+        include_details: bool = True,
+        max_days: int = 31,
+        trigger_source: str = 'manual'
+    ) -> dict:
+        start = self._parse_date(start_date)
+        end = self._parse_date(end_date)
+        if not start or not end:
+            raise ValueError('补齐任务需要 YYYY-MM-DD 格式的开始和结束日期')
+        requested_days = (end - start).days + 1
+        job_id = db.create_jingcai_backfill_job(
+            trigger_source=trigger_source,
+            start_date=start.strftime('%Y-%m-%d'),
+            end_date=end.strftime('%Y-%m-%d'),
+            include_details=include_details,
+            requested_days=requested_days
+        )
+        db.update_jingcai_backfill_job(job_id, {
+            'status': 'running',
+            'started_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        })
+        try:
+            result = self.backfill_history(
+                db,
+                start_date=start.strftime('%Y-%m-%d'),
+                end_date=end.strftime('%Y-%m-%d'),
+                include_details=include_details,
+                max_days=max_days
+            )
+            db.update_jingcai_backfill_job(job_id, {
+                'status': 'succeeded',
+                'match_count': int(result.get('match_count') or 0),
+                'detail_count': int(result.get('detail_count') or 0),
+                'result_json': result,
+                'finished_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            })
+            return {
+                'job': db.get_latest_jingcai_backfill_job(),
+                'result': result
+            }
+        except Exception as exc:
+            db.update_jingcai_backfill_job(job_id, {
+                'status': 'failed',
+                'error_message': str(exc),
+                'finished_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            })
+            raise
+
+    def run_scheduled_history_backfill(
+        self,
+        db,
+        lookback_days: int,
+        include_details: bool = True,
+        max_days: int = 31
+    ) -> dict:
+        end = get_current_beijing_time().date() - timedelta(days=1)
+        days = max(1, min(int(lookback_days or 7), int(max_days or 31)))
+        start = end - timedelta(days=days - 1)
+        return self.run_backfill_job(
+            db,
+            start_date=start.strftime('%Y-%m-%d'),
+            end_date=end.strftime('%Y-%m-%d'),
+            include_details=include_details,
+            max_days=max_days,
+            trigger_source='scheduled'
+        )
+
     def fetch_match_detail_bundle(self, match: dict) -> dict:
         raw_item = match.get('raw_item') or {}
         match_id = str(match.get('source_match_id') or raw_item.get('matchId') or '').strip()
@@ -187,6 +311,12 @@ class JingcaiFootballService:
             return self._request_detail_payload(cat1, params, host=host)
         except Exception:
             return {} if cat1 not in {'footballMatchTeamBattleHistory', 'footballMatchTeamRecentZhanJi', 'footballMatchOddsEuro', 'footballMatchOddsAsia', 'footballMatchOddsTotals'} else []
+
+    def _parse_date(self, value: str):
+        try:
+            return datetime.strptime(str(value or '').strip()[:10], '%Y-%m-%d')
+        except ValueError:
+            return None
 
     def get_or_fetch_match_detail_bundle(self, db, match: dict, force_refresh: bool = False) -> dict:
         event_key = match['event_key']
@@ -484,6 +614,7 @@ class JingcaiFootballService:
             predictor.get('history_window') or 40
         )
         enriched_matches = self.enrich_matches_for_prediction(db, target_matches)
+        user_algorithm_execution_log = None
         if uses_ai_engine(predictor):
             predictor_client = AIPredictor(
                 api_key=predictor['api_key'],
@@ -502,10 +633,11 @@ class JingcaiFootballService:
                 data_injection_mode=predictor.get('data_injection_mode') or 'summary'
             )
         else:
-            items_payload, raw_response, prompt_snapshot = machine_prediction.predict_jingcai(
-                run_key,
-                enriched_matches,
-                predictor
+            items_payload, raw_response, prompt_snapshot, user_algorithm_execution_log = self._predict_jingcai_with_machine_strategy(
+                db=db,
+                run_key=run_key,
+                matches=enriched_matches,
+                predictor=predictor
             )
             batch_results = [{
                 'batch_label': 'machine.1',
@@ -518,6 +650,7 @@ class JingcaiFootballService:
             }]
         raw_response = self._compose_batch_trace(batch_results, field_name='raw_response')
         prompt_snapshot = self._compose_batch_trace(batch_results, field_name='prompt_snapshot')
+        algorithm_snapshot = self._build_algorithm_snapshot(predictor)
         run_payload = {
             'predictor_id': predictor['id'],
             'lottery_type': self.lottery_type,
@@ -538,7 +671,18 @@ class JingcaiFootballService:
             'raw_response': self._merge_trace_payload(existing_run.get('raw_response') if existing_run else '', raw_response),
             'prompt_snapshot': self._merge_trace_payload(existing_run.get('prompt_snapshot') if existing_run else '', prompt_snapshot),
             'error_message': None,
-            'settled_at': None
+            'settled_at': None,
+            'algorithm_key': algorithm_snapshot.get('algorithm_key') or '',
+            'algorithm_version': algorithm_snapshot.get('algorithm_version'),
+            'algorithm_snapshot': algorithm_snapshot,
+            'execution_log': {
+                'engine_type': predictor.get('engine_type') or 'ai',
+                'batch_count': len(batch_results),
+                'match_count': len(enriched_matches),
+                'retry_match_count': len(retry_matches or []),
+                'auto_mode': bool(auto_mode),
+                'user_algorithm_execution_log': user_algorithm_execution_log or {}
+            }
         }
         run_id = db.upsert_prediction_run(run_payload)
 
@@ -769,6 +913,191 @@ class JingcaiFootballService:
     def build_external_prompt_template(self, predictor_payload: dict) -> str:
         history_window = predictor_payload.get('history_window') or 40
         return f"""你是一个资深提示词工程师。请帮我为“AITradingSimulator”的竞彩足球预测功能编写一版可直接使用的自定义提示词。\n\n当前配置：\n- 彩种：竞彩足球\n- 预测玩法：{', '.join(football_utils.TARGET_LABELS.get(item, item) for item in predictor_payload.get('prediction_targets') or [])}\n- 主玩法：{football_utils.TARGET_LABELS.get(predictor_payload.get('primary_metric') or 'spf', '胜平负')}\n- 历史窗口：最近 {history_window} 场已结束比赛\n\n平台会提供的数据包括：\n1. 待售比赛列表与 SPF / RQSPF 赔率\n2. 每场比赛详情、积分排名、历史交锋、双方近期战绩、伤停信息\n3. 近期已结束比赛样本\n\n要求：\n1. 只能预测当前待售比赛列表中的场次。\n2. 重点参考联赛、对阵、赔率、让球、历史交锋、近期战绩、积分排名、伤停信息。\n3. 输出严格 JSON，不要 Markdown，不要解释性前缀。\n4. JSON 字段只包含：batch_key、predictions。\n5. predictions 中每项字段只包含：event_key、match_no、predicted_spf、predicted_rqspf、confidence、reasoning_summary。\n6. predicted_spf / predicted_rqspf 只能输出“胜 / 平 / 负”或 null。\n7. confidence 取值 0-1。\n8. reasoning_summary 要简短，不要空泛。\n\n如果我补充“偏保守”“更重视赔率”“重点看让球”这类自然语言需求，请自动把它改写成专业、可执行的竞彩足球提示词。"""
+
+    def _predict_jingcai_with_machine_strategy(
+        self,
+        db,
+        run_key: str,
+        matches: list[dict],
+        predictor: dict
+    ) -> tuple[list[dict], str, str, dict | None]:
+        algorithm_key = str(predictor.get('algorithm_key') or '').strip()
+        if not is_user_algorithm_key(algorithm_key):
+            items_payload, raw_response, prompt_snapshot = machine_prediction.predict_jingcai(
+                run_key,
+                matches,
+                predictor
+            )
+            return items_payload, raw_response, prompt_snapshot, None
+
+        started_at = time.monotonic()
+        fallback_strategy = str(predictor.get('user_algorithm_fallback_strategy') or 'fail').strip().lower()
+        if fallback_strategy not in {'fail', 'builtin_baseline', 'skip'}:
+            fallback_strategy = 'fail'
+
+        try:
+            items_payload, raw_response, prompt_snapshot = machine_prediction.predict_jingcai(
+                run_key,
+                matches,
+                predictor
+            )
+            log_payload = self._record_user_algorithm_execution_log(
+                db=db,
+                predictor=predictor,
+                run_key=run_key,
+                matches=matches,
+                items_payload=items_payload,
+                started_at=started_at,
+                status='succeeded',
+                fallback_strategy=fallback_strategy,
+                fallback_used=False,
+                error_message='',
+                debug={'algorithm_key': algorithm_key}
+            )
+            return items_payload, raw_response, prompt_snapshot, log_payload
+        except Exception as exc:
+            if fallback_strategy == 'builtin_baseline':
+                try:
+                    fallback_predictor = {
+                        **predictor,
+                        'algorithm_key': 'football_odds_baseline_v1',
+                        'user_algorithm': None
+                    }
+                    items_payload, raw_response, prompt_snapshot = machine_prediction.predict_jingcai(
+                        run_key,
+                        matches,
+                        fallback_predictor
+                    )
+                    log_payload = self._record_user_algorithm_execution_log(
+                        db=db,
+                        predictor=predictor,
+                        run_key=run_key,
+                        matches=matches,
+                        items_payload=items_payload,
+                        started_at=started_at,
+                        status='fallback_succeeded',
+                        fallback_strategy=fallback_strategy,
+                        fallback_used=True,
+                        error_message=str(exc),
+                        debug={
+                            'algorithm_key': algorithm_key,
+                            'fallback_algorithm_key': 'football_odds_baseline_v1'
+                        }
+                    )
+                    raw_response = self._append_user_algorithm_fallback_trace(raw_response, str(exc), fallback_strategy)
+                    return items_payload, raw_response, prompt_snapshot, log_payload
+                except Exception as fallback_exc:
+                    log_payload = self._record_user_algorithm_execution_log(
+                        db=db,
+                        predictor=predictor,
+                        run_key=run_key,
+                        matches=matches,
+                        items_payload=[],
+                        started_at=started_at,
+                        status='failed',
+                        fallback_strategy=fallback_strategy,
+                        fallback_used=True,
+                        error_message=f'{exc}；降级失败：{fallback_exc}',
+                        debug={'algorithm_key': algorithm_key}
+                    )
+                    exc.args = (*exc.args, f'降级失败：{fallback_exc}', f'执行日志ID：{log_payload.get("id")}')
+                    raise
+
+            if fallback_strategy == 'skip':
+                raw_response = self._build_user_algorithm_skip_trace(str(exc), fallback_strategy)
+                log_payload = self._record_user_algorithm_execution_log(
+                    db=db,
+                    predictor=predictor,
+                    run_key=run_key,
+                    matches=matches,
+                    items_payload=[],
+                    started_at=started_at,
+                    status='skipped',
+                    fallback_strategy=fallback_strategy,
+                    fallback_used=True,
+                    error_message=str(exc),
+                    debug={'algorithm_key': algorithm_key}
+                )
+                return [], raw_response, '用户算法失败后按策略跳过本批次', log_payload
+
+            log_payload = self._record_user_algorithm_execution_log(
+                db=db,
+                predictor=predictor,
+                run_key=run_key,
+                matches=matches,
+                items_payload=[],
+                started_at=started_at,
+                status='failed',
+                fallback_strategy=fallback_strategy,
+                fallback_used=False,
+                error_message=str(exc),
+                debug={'algorithm_key': algorithm_key}
+            )
+            exc.args = (*exc.args, f'执行日志ID：{log_payload.get("id")}')
+            raise
+
+    def _record_user_algorithm_execution_log(
+        self,
+        db,
+        predictor: dict,
+        run_key: str,
+        matches: list[dict],
+        items_payload: list[dict],
+        started_at: float,
+        status: str,
+        fallback_strategy: str,
+        fallback_used: bool,
+        error_message: str,
+        debug: dict | None = None
+    ) -> dict:
+        user_algorithm = predictor.get('user_algorithm') or {}
+        requested_targets = predictor.get('prediction_targets') or []
+        prediction_count = self._count_prediction_payload_items(items_payload, requested_targets)
+        match_count = len(matches or [])
+        payload = {
+            'user_id': predictor.get('user_id'),
+            'algorithm_id': user_algorithm.get('id'),
+            'algorithm_version': user_algorithm.get('active_version'),
+            'predictor_id': predictor.get('id'),
+            'run_key': run_key,
+            'status': status,
+            'match_count': match_count,
+            'prediction_count': prediction_count,
+            'skip_count': max(0, match_count - prediction_count),
+            'duration_ms': int(max(0, time.monotonic() - started_at) * 1000),
+            'fallback_strategy': fallback_strategy,
+            'fallback_used': fallback_used,
+            'error_message': str(error_message or '')[:1000],
+            'debug': debug or {}
+        }
+        log_id = db.create_user_algorithm_execution_log(payload)
+        return {**payload, 'id': log_id}
+
+    def _count_prediction_payload_items(self, items_payload: list[dict], requested_targets: list[str]) -> int:
+        targets = requested_targets or ['spf', 'rqspf']
+        count = 0
+        for item in items_payload or []:
+            if not isinstance(item, dict):
+                continue
+            if any(football_utils.normalize_prediction_outcome(item.get(f'predicted_{target}')) for target in targets):
+                count += 1
+        return count
+
+    def _append_user_algorithm_fallback_trace(self, raw_response: str, error_message: str, fallback_strategy: str) -> str:
+        trace = {
+            'user_algorithm_error': str(error_message or ''),
+            'fallback_strategy': fallback_strategy,
+            'fallback_used': True
+        }
+        return '\n\n'.join([part for part in [raw_response, f'用户算法降级记录：{trace}'] if part])
+
+    def _build_user_algorithm_skip_trace(self, error_message: str, fallback_strategy: str) -> str:
+        return str({
+            'user_algorithm_error': str(error_message or ''),
+            'fallback_strategy': fallback_strategy,
+            'fallback_used': True,
+            'result': '本批次按策略跳过，未生成预测'
+        })
 
     def _select_retry_target_matches(self, db, existing_run: dict | None, upcoming_matches: list[dict], auto_mode: bool) -> list[dict]:
         if not existing_run:
@@ -1116,6 +1445,27 @@ class JingcaiFootballService:
                 f"[子批次 {result.get('batch_label') or '--'} | 场次 {len(result.get('matches') or [])} | {match_labels}]\n{content}"
             )
         return '\n\n'.join(blocks)
+
+    def _build_algorithm_snapshot(self, predictor: dict) -> dict:
+        algorithm_key = str(predictor.get('algorithm_key') or '').strip()
+        user_algorithm = predictor.get('user_algorithm') or {}
+        if is_user_algorithm_key(algorithm_key) and user_algorithm:
+            return {
+                'algorithm_key': algorithm_key,
+                'algorithm_source': 'user',
+                'algorithm_id': user_algorithm.get('id'),
+                'algorithm_version': user_algorithm.get('active_version'),
+                'algorithm_name': user_algorithm.get('name') or '',
+                'definition': user_algorithm.get('definition') or {}
+            }
+        return {
+            'algorithm_key': algorithm_key,
+            'algorithm_source': 'builtin' if algorithm_key else 'ai',
+            'algorithm_id': None,
+            'algorithm_version': None,
+            'algorithm_name': predictor.get('algorithm_label') or predictor.get('model_name') or '',
+            'definition': {}
+        }
 
     def _build_prediction_error_summary(self, failed_batches: list[dict], failed_item_count: int, total_items: int) -> str | None:
         if not failed_batches:

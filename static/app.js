@@ -222,6 +222,7 @@ class PredictionApp {
         this.currentPredictor = null;
         this.predictors = [];
         this.userAlgorithms = [];
+        this.algorithmTemplates = [];
         this.selectedUserAlgorithmId = null;
         this.algorithmChatMessages = [];
         this.lastUserAlgorithmBacktest = null;
@@ -340,7 +341,10 @@ class PredictionApp {
         this.bindEvent('closeUserAlgorithmModalBtn', 'click', () => this.hideUserAlgorithmModal());
         this.bindEvent('newUserAlgorithmBtn', 'click', () => this.resetUserAlgorithmForm());
         this.bindEvent('loadAlgorithmSampleBtn', 'click', () => this.loadUserAlgorithmSample());
+        this.bindEvent('applyAlgorithmTemplateBtn', 'click', () => this.applyUserAlgorithmTemplate());
+        this.bindEvent('adjustUserAlgorithmBtn', 'click', () => this.adjustUserAlgorithm());
         this.bindEvent('generateUserAlgorithmBtn', 'click', () => this.generateUserAlgorithmDraft());
+        this.bindEvent('aiAdjustUserAlgorithmBtn', 'click', () => this.aiAdjustUserAlgorithm());
         this.bindEvent('clearAlgorithmChatBtn', 'click', () => this.clearAlgorithmChat());
         this.bindEvent('validateUserAlgorithmBtn', 'click', () => this.validateUserAlgorithmForm());
         this.bindEvent('dryRunUserAlgorithmBtn', 'click', () => this.dryRunUserAlgorithm());
@@ -892,6 +896,10 @@ class PredictionApp {
         const showPromptAssistant = config.supportsPromptAssistant && !showMachineAlgorithm;
         const showPresets = config.supportsPresets && !showMachineAlgorithm;
         document.getElementById('algorithmField').style.display = showMachineAlgorithm ? '' : 'none';
+        const fallbackField = document.getElementById('userAlgorithmFallbackField');
+        if (fallbackField) {
+            fallbackField.style.display = showMachineAlgorithm && algorithmSource === 'user' ? '' : 'none';
+        }
         ['apiUrlField', 'modelNameField', 'apiModeField', 'apiKeyField', 'temperatureField', 'dataInjectionModeField', 'systemPromptField']
             .forEach((id) => {
                 const element = document.getElementById(id);
@@ -4630,6 +4638,10 @@ class PredictionApp {
         document.getElementById('apiKey').value = '';
         document.getElementById('temperature').value = data.temperature ?? 0.7;
         document.getElementById('dataInjectionMode').value = data.data_injection_mode || 'summary';
+        const fallbackStrategy = document.getElementById('userAlgorithmFallbackStrategy');
+        if (fallbackStrategy) {
+            fallbackStrategy.value = data.user_algorithm_fallback_strategy || 'fail';
+        }
         document.getElementById('systemPrompt').value = data.system_prompt || '';
         document.getElementById('predictorEnabled').checked = Boolean(data.enabled);
         document.getElementById('shareLevel').value = data.share_level || (data.share_predictions ? 'records' : 'stats_only');
@@ -4660,6 +4672,7 @@ class PredictionApp {
 
     async openUserAlgorithmModal() {
         await this.loadUserAlgorithms();
+        await this.loadUserAlgorithmTemplates();
         this.resetUserAlgorithmForm();
         document.getElementById('userAlgorithmModal').classList.add('show');
     }
@@ -4677,9 +4690,63 @@ class PredictionApp {
         document.getElementById('userAlgorithmName').value = '';
         document.getElementById('userAlgorithmDescription').value = '';
         document.getElementById('userAlgorithmLotteryType').value = lotteryType;
+        this.resetUserAlgorithmBacktestFilters();
         this.loadUserAlgorithmSample();
         this.hideUserAlgorithmResult();
         this.renderUserAlgorithmVersions([]);
+        this.renderUserAlgorithmExecutionLogs([]);
+    }
+
+    resetUserAlgorithmBacktestFilters() {
+        ['userAlgorithmBacktestStartDate', 'userAlgorithmBacktestEndDate', 'userAlgorithmBacktestRecentN', 'userAlgorithmBacktestLeagues'].forEach((id) => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.value = '';
+            }
+        });
+        const marketType = document.getElementById('userAlgorithmBacktestMarketType');
+        if (marketType) {
+            marketType.value = '';
+        }
+    }
+
+    async loadUserAlgorithmTemplates() {
+        try {
+            const response = await fetch('/api/user-algorithms/templates?lottery_type=jingcai_football', { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '加载算法模板失败');
+            }
+            this.algorithmTemplates = data || [];
+        } catch (error) {
+            this.algorithmTemplates = [];
+        }
+        this.renderUserAlgorithmTemplateOptions();
+    }
+
+    renderUserAlgorithmTemplateOptions() {
+        const select = document.getElementById('userAlgorithmTemplateSelect');
+        if (!select) {
+            return;
+        }
+        const options = (this.algorithmTemplates || []).map((item) => (
+            `<option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.name)}</option>`
+        ));
+        select.innerHTML = `<option value="">选择模板</option>${options.join('')}`;
+    }
+
+    applyUserAlgorithmTemplate() {
+        const key = document.getElementById('userAlgorithmTemplateSelect')?.value || '';
+        const template = (this.algorithmTemplates || []).find((item) => item.key === key);
+        if (!template) {
+            this.showUserAlgorithmResult('error', '请先选择模板');
+            return;
+        }
+        document.getElementById('userAlgorithmName').value = template.name || '';
+        document.getElementById('userAlgorithmDescription').value = template.description || '';
+        document.getElementById('userAlgorithmLotteryType').value = 'jingcai_football';
+        document.getElementById('userAlgorithmDefinition').value = JSON.stringify(template.definition || {}, null, 2);
+        this.showUserAlgorithmResult('success', `已填入模板：${template.name}`);
     }
 
     clearAlgorithmChat() {
@@ -4818,6 +4885,7 @@ class PredictionApp {
         this.renderUserAlgorithmList(algorithm.lottery_type || 'jingcai_football');
         this.hideUserAlgorithmResult();
         this.loadUserAlgorithmVersions(algorithm.id);
+        this.loadUserAlgorithmExecutionLogs(algorithm.id);
     }
 
     parseUserAlgorithmDefinition() {
@@ -4945,6 +5013,80 @@ class PredictionApp {
         }
     }
 
+    async aiAdjustUserAlgorithm() {
+        const algorithmId = document.getElementById('userAlgorithmId')?.value;
+        const button = document.getElementById('aiAdjustUserAlgorithmBtn');
+        if (!algorithmId) {
+            this.showUserAlgorithmResult('error', '请先保存算法，再让 AI 根据回测生成新版本');
+            return;
+        }
+        const messageText = document.getElementById('algorithmAiMessage')?.value.trim()
+            || '请根据最近回测结果优化当前算法，优先处理跳过率、命中率、低赔率热门和置信度门槛。';
+        const payload = {
+            api_key: document.getElementById('algorithmAiApiKey')?.value.trim() || '',
+            api_url: document.getElementById('algorithmAiApiUrl')?.value.trim() || '',
+            model_name: document.getElementById('algorithmAiModelName')?.value.trim() || '',
+            api_mode: 'auto',
+            message: messageText,
+            chat_history: this.algorithmChatMessages.slice(-8),
+            backtest_summary: this.lastUserAlgorithmBacktest || null
+        };
+        if (!payload.api_key || !payload.api_url || !payload.model_name) {
+            this.showUserAlgorithmResult('error', '请填写 API Key、API 地址和模型名称');
+            return;
+        }
+
+        this.algorithmChatMessages.push({ role: 'user', content: messageText });
+        this.renderAlgorithmChat();
+        if (button) {
+            button.disabled = true;
+            button.textContent = '调参中...';
+        }
+        this.showUserAlgorithmResult('info', '正在调用你的模型根据回测生成新版本...');
+        try {
+            const response = await fetch(`/api/user-algorithms/${algorithmId}/ai-adjust`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || 'AI 调参失败');
+            }
+            if (data.reply_type === 'need_clarification') {
+                const questions = (data.questions || []).map((item) => `- ${item}`).join('\n');
+                const assistantText = `${data.message || 'AI 需要补充信息'}${questions ? `\n${questions}` : ''}`;
+                this.algorithmChatMessages.push({ role: 'assistant', content: assistantText });
+                this.renderAlgorithmChat();
+                this.showUserAlgorithmResult('info', assistantText);
+                return;
+            }
+            await this.loadUserAlgorithms();
+            this.selectUserAlgorithm(data.algorithm.id);
+            this.renderUserAlgorithmVersions(data.versions || []);
+            this.renderUserAlgorithmValidation(data.validation || { valid: data.algorithm.status === 'validated', errors: [], warnings: [] });
+            const notes = [
+                data.message || 'AI 已根据回测生成新版本',
+                data.change_summary ? `变更：${data.change_summary}` : '',
+                ...(data.risk_notes || []).map((item) => `提醒：${item}`)
+            ].filter(Boolean);
+            this.algorithmChatMessages.push({ role: 'assistant', content: notes.join('\n') || '已生成调参版本' });
+            this.renderAlgorithmChat();
+            this.showUserAlgorithmResult('success', notes.join('\n') || 'AI 已根据回测生成新版本');
+            this.updateLotteryForm();
+        } catch (error) {
+            this.algorithmChatMessages.push({ role: 'assistant', content: `调参失败：${error.message}` });
+            this.renderAlgorithmChat();
+            this.showUserAlgorithmResult('error', error.message);
+        } finally {
+            if (button) {
+                button.disabled = false;
+                button.textContent = 'AI 调参生成新版本';
+            }
+        }
+    }
+
     async validateUserAlgorithmDraft(payload) {
         const response = await fetch('/api/user-algorithms/validate', {
             method: 'POST',
@@ -5021,9 +5163,10 @@ class PredictionApp {
         this.showUserAlgorithmResult('info', '正在读取本地已开奖赛事回测当前算法...');
         try {
             const url = algorithmId ? `/api/user-algorithms/${algorithmId}/backtest` : '/api/user-algorithms/backtest';
+            const backtestFilters = this.buildUserAlgorithmBacktestFilters();
             const requestBody = algorithmId
-                ? { limit: 50 }
-                : { lottery_type: lotteryType, definition, limit: 50 };
+                ? { limit: backtestFilters.recent_n || 50, ...backtestFilters }
+                : { lottery_type: lotteryType, definition, limit: backtestFilters.recent_n || 50, ...backtestFilters };
             const response = await fetch(url, {
                 method: 'POST',
                 credentials: 'include',
@@ -5040,7 +5183,7 @@ class PredictionApp {
                 await this.loadUserAlgorithms();
                 this.selectUserAlgorithm(data.algorithm.id);
             }
-            this.showUserAlgorithmResult('success', this.buildUserAlgorithmBacktestMessage(backtest, Boolean(algorithmId)));
+            this.showUserAlgorithmResult('success', this.buildUserAlgorithmBacktestMessage(backtest, Boolean(algorithmId), data.adjustment_suggestions || []));
         } catch (error) {
             this.showUserAlgorithmResult('error', error.message);
         } finally {
@@ -5049,13 +5192,42 @@ class PredictionApp {
         }
     }
 
-    buildUserAlgorithmBacktestMessage(backtest, savedBacktest = false) {
+    buildUserAlgorithmBacktestFilters() {
+        const leaguesRaw = document.getElementById('userAlgorithmBacktestLeagues')?.value || '';
+        const recentN = Number(document.getElementById('userAlgorithmBacktestRecentN')?.value || 0);
+        const payload = {
+            start_date: document.getElementById('userAlgorithmBacktestStartDate')?.value || '',
+            end_date: document.getElementById('userAlgorithmBacktestEndDate')?.value || '',
+            recent_n: recentN > 0 ? recentN : null,
+            market_type: document.getElementById('userAlgorithmBacktestMarketType')?.value || '',
+            leagues: leaguesRaw.split(/[,，]/).map((item) => item.trim()).filter(Boolean)
+        };
+        Object.keys(payload).forEach((key) => {
+            if (payload[key] === '' || payload[key] === null || (Array.isArray(payload[key]) && !payload[key].length)) {
+                delete payload[key];
+            }
+        });
+        return payload;
+    }
+
+    buildUserAlgorithmBacktestMessage(backtest, savedBacktest = false, suggestions = []) {
         const hitRate = backtest.hit_rate || {};
         const profitSummary = backtest.profit_summary || {};
+        const dataQuality = backtest.data_quality || {};
+        const confidence = backtest.confidence_report || {};
         const spfStats = hitRate.spf || {};
         const rqspfStats = hitRate.rqspf || {};
         const spfProfit = profitSummary.spf || {};
         const rqspfProfit = profitSummary.rqspf || {};
+        const spfStreak = (backtest.streaks || {}).spf || {};
+        const spfDrawdown = (backtest.max_drawdown || {}).spf || {};
+        const skipStats = Object.values(backtest.skip_reason_stats || {}).map((item) => `${item.label}:${item.count}`).join('，') || '--';
+        const missingStats = Object.entries((dataQuality || {}).missing_field_stats || {}).map(([key, value]) => `${key}:${value}`).join('，') || '--';
+        const suggestionText = (suggestions || []).map((item) => `${item.label}：${item.reason}`).join('；') || '--';
+        const spfChart = ((backtest.chart_data || {}).spf) || {};
+        const trendText = (spfChart.hit_rate_trend || []).slice(-3).map((item) => `${item.index}:${item.hit_rate}%`).join('，') || '--';
+        const equityCurve = spfChart.equity_curve || [];
+        const equityEnd = equityCurve.length ? equityCurve[equityCurve.length - 1] : '--';
         const recentRecords = (backtest.records || []).slice(0, 5).map((item) => {
             const spfText = item.predicted_spf
                 ? `SPF ${item.predicted_spf}/${item.actual_spf || '--'}`
@@ -5067,13 +5239,24 @@ class PredictionApp {
         });
         const lines = [
             savedBacktest ? '回测完成，结果已保存到当前版本。' : '回测完成。',
+            `可信度：${confidence.label || '--'}${confidence.score === null || confidence.score === undefined ? '' : `（${confidence.score}分）`}`,
             `样本数：${backtest.sample_size || 0}`,
+            `有效样本数：${backtest.effective_sample_count || 0}`,
+            `字段完整率：${dataQuality.field_completeness_rate === null || dataQuality.field_completeness_rate === undefined ? '--' : `${dataQuality.field_completeness_rate}%`}`,
             `产生预测：${backtest.prediction_count || 0}`,
             `跳过预测：${backtest.skip_count || 0}`,
             `SPF 命中：${spfStats.ratio_text || '--'}${spfStats.hit_rate === null || spfStats.hit_rate === undefined ? '' : `（${spfStats.hit_rate}%）`}`,
             `SPF 模拟收益：${spfProfit.net_profit === undefined ? '--' : spfProfit.net_profit}${spfProfit.roi === null || spfProfit.roi === undefined ? '' : `（ROI ${spfProfit.roi}%）`}`,
+            `SPF 连红/连黑：最长连红 ${spfStreak.max_hit_streak || 0}，最长连黑 ${spfStreak.max_miss_streak || 0}`,
+            `SPF 最大回撤：${spfDrawdown.amount === undefined ? '--' : spfDrawdown.amount}`,
+            `SPF 趋势点：${trendText}`,
+            `SPF 净值曲线末值：${equityEnd}`,
             `RQSPF 命中：${rqspfStats.ratio_text || '--'}${rqspfStats.hit_rate === null || rqspfStats.hit_rate === undefined ? '' : `（${rqspfStats.hit_rate}%）`}`,
             `RQSPF 模拟收益：${rqspfProfit.net_profit === undefined ? '--' : rqspfProfit.net_profit}${rqspfProfit.roi === null || rqspfProfit.roi === undefined ? '' : `（ROI ${rqspfProfit.roi}%）`}`,
+            `跳过原因：${skipStats}`,
+            `缺字段统计：${missingStats}`,
+            ...(backtest.sample_bias_flags || []).map((item) => `偏差提示：${item}`),
+            `调参建议：${suggestionText}`,
             ...(backtest.risk_flags || []).map((item) => `提醒：${item}`),
             ...recentRecords.map((item) => `样本：${item}`)
         ];
@@ -5126,8 +5309,12 @@ class PredictionApp {
         container.innerHTML = versions.map((item) => {
             const backtest = item.backtest || {};
             const spfStats = (backtest.hit_rate || {}).spf || {};
+            const confidence = backtest.confidence_report || {};
+            const previous = versions.find((candidate) => Number(candidate.version) === Number(item.version) - 1);
+            const previousSpfStats = ((previous || {}).backtest || {}).hit_rate?.spf || {};
+            const hitDelta = this.formatNumberDelta(spfStats.hit_rate, previousSpfStats.hit_rate, '%');
             const summary = backtest.sample_size
-                ? `样本 ${backtest.sample_size}，SPF ${spfStats.ratio_text || '--'}`
+                ? `样本 ${backtest.sample_size}，可信度 ${confidence.label || '--'}，SPF ${spfStats.ratio_text || '--'}${hitDelta ? `，较上版 ${hitDelta}` : ''}`
                 : '暂无回测';
             return `
                 <div class="algorithm-chat-message assistant">
@@ -5140,6 +5327,70 @@ class PredictionApp {
         container.querySelectorAll('[data-action="activate-user-algorithm-version"]').forEach((button) => {
             button.addEventListener('click', () => this.activateUserAlgorithmVersion(Number(button.dataset.version)));
         });
+    }
+
+    async loadUserAlgorithmExecutionLogs(algorithmId) {
+        const container = document.getElementById('userAlgorithmExecutionLogList');
+        if (!container || !algorithmId) {
+            this.renderUserAlgorithmExecutionLogs([]);
+            return;
+        }
+        try {
+            const response = await fetch(`/api/user-algorithms/${algorithmId}/execution-logs?limit=10`, { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '加载算法执行日志失败');
+            }
+            this.renderUserAlgorithmExecutionLogs(data || []);
+        } catch (error) {
+            this.renderUserAlgorithmExecutionLogs([]);
+        }
+    }
+
+    renderUserAlgorithmExecutionLogs(logs) {
+        const container = document.getElementById('userAlgorithmExecutionLogList');
+        if (!container) {
+            return;
+        }
+        if (!logs.length) {
+            container.style.display = 'none';
+            container.innerHTML = '';
+            return;
+        }
+        const statusLabels = {
+            succeeded: '成功',
+            fallback_succeeded: '降级成功',
+            skipped: '已跳过',
+            failed: '失败'
+        };
+        const fallbackLabels = {
+            fail: '失败即停止',
+            builtin_baseline: '内置基线',
+            skip: '跳过'
+        };
+        container.style.display = 'block';
+        container.innerHTML = `
+            <div class="algorithm-chat-message assistant">
+                <span>最近执行日志</span>
+                ${logs.map((item) => `
+                    <p>V${item.algorithm_version || '--'}｜${this.escapeHtml(item.run_key || '--')}｜${statusLabels[item.status] || item.status || '--'}｜预测 ${item.prediction_count || 0}/${item.match_count || 0}｜跳过 ${item.skip_count || 0}｜${item.duration_ms || 0}ms｜策略 ${fallbackLabels[item.fallback_strategy] || item.fallback_strategy || '--'}${item.fallback_used ? '｜已降级' : ''}${item.error_message ? `｜${this.escapeHtml(item.error_message)}` : ''}</p>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    formatNumberDelta(current, previous, suffix = '') {
+        if (current === null || current === undefined || previous === null || previous === undefined) {
+            return '';
+        }
+        const delta = Number(current) - Number(previous);
+        if (!Number.isFinite(delta)) {
+            return '';
+        }
+        if (Math.abs(delta) < 0.005) {
+            return `持平`;
+        }
+        return `${delta > 0 ? '+' : ''}${delta.toFixed(2)}${suffix}`;
     }
 
     async activateUserAlgorithmVersion(version) {
@@ -5162,6 +5413,35 @@ class PredictionApp {
             this.selectUserAlgorithm(data.algorithm.id);
             this.renderUserAlgorithmVersions(data.versions || []);
             this.showUserAlgorithmResult('success', data.message || '算法版本已启用');
+            this.updateLotteryForm();
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+        }
+    }
+
+    async adjustUserAlgorithm() {
+        const algorithmId = document.getElementById('userAlgorithmId').value;
+        const mode = document.getElementById('userAlgorithmAdjustMode')?.value || 'conservative';
+        if (!algorithmId) {
+            this.showUserAlgorithmResult('error', '请先保存算法，再生成调参版本');
+            return;
+        }
+        try {
+            const response = await fetch(`/api/user-algorithms/${algorithmId}/adjust`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '调参失败');
+            }
+            await this.loadUserAlgorithms();
+            this.selectUserAlgorithm(data.algorithm.id);
+            this.renderUserAlgorithmVersions(data.versions || []);
+            this.renderUserAlgorithmValidation(data.validation || { valid: data.algorithm.status === 'validated', errors: [], warnings: [] });
+            this.showUserAlgorithmResult('success', data.change_summary || data.message || '算法已生成新版本');
             this.updateLotteryForm();
         } catch (error) {
             this.showUserAlgorithmResult('error', error.message);
@@ -5225,7 +5505,8 @@ class PredictionApp {
             }
             await this.loadUserAlgorithms();
             this.resetUserAlgorithmForm();
-            this.showUserAlgorithmResult('success', data.message || '用户算法已停用');
+            const affected = (data.affected_predictors || []).map((item) => item.name).filter(Boolean).join('，');
+            this.showUserAlgorithmResult('success', `${data.message || '用户算法已停用'}${affected ? `\n仍在使用的预测方案：${affected}` : ''}`);
             this.updateLotteryForm();
         } catch (error) {
             this.showUserAlgorithmResult('error', error.message);
@@ -5276,6 +5557,10 @@ class PredictionApp {
         document.getElementById('historyWindow').value = '60';
         document.getElementById('temperature').value = '0.7';
         document.getElementById('dataInjectionMode').value = 'summary';
+        const fallbackStrategy = document.getElementById('userAlgorithmFallbackStrategy');
+        if (fallbackStrategy) {
+            fallbackStrategy.value = 'fail';
+        }
         document.getElementById('systemPrompt').value = '';
         document.getElementById('predictorEnabled').checked = true;
         document.getElementById('shareLevel').value = 'stats_only';
@@ -5391,6 +5676,7 @@ class PredictionApp {
             history_window: Number(document.getElementById('historyWindow').value || 60),
             temperature: Number(document.getElementById('temperature').value || 0.7),
             data_injection_mode: document.getElementById('dataInjectionMode').value,
+            user_algorithm_fallback_strategy: document.getElementById('userAlgorithmFallbackStrategy')?.value || 'fail',
             primary_metric: document.getElementById('primaryMetric').value,
             profit_rule_id: document.getElementById('profitRuleId').value,
             profit_default_metric: document.getElementById('profitDefaultMetric').value,

@@ -688,6 +688,15 @@
                     </select>
                     <small class="field-hint">新手建议先用摘要模式；如果你的提示词明确要求固定输入格式，再切换到原始模式。</small>
                 </label>
+                <label class="form-field span-2" id="userAlgorithmFallbackField" style="display: none;">
+                    <span>用户算法失败处理</span>
+                    <select id="userAlgorithmFallbackStrategy" class="form-input">
+                        <option value="fail">直接标记失败</option>
+                        <option value="builtin_baseline">回退到内置赔率基线</option>
+                        <option value="skip">本批次全部跳过</option>
+                    </select>
+                    <small class="field-hint">仅在“我的算法”执行异常时生效；正常低置信度跳过不触发回退。</small>
+                </label>
                 <label class="form-field span-2">
                     <span>主玩法统计口径</span>
                     <select id="primaryMetric" class="form-input">
@@ -857,6 +866,30 @@
                         <input type="text" id="userAlgorithmDescription" placeholder="简短描述算法思路">
                     </label>
                     <div class="form-field help-block">
+                        <span>模板库</span>
+                        <div class="form-grid">
+                            <label class="form-field">
+                                <span>内置模板</span>
+                                <select id="userAlgorithmTemplateSelect" class="form-input">
+                                    <option value="">选择模板</option>
+                                </select>
+                            </label>
+                            <label class="form-field">
+                                <span>一键调参</span>
+                                <select id="userAlgorithmAdjustMode" class="form-input">
+                                    <option value="conservative">更保守</option>
+                                    <option value="aggressive">更激进</option>
+                                    <option value="reduce_skip">降低跳过</option>
+                                    <option value="value_odds">提高赔率价值</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="modal-actions left-actions">
+                            <button class="btn ghost" id="applyAlgorithmTemplateBtn">使用模板</button>
+                            <button class="btn ghost" id="adjustUserAlgorithmBtn">生成新版本</button>
+                        </div>
+                    </div>
+                    <div class="form-field help-block">
                         <span>AI 帮写算法</span>
                         <small class="field-hint">使用你自己的 OpenAI 兼容 API 配置生成算法 DSL，平台不会使用统一 Key。</small>
                         <div class="form-grid algorithm-ai-grid">
@@ -882,6 +915,7 @@
                         </div>
                         <div class="modal-actions left-actions">
                             <button class="btn ghost" id="generateUserAlgorithmBtn">发送给 AI</button>
+                            <button class="btn ghost" id="aiAdjustUserAlgorithmBtn">AI 调参生成新版本</button>
                             <button class="btn ghost" id="clearAlgorithmChatBtn">清空对话</button>
                         </div>
                     </div>
@@ -898,8 +932,38 @@
                         <button class="btn ghost" id="disableUserAlgorithmBtn">停用</button>
                         <button class="btn primary" id="saveUserAlgorithmBtn">保存算法</button>
                     </div>
+                    <div class="form-field help-block">
+                        <span>回测筛选</span>
+                        <div class="form-grid">
+                            <label class="form-field">
+                                <span>开始日期</span>
+                                <input type="date" id="userAlgorithmBacktestStartDate">
+                            </label>
+                            <label class="form-field">
+                                <span>结束日期</span>
+                                <input type="date" id="userAlgorithmBacktestEndDate">
+                            </label>
+                            <label class="form-field">
+                                <span>最近 N 场</span>
+                                <input type="number" id="userAlgorithmBacktestRecentN" min="1" max="200" placeholder="默认 50">
+                            </label>
+                            <label class="form-field">
+                                <span>玩法</span>
+                                <select id="userAlgorithmBacktestMarketType" class="form-input">
+                                    <option value="">按算法 targets</option>
+                                    <option value="spf">仅 SPF</option>
+                                    <option value="rqspf">仅 RQSPF</option>
+                                </select>
+                            </label>
+                            <label class="form-field span-2">
+                                <span>联赛</span>
+                                <input type="text" id="userAlgorithmBacktestLeagues" placeholder="多个联赛用逗号分隔">
+                            </label>
+                        </div>
+                    </div>
                     <div id="userAlgorithmResult" class="test-result" style="display: none;"></div>
                     <div id="userAlgorithmVersionList" class="algorithm-chat-log" style="display: none;"></div>
+                    <div id="userAlgorithmExecutionLogList" class="algorithm-chat-log" style="display: none;"></div>
                 </section>
             </div>
         </div>

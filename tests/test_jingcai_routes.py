@@ -112,6 +112,63 @@ class JingcaiRouteTests(unittest.TestCase):
             self.assertIn('回退本地缓存', data['warning'])
             self.assertEqual(data['overview']['match_count'], 1)
 
+    def test_admin_dashboard_exposes_jingcai_data_health(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client(username='admin', is_admin=True)
+            self._seed_event(
+                harness,
+                event_key='health-1',
+                batch_key='2026-04-06',
+                issue_no='周一011',
+                settled=True
+            )
+            harness.db.upsert_lottery_event_details([
+                {
+                    'lottery_type': 'jingcai_football',
+                    'event_key': 'health-1',
+                    'detail_type': detail_type,
+                    'source_provider': 'sina',
+                    'payload': {'ok': True}
+                }
+                for detail_type in ('recent_form_team1', 'recent_form_team2', 'injury', 'odds_euro')
+            ])
+
+            response = client.get('/api/admin/dashboard')
+
+            self.assertEqual(response.status_code, 200)
+            health = response.get_json()['jingcai_data_health']
+            self.assertEqual(health['total_event_count'], 1)
+            self.assertEqual(health['metrics']['spf_odds']['count'], 1)
+            self.assertEqual(health['metrics']['recent_form']['count'], 1)
+            self.assertIn('scheduler', health)
+
+    def test_admin_history_backfill_route_creates_tracked_job(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client(username='admin', is_admin=True)
+            with mock.patch.object(harness.module.jingcai_football_service, 'backfill_history', return_value={
+                'lottery_type': 'jingcai_football',
+                'source_provider': 'sina',
+                'start_date': '2026-04-06',
+                'end_date': '2026-04-06',
+                'day_count': 1,
+                'match_count': 2,
+                'detail_count': 2,
+                'results': []
+            }):
+                response = client.post('/api/jingcai-football/history-backfill', json={
+                    'start_date': '2026-04-06',
+                    'end_date': '2026-04-06',
+                    'include_details': True
+                })
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload['job']['status'], 'succeeded')
+            self.assertEqual(payload['job']['match_count'], 2)
+            jobs = harness.db.get_recent_jingcai_backfill_jobs()
+            self.assertEqual(jobs[0]['trigger_source'], 'manual')
+            self.assertEqual(jobs[0]['status'], 'succeeded')
+
     def test_settle_route_uses_cached_events_and_settles_pending_item(self):
         with fresh_app_harness() as harness:
             client, user_id = harness.make_client()

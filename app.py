@@ -33,6 +33,11 @@ from services.algorithm_backtester import backtest_jingcai_user_algorithm
 from services.algorithm_chat_service import generate_algorithm_draft
 from services.algorithm_definition_validator import validate_algorithm_definition
 from services.algorithm_executor import predict_jingcai_with_user_algorithm
+from services.algorithm_templates import (
+    apply_algorithm_adjustment,
+    build_backtest_adjustment_suggestions,
+    list_algorithm_templates
+)
 from services.bet_strategy import BET_MODE_LABELS, build_bet_strategy, build_bet_strategy_label
 from services.lottery_runtime import LotteryRuntime
 from services.notification_rule_engine import NotificationRuleEngine, PERFORMANCE_EVENT_TYPE
@@ -82,6 +87,9 @@ app.secret_key = os.environ.get('SECRET_KEY', 'pc28-predictor-secret')
 CORS(app, supports_credentials=True)
 
 APP_VERSION = str(int(time.time()))
+MAX_USER_ALGORITHMS_PER_USER = int(getattr(config, 'MAX_USER_ALGORITHMS_PER_USER', 50))
+USER_ALGORITHM_BACKTEST_COOLDOWN_SECONDS = int(getattr(config, 'USER_ALGORITHM_BACKTEST_COOLDOWN_SECONDS', 0))
+_user_algorithm_backtest_last_run_at: dict[int, float] = {}
 PUBLIC_LOTTERY_PAGE_CONFIG = {
     'pc28': {
         'slug': 'pc28',
@@ -125,6 +133,7 @@ _scheduler_started = False
 _notification_worker_started = False
 _scheduler_owner_id = f'{os.getpid()}-{uuid.uuid4().hex}'
 AUTO_PREDICTION_SCHEDULER = 'lottery-auto-prediction'
+JINGCAI_HISTORY_BACKFILL_SCHEDULER = 'jingcai-history-backfill'
 NOTIFICATION_DELIVERY_SCHEDULER = 'notification-delivery-worker'
 NOTIFICATION_CHANNEL_LABELS = {
     'telegram': 'Telegram'
@@ -211,6 +220,34 @@ def _snapshot_pc28_draw_state() -> dict:
     }
 
 
+def _run_scheduled_jingcai_history_backfill() -> dict | None:
+    if not bool(getattr(config, 'JINGCAI_HISTORY_BACKFILL_ENABLED', True)):
+        return None
+
+    lock_result = db.try_acquire_scheduler_with_details(
+        JINGCAI_HISTORY_BACKFILL_SCHEDULER,
+        _scheduler_owner_id,
+        stale_after_seconds=max(int(getattr(config, 'JINGCAI_HISTORY_BACKFILL_INTERVAL_SECONDS', 86400)), 3600)
+    )
+    if not lock_result.get('acquired'):
+        return {
+            'skipped': True,
+            'reason': 'lock_not_acquired',
+            'current_owner_id': lock_result.get('current_owner_id'),
+            'error': lock_result.get('error')
+        }
+
+    db.heartbeat_scheduler(JINGCAI_HISTORY_BACKFILL_SCHEDULER, _scheduler_owner_id)
+    result = jingcai_football_service.run_scheduled_history_backfill(
+        db,
+        lookback_days=max(1, int(getattr(config, 'JINGCAI_HISTORY_BACKFILL_LOOKBACK_DAYS', 7))),
+        include_details=bool(getattr(config, 'JINGCAI_HISTORY_BACKFILL_INCLUDE_DETAILS', True)),
+        max_days=max(1, int(getattr(config, 'JINGCAI_HISTORY_BACKFILL_MAX_DAYS', 31)))
+    )
+    db.heartbeat_scheduler(JINGCAI_HISTORY_BACKFILL_SCHEDULER, _scheduler_owner_id)
+    return result
+
+
 def prediction_loop():
     _log_runtime_event(
         'info',
@@ -226,6 +263,7 @@ def prediction_loop():
     }
     last_retention_maintenance_at = 0.0
     last_vacuum_at = 0.0
+    last_jingcai_backfill_at = 0.0
 
     while config.AUTO_PREDICTION:
         try:
@@ -335,6 +373,35 @@ def prediction_loop():
                                 scheduler_name=scheduler_name,
                                 owner_id=_scheduler_owner_id
                             )
+
+                backfill_interval = max(3600, int(getattr(config, 'JINGCAI_HISTORY_BACKFILL_INTERVAL_SECONDS', 86400)))
+                if now_monotonic - last_jingcai_backfill_at >= backfill_interval:
+                    backfill_started_at = time.monotonic()
+                    try:
+                        backfill_result = _run_scheduled_jingcai_history_backfill()
+                        if backfill_result:
+                            result_payload = backfill_result.get('result') or {}
+                            _log_runtime_event(
+                                'info',
+                                'jingcai_history_backfill_completed',
+                                scheduler_name=JINGCAI_HISTORY_BACKFILL_SCHEDULER,
+                                owner_id=_scheduler_owner_id,
+                                skipped=bool(backfill_result.get('skipped')),
+                                match_count=int(result_payload.get('match_count') or 0),
+                                detail_count=int(result_payload.get('detail_count') or 0),
+                                duration_ms=int((time.monotonic() - backfill_started_at) * 1000)
+                            )
+                    except Exception as exc:
+                        _log_runtime_event(
+                            'warning',
+                            'jingcai_history_backfill_failed',
+                            scheduler_name=JINGCAI_HISTORY_BACKFILL_SCHEDULER,
+                            owner_id=_scheduler_owner_id,
+                            error=str(exc),
+                            duration_ms=int((time.monotonic() - backfill_started_at) * 1000)
+                        )
+                    finally:
+                        last_jingcai_backfill_at = now_monotonic
 
                 db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
                 total_duration_ms = int((time.monotonic() - loop_started_at) * 1000)
@@ -507,6 +574,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'prediction_method': predictor.get('prediction_method') or '',
         'system_prompt': predictor.get('system_prompt') or '',
         'data_injection_mode': predictor.get('data_injection_mode') or 'summary',
+        'user_algorithm_fallback_strategy': predictor.get('user_algorithm_fallback_strategy') or 'fail',
         'prediction_targets': normalize_prediction_targets(lottery_type, predictor.get('prediction_targets')),
         'target_options': lottery_definition.to_catalog_item()['target_options'],
         'primary_metric_options': lottery_definition.to_catalog_item()['primary_metric_options'],
@@ -1171,12 +1239,36 @@ def _serialize_admin_failure(item: dict) -> dict:
     }
 
 
+def _serialize_jingcai_backfill_job(item: dict | None) -> dict:
+    if not item:
+        return {}
+    return {
+        'id': item.get('id'),
+        'trigger_source': item.get('trigger_source') or '',
+        'status': item.get('status') or '',
+        'start_date': item.get('start_date') or '',
+        'end_date': item.get('end_date') or '',
+        'include_details': bool(item.get('include_details')),
+        'requested_days': int(item.get('requested_days') or 0),
+        'match_count': int(item.get('match_count') or 0),
+        'detail_count': int(item.get('detail_count') or 0),
+        'error_message': item.get('error_message') or '',
+        'result': item.get('result') or {},
+        'started_at': utc_to_beijing(item['started_at']) if item.get('started_at') else None,
+        'finished_at': utc_to_beijing(item['finished_at']) if item.get('finished_at') else None,
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+        'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None
+    }
+
+
 def _build_admin_dashboard_data() -> dict:
     summary = db.get_admin_summary_counts()
     users = db.get_admin_users_overview()
     predictors = db.get_admin_predictors_overview()
     failed_predictions = db.get_recent_failed_predictions(limit=20)
     scheduler = db.get_scheduler_snapshot(AUTO_PREDICTION_SCHEDULER)
+    backfill_scheduler = db.get_scheduler_snapshot(JINGCAI_HISTORY_BACKFILL_SCHEDULER)
+    jingcai_data_health = db.build_jingcai_data_health()
     guard_settings = prediction_guard.get_settings()
     notification_settings = notification_service.get_settings()
 
@@ -1200,6 +1292,23 @@ def _build_admin_dashboard_data() -> dict:
         except Exception:
             scheduler_data['seconds_since_heartbeat'] = None
 
+    backfill_scheduler_data = {
+        'name': JINGCAI_HISTORY_BACKFILL_SCHEDULER,
+        'enabled': bool(getattr(config, 'JINGCAI_HISTORY_BACKFILL_ENABLED', True)),
+        'interval_seconds': int(getattr(config, 'JINGCAI_HISTORY_BACKFILL_INTERVAL_SECONDS', 86400)),
+        'lookback_days': int(getattr(config, 'JINGCAI_HISTORY_BACKFILL_LOOKBACK_DAYS', 7)),
+        'include_details': bool(getattr(config, 'JINGCAI_HISTORY_BACKFILL_INCLUDE_DETAILS', True)),
+        'owner_id': backfill_scheduler.get('owner_id') if backfill_scheduler else None,
+        'heartbeat_at': utc_to_beijing(backfill_scheduler['heartbeat_at']) if backfill_scheduler and backfill_scheduler.get('heartbeat_at') else None,
+        'seconds_since_heartbeat': None
+    }
+    if backfill_scheduler and backfill_scheduler.get('heartbeat_at'):
+        try:
+            heartbeat_at = datetime.strptime(str(backfill_scheduler['heartbeat_at']), '%Y-%m-%d %H:%M:%S')
+            backfill_scheduler_data['seconds_since_heartbeat'] = max(0, int((datetime.utcnow() - heartbeat_at).total_seconds()))
+        except Exception:
+            backfill_scheduler_data['seconds_since_heartbeat'] = None
+
     return {
         'summary': {
             'total_users': int(summary.get('total_users') or 0),
@@ -1215,6 +1324,11 @@ def _build_admin_dashboard_data() -> dict:
             'total_draws': int(summary.get('total_draws') or 0)
         },
         'scheduler': scheduler_data,
+        'jingcai_data_health': {
+            **jingcai_data_health,
+            'recent_jobs': [_serialize_jingcai_backfill_job(item) for item in jingcai_data_health.get('recent_jobs', [])],
+            'scheduler': backfill_scheduler_data
+        },
         'prediction_guard': guard_settings,
         'notification_settings': {
             **notification_settings,
@@ -1855,6 +1969,7 @@ def _validate_predictor_payload(
     fallback_method = existing_predictor.get('prediction_method') if existing_predictor else ''
     fallback_prompt = existing_predictor.get('system_prompt') if existing_predictor else ''
     fallback_injection_mode = existing_predictor.get('data_injection_mode') if existing_predictor else 'summary'
+    fallback_user_algorithm_fallback_strategy = existing_predictor.get('user_algorithm_fallback_strategy') if existing_predictor else 'fail'
 
     name = str(data.get('name') or fallback_name).strip()
     engine_type = normalize_engine_type(data.get('engine_type') or fallback_engine_type)
@@ -1874,6 +1989,11 @@ def _validate_predictor_payload(
     prediction_method = str(data.get('prediction_method') or fallback_method).strip()
     system_prompt = str(data.get('system_prompt') or fallback_prompt).strip()
     data_injection_mode = normalize_injection_mode(data.get('data_injection_mode') or fallback_injection_mode)
+    user_algorithm_fallback_strategy = str(
+        data.get('user_algorithm_fallback_strategy') or fallback_user_algorithm_fallback_strategy or 'fail'
+    ).strip().lower()
+    if user_algorithm_fallback_strategy not in {'fail', 'builtin_baseline', 'skip'}:
+        user_algorithm_fallback_strategy = 'fail'
     history_window = data.get('history_window', existing_predictor.get('history_window') if existing_predictor else config.DEFAULT_HISTORY_WINDOW)
     temperature = data.get('temperature', existing_predictor.get('temperature') if existing_predictor else config.DEFAULT_PREDICTION_TEMPERATURE)
     enabled = _parse_bool(data.get('enabled'), existing_predictor.get('enabled') if existing_predictor else True)
@@ -1946,6 +2066,7 @@ def _validate_predictor_payload(
         'prediction_method': prediction_method or '自定义策略',
         'system_prompt': system_prompt,
         'data_injection_mode': data_injection_mode,
+        'user_algorithm_fallback_strategy': user_algorithm_fallback_strategy,
         'prediction_targets': prediction_targets,
         'history_window': history_window,
         'temperature': temperature,
@@ -2030,6 +2151,162 @@ def _serialize_user_algorithm_version(item: dict | None, active_version: int | N
         'backtest': item.get('backtest') or {},
         'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None
     }
+
+
+def _serialize_user_algorithm_execution_log(item: dict | None) -> dict:
+    if not item:
+        return {}
+    return {
+        'id': item['id'],
+        'user_id': item.get('user_id'),
+        'algorithm_id': item.get('algorithm_id'),
+        'algorithm_version': item.get('algorithm_version'),
+        'predictor_id': item.get('predictor_id'),
+        'run_key': item.get('run_key') or '',
+        'status': item.get('status') or '',
+        'match_count': int(item.get('match_count') or 0),
+        'prediction_count': int(item.get('prediction_count') or 0),
+        'skip_count': int(item.get('skip_count') or 0),
+        'duration_ms': int(item.get('duration_ms') or 0),
+        'fallback_strategy': item.get('fallback_strategy') or 'fail',
+        'fallback_used': bool(item.get('fallback_used')),
+        'error_message': item.get('error_message') or '',
+        'debug': item.get('debug') or {},
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None
+    }
+
+
+def _build_user_algorithm_version_comparison(versions: list[dict]) -> dict:
+    ordered = sorted(versions or [], key=lambda item: int(item.get('version') or 0))
+    rows = []
+    previous_summary = None
+    for item in ordered:
+        summary = _summarize_user_algorithm_backtest(item.get('backtest') or {})
+        row = {
+            'version': int(item.get('version') or 0),
+            'change_summary': item.get('change_summary') or '',
+            'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
+            'summary': summary,
+            'delta_from_previous': _build_backtest_summary_delta(summary, previous_summary) if previous_summary else {}
+        }
+        rows.append(row)
+        previous_summary = summary
+    return {
+        'rows': list(reversed(rows)),
+        'best_version': _resolve_best_user_algorithm_version(rows),
+        'baseline_version': rows[0]['version'] if rows else None
+    }
+
+
+def _summarize_user_algorithm_backtest(backtest: dict) -> dict:
+    confidence = backtest.get('confidence_report') or {}
+    data_quality = backtest.get('data_quality') or {}
+    return {
+        'sample_size': int(backtest.get('sample_size') or 0),
+        'effective_sample_count': int(backtest.get('effective_sample_count') or 0),
+        'prediction_count': int(backtest.get('prediction_count') or 0),
+        'skip_rate': backtest.get('skip_rate'),
+        'confidence_level': confidence.get('level') or 'unknown',
+        'confidence_label': confidence.get('label') or '--',
+        'confidence_score': confidence.get('score'),
+        'field_completeness_rate': data_quality.get('field_completeness_rate'),
+        'targets': {
+            target: {
+                'hit_rate': (backtest.get('hit_rate') or {}).get(target, {}).get('hit_rate'),
+                'ratio_text': (backtest.get('hit_rate') or {}).get(target, {}).get('ratio_text'),
+                'roi': (backtest.get('profit_summary') or {}).get(target, {}).get('roi'),
+                'net_profit': (backtest.get('profit_summary') or {}).get(target, {}).get('net_profit'),
+                'max_drawdown': (backtest.get('max_drawdown') or {}).get(target, {}).get('amount')
+            }
+            for target in (backtest.get('targets') or ['spf', 'rqspf'])
+        }
+    }
+
+
+def _build_backtest_summary_delta(current: dict, previous: dict | None) -> dict:
+    if not previous:
+        return {}
+    return {
+        'sample_size': current.get('sample_size', 0) - previous.get('sample_size', 0),
+        'effective_sample_count': current.get('effective_sample_count', 0) - previous.get('effective_sample_count', 0),
+        'prediction_count': current.get('prediction_count', 0) - previous.get('prediction_count', 0),
+        'skip_rate': _numeric_delta(current.get('skip_rate'), previous.get('skip_rate')),
+        'confidence_score': _numeric_delta(current.get('confidence_score'), previous.get('confidence_score')),
+        'field_completeness_rate': _numeric_delta(current.get('field_completeness_rate'), previous.get('field_completeness_rate')),
+        'targets': {
+            target: {
+                'hit_rate': _numeric_delta(values.get('hit_rate'), (previous.get('targets') or {}).get(target, {}).get('hit_rate')),
+                'roi': _numeric_delta(values.get('roi'), (previous.get('targets') or {}).get(target, {}).get('roi')),
+                'net_profit': _numeric_delta(values.get('net_profit'), (previous.get('targets') or {}).get(target, {}).get('net_profit')),
+                'max_drawdown': _numeric_delta(values.get('max_drawdown'), (previous.get('targets') or {}).get(target, {}).get('max_drawdown'))
+            }
+            for target, values in (current.get('targets') or {}).items()
+        }
+    }
+
+
+def _resolve_best_user_algorithm_version(rows: list[dict]) -> dict | None:
+    candidates = []
+    for row in rows:
+        summary = row.get('summary') or {}
+        if summary.get('effective_sample_count', 0) < 20:
+            continue
+        target_values = summary.get('targets') or {}
+        best_hit_rate = max(
+            [
+                value.get('hit_rate')
+                for value in target_values.values()
+                if value.get('hit_rate') is not None
+            ] or [None]
+        )
+        if best_hit_rate is None:
+            continue
+        candidates.append((summary.get('confidence_score') or 0, best_hit_rate, -float(summary.get('skip_rate') or 0), row))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[:3], reverse=True)
+    best = candidates[0][3]
+    return {
+        'version': best.get('version'),
+        'reason': '按可信度评分、最高命中率和较低跳过率综合选择。'
+    }
+
+
+def _numeric_delta(current, previous):
+    if current is None or previous is None:
+        return None
+    try:
+        return round(float(current) - float(previous), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_user_algorithm_backtest_filters(data: dict, definition: dict | None = None) -> dict:
+    payload = data.get('filters') if isinstance(data.get('filters'), dict) else {}
+    payload = {
+        **payload,
+        'start_date': data.get('start_date', payload.get('start_date')),
+        'end_date': data.get('end_date', payload.get('end_date')),
+        'recent_n': data.get('recent_n', payload.get('recent_n')),
+        'leagues': data.get('leagues', data.get('league', payload.get('leagues'))),
+        'market_type': data.get('market_type', data.get('target', payload.get('market_type'))),
+        'targets': data.get('targets', payload.get('targets'))
+    }
+    if not payload.get('targets') and isinstance(definition, dict):
+        payload['targets'] = definition.get('targets') or []
+    return payload
+
+
+def _check_user_algorithm_backtest_rate_limit(user_id: int) -> tuple[bool, int]:
+    if USER_ALGORITHM_BACKTEST_COOLDOWN_SECONDS <= 0:
+        return True, 0
+    now = time.time()
+    last_run_at = _user_algorithm_backtest_last_run_at.get(user_id, 0)
+    wait_seconds = int(USER_ALGORITHM_BACKTEST_COOLDOWN_SECONDS - (now - last_run_at))
+    if wait_seconds > 0:
+        return False, wait_seconds
+    _user_algorithm_backtest_last_run_at[user_id] = now
+    return True, 0
 
 
 def _build_user_algorithm_sample_matches() -> list[dict]:
@@ -3263,6 +3540,8 @@ def get_user_algorithms():
 def create_user_algorithm():
     user_id = get_current_user_id()
     data = request.get_json() or {}
+    if db.count_user_algorithms_by_user(user_id) >= MAX_USER_ALGORITHMS_PER_USER:
+        return jsonify({'error': f'单个用户最多保留 {MAX_USER_ALGORITHMS_PER_USER} 个启用/草稿算法'}), 429
     payload, errors = _validate_user_algorithm_payload(data)
     if errors:
         return jsonify({'error': '；'.join(errors), 'validation': payload.get('validation')}), 400
@@ -3345,6 +3624,11 @@ def dry_run_user_algorithm():
 @app.route('/api/user-algorithms/backtest', methods=['POST'])
 @login_required
 def backtest_user_algorithm():
+    user_id = get_current_user_id()
+    allowed, wait_seconds = _check_user_algorithm_backtest_rate_limit(user_id)
+    if not allowed:
+        return jsonify({'error': f'回测请求过于频繁，请 {wait_seconds} 秒后再试'}), 429
+
     data = request.get_json() or {}
     definition = data.get('definition') or {}
     lottery_type = normalize_lottery_type(data.get('lottery_type') or (definition.get('lottery_type') if isinstance(definition, dict) else 'pc28'))
@@ -3362,13 +3646,22 @@ def backtest_user_algorithm():
     result = backtest_jingcai_user_algorithm(
         db,
         validation['normalized_definition'],
-        limit=_parse_positive_int(data.get('limit'), default=50, minimum=1, maximum=200)
+        limit=_parse_positive_int(data.get('limit'), default=50, minimum=1, maximum=200),
+        filters=_build_user_algorithm_backtest_filters(data, validation['normalized_definition'])
     )
     return jsonify({
         'message': '回测完成',
         'validation': validation,
-        'backtest': result
+        'backtest': result,
+        'adjustment_suggestions': build_backtest_adjustment_suggestions(result)
     })
+
+
+@app.route('/api/user-algorithms/templates', methods=['GET'])
+@login_required
+def get_user_algorithm_templates():
+    lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
+    return jsonify(list_algorithm_templates(lottery_type))
 
 
 @app.route('/api/user-algorithms/ai-draft', methods=['POST'])
@@ -3416,6 +3709,97 @@ def generate_user_algorithm_ai_draft():
             'change_summary': payload.get('change_summary') or '',
             'risk_notes': payload.get('risk_notes') or [],
             'validation': result['validation'],
+            'api_mode': result['api_mode'],
+            'response_model': result['response_model'],
+            'finish_reason': result['finish_reason'],
+            'latency_ms': result['latency_ms'],
+            'raw_response': result['raw_response'][:1200]
+        })
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/ai-adjust', methods=['POST'])
+@login_required
+def ai_adjust_user_algorithm(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权操作'}), 404
+
+    data = request.get_json() or {}
+    api_key = str(data.get('api_key') or '').strip()
+    api_url = str(data.get('api_url') or '').strip()
+    model_name = str(data.get('model_name') or '').strip()
+    api_mode = normalize_api_mode(data.get('api_mode') or 'auto')
+    user_message = str(data.get('message') or '').strip() or '请根据最近回测结果调整当前算法，生成一个新版本。'
+    chat_history = data.get('chat_history') if isinstance(data.get('chat_history'), list) else []
+    backtest_summary = data.get('backtest_summary') if isinstance(data.get('backtest_summary'), dict) else None
+    if backtest_summary is None:
+        active_version = int(algorithm.get('active_version') or 1)
+        active_version_row = db.get_user_algorithm_version_for_user(algorithm_id, user_id, active_version)
+        backtest_summary = (active_version_row or {}).get('backtest') or {}
+
+    if not api_key:
+        return jsonify({'error': 'AI 调参需要 API Key'}), 400
+    if not api_url:
+        return jsonify({'error': 'AI 调参需要 API 地址'}), 400
+    if not model_name:
+        return jsonify({'error': 'AI 调参需要模型名称'}), 400
+
+    try:
+        result = generate_algorithm_draft(
+            api_key=api_key,
+            api_url=api_url,
+            model_name=model_name,
+            api_mode=api_mode,
+            lottery_type=algorithm.get('lottery_type') or 'jingcai_football',
+            user_message=user_message,
+            current_definition=algorithm.get('definition') or {},
+            chat_history=chat_history,
+            backtest_summary=backtest_summary,
+            temperature=0.2
+        )
+        payload = result['payload']
+        if payload.get('reply_type') == 'need_clarification':
+            return jsonify({
+                'message': payload.get('message') or 'AI 需要补充信息',
+                'reply_type': 'need_clarification',
+                'questions': payload.get('questions') or [],
+                'algorithm': _serialize_user_algorithm(algorithm),
+                'validation': result['validation'],
+                'raw_response': result['raw_response'][:1200]
+            })
+
+        validation = result['validation']
+        adjusted_definition = validation['normalized_definition'] if validation.get('normalized_definition') else result['algorithm']
+        status = 'validated' if validation.get('valid') else 'draft'
+        change_summary = payload.get('change_summary') or 'AI 根据回测结果调参'
+        db.update_user_algorithm(
+            algorithm_id=algorithm_id,
+            user_id=user_id,
+            fields={
+                'name': algorithm.get('name') or adjusted_definition.get('method_name') or '用户算法',
+                'description': algorithm.get('description') or '',
+                'definition_json': json.dumps(adjusted_definition or {}, ensure_ascii=False),
+                'validation_json': json.dumps(validation, ensure_ascii=False),
+                'status': status
+            },
+            create_version=True,
+            change_summary=change_summary
+        )
+        updated = db.get_user_algorithm_for_user(algorithm_id, user_id)
+        return jsonify({
+            'message': 'AI 已根据回测生成新版本',
+            'reply_type': payload.get('reply_type') or 'draft_algorithm',
+            'change_summary': change_summary,
+            'risk_notes': payload.get('risk_notes') or [],
+            'algorithm': _serialize_user_algorithm(updated),
+            'validation': validation,
+            'versions': [
+                _serialize_user_algorithm_version(item, active_version=int(updated.get('active_version') or 1))
+                for item in db.get_user_algorithm_versions_for_user(algorithm_id, user_id)
+            ],
             'api_mode': result['api_mode'],
             'response_model': result['response_model'],
             'finish_reason': result['finish_reason'],
@@ -3493,6 +3877,10 @@ def validate_user_algorithm(algorithm_id: int):
 @login_required
 def backtest_saved_user_algorithm(algorithm_id: int):
     user_id = get_current_user_id()
+    allowed, wait_seconds = _check_user_algorithm_backtest_rate_limit(user_id)
+    if not allowed:
+        return jsonify({'error': f'回测请求过于频繁，请 {wait_seconds} 秒后再试'}), 429
+
     algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
     if not algorithm:
         return jsonify({'error': '用户算法不存在或无权操作'}), 404
@@ -3509,7 +3897,8 @@ def backtest_saved_user_algorithm(algorithm_id: int):
     result = backtest_jingcai_user_algorithm(
         db,
         validation['normalized_definition'],
-        limit=_parse_positive_int(data.get('limit'), default=50, minimum=1, maximum=200)
+        limit=_parse_positive_int(data.get('limit'), default=50, minimum=1, maximum=200),
+        filters=_build_user_algorithm_backtest_filters(data, validation['normalized_definition'])
     )
     active_version = int(algorithm.get('active_version') or 1)
     db.update_user_algorithm_version_backtest(algorithm_id, user_id, active_version, result)
@@ -3517,8 +3906,48 @@ def backtest_saved_user_algorithm(algorithm_id: int):
         'message': '回测完成',
         'validation': validation,
         'backtest': result,
+        'adjustment_suggestions': build_backtest_adjustment_suggestions(result),
         'algorithm': _serialize_user_algorithm(db.get_user_algorithm_for_user(algorithm_id, user_id)),
         'version': active_version
+    })
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/adjust', methods=['POST'])
+@login_required
+def adjust_user_algorithm(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权操作'}), 404
+
+    data = request.get_json() or {}
+    mode = str(data.get('mode') or '').strip()
+    adjusted_definition, change_summary = apply_algorithm_adjustment(algorithm.get('definition') or {}, mode)
+    validation = validate_algorithm_definition(adjusted_definition, lottery_type=algorithm.get('lottery_type'))
+    status = 'validated' if validation['valid'] else 'draft'
+    db.update_user_algorithm(
+        algorithm_id=algorithm_id,
+        user_id=user_id,
+        fields={
+            'name': algorithm.get('name') or adjusted_definition.get('method_name') or '用户算法',
+            'description': algorithm.get('description') or '',
+            'definition_json': json.dumps(validation['normalized_definition'] or adjusted_definition, ensure_ascii=False),
+            'validation_json': json.dumps(validation, ensure_ascii=False),
+            'status': status
+        },
+        create_version=True,
+        change_summary=change_summary
+    )
+    updated = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    return jsonify({
+        'message': '算法已生成新版本',
+        'change_summary': change_summary,
+        'algorithm': _serialize_user_algorithm(updated),
+        'validation': validation,
+        'versions': [
+            _serialize_user_algorithm_version(item, active_version=int(updated.get('active_version') or 1))
+            for item in db.get_user_algorithm_versions_for_user(algorithm_id, user_id)
+        ]
     })
 
 
@@ -3535,6 +3964,40 @@ def get_user_algorithm_versions(algorithm_id: int):
         _serialize_user_algorithm_version(item, active_version=active_version)
         for item in versions
     ])
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/execution-logs', methods=['GET'])
+@login_required
+def get_user_algorithm_execution_logs(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权访问'}), 404
+    limit = _parse_positive_int(request.args.get('limit'), default=30, minimum=1, maximum=100)
+    logs = db.get_user_algorithm_execution_logs_for_user(algorithm_id, user_id, limit=limit)
+    return jsonify([
+        _serialize_user_algorithm_execution_log(item)
+        for item in logs
+    ])
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/version-comparison', methods=['GET'])
+@login_required
+def get_user_algorithm_version_comparison(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权访问'}), 404
+    active_version = int(algorithm.get('active_version') or 1)
+    versions = [
+        _serialize_user_algorithm_version(item, active_version=active_version)
+        for item in db.get_user_algorithm_versions_for_user(algorithm_id, user_id)
+    ]
+    return jsonify({
+        'algorithm_id': algorithm_id,
+        'active_version': active_version,
+        'comparison': _build_user_algorithm_version_comparison(versions)
+    })
 
 
 @app.route('/api/user-algorithms/<int:algorithm_id>/activate-version', methods=['POST'])
@@ -3564,13 +4027,18 @@ def disable_user_algorithm(algorithm_id: int):
     user_id = get_current_user_id()
     if not db.user_algorithm_exists_for_user(algorithm_id, user_id):
         return jsonify({'error': '用户算法不存在或无权操作'}), 404
+    affected_predictors = db.get_predictors_using_user_algorithm(user_id, algorithm_id)
     db.update_user_algorithm(
         algorithm_id=algorithm_id,
         user_id=user_id,
         fields={'status': 'disabled'},
         create_version=False
     )
-    return jsonify({'message': '用户算法已停用'})
+    return jsonify({
+        'message': '用户算法已停用',
+        'affected_predictors': [_serialize_predictor(item) for item in affected_predictors],
+        'warning': '以下预测方案仍引用该算法，请切换算法或停用方案。' if affected_predictors else ''
+    })
 
 
 @app.route('/api/predictors', methods=['GET'])
@@ -3624,7 +4092,8 @@ def create_predictor():
         enabled=payload['enabled'],
         lottery_type=payload['lottery_type'],
         engine_type=payload['engine_type'],
-        algorithm_key=payload['algorithm_key']
+        algorithm_key=payload['algorithm_key'],
+        user_algorithm_fallback_strategy=payload['user_algorithm_fallback_strategy']
     )
 
     predictor = db.get_predictor(predictor_id, include_secret=True)
@@ -3903,6 +4372,7 @@ def update_predictor(predictor_id: int):
         'prediction_method': payload['prediction_method'],
         'system_prompt': payload['system_prompt'],
         'data_injection_mode': payload['data_injection_mode'],
+        'user_algorithm_fallback_strategy': payload['user_algorithm_fallback_strategy'],
         'prediction_targets': payload['prediction_targets'],
         'history_window': payload['history_window'],
         'temperature': payload['temperature'],
@@ -4065,6 +4535,40 @@ def replay_jingcai_batch(predictor_id: int):
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/jingcai-football/history-backfill', methods=['POST'])
+@admin_required
+def backfill_jingcai_history():
+    data = request.get_json() or {}
+    start_date = str(data.get('start_date') or '').strip()
+    end_date = str(data.get('end_date') or start_date).strip()
+    include_details = _parse_bool(data.get('include_details'), default=True)
+    max_days = _parse_positive_int(data.get('max_days'), default=31, minimum=1, maximum=90)
+    try:
+        payload = jingcai_football_service.run_backfill_job(
+            db,
+            start_date=start_date,
+            end_date=end_date,
+            include_details=include_details,
+            max_days=max_days,
+            trigger_source='manual'
+        )
+        return jsonify({
+            'message': '竞彩足球历史数据补齐完成',
+            'job': _serialize_jingcai_backfill_job(payload.get('job')),
+            'result': payload.get('result') or {}
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/jingcai-football/data-health', methods=['GET'])
+@admin_required
+def get_jingcai_data_health():
+    return jsonify(db.build_jingcai_data_health())
 
 
 @app.route('/api/export/predictors/<int:predictor_id>/signals', methods=['GET'])

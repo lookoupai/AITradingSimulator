@@ -58,6 +58,7 @@ docker-compose up -d --build
 ## 设计文档
 
 - [用户自定义算法与 AI 方案设计](docs/user_algorithm_design.md)：设计 AI 聊天生成用户自定义预测算法、DSL 校验执行、回测和预测方案接入。
+- [用户算法使用说明](docs/user_algorithm_usage.md)：说明如何设计算法、理解回测、识别数据质量问题和避免收益承诺误判。
 
 ### 探测脚本示例
 
@@ -111,6 +112,10 @@ JINGCAI_IDLE_INTERVAL=1800
 JINGCAI_PREMATCH_INTERVAL=600
 JINGCAI_NEAR_MATCH_INTERVAL=120
 JINGCAI_SETTLEMENT_INTERVAL=300
+JINGCAI_HISTORY_BACKFILL_ENABLED=True
+JINGCAI_HISTORY_BACKFILL_INTERVAL_SECONDS=86400
+JINGCAI_HISTORY_BACKFILL_LOOKBACK_DAYS=7
+JINGCAI_HISTORY_BACKFILL_INCLUDE_DETAILS=True
 ```
 
 PC28 历史数据默认采用“近 60 天保留完整明细，超期按方案+日期汇总后清理”的策略：
@@ -158,6 +163,27 @@ LINUXDO_REDIRECT_URI=
 - `GET /api/predictors/<id>/stats`
 - `GET /api/predictors/<id>/simulation`
 - `POST /api/predictors/<id>/predict-now`
+
+### 用户算法
+
+- `GET /api/user-algorithms`
+- `POST /api/user-algorithms`
+- `POST /api/user-algorithms/validate`
+- `POST /api/user-algorithms/dry-run`
+- `POST /api/user-algorithms/backtest`
+- `GET /api/user-algorithms/templates`
+- `POST /api/user-algorithms/<id>/ai-adjust`
+- `POST /api/user-algorithms/<id>/adjust`
+- `POST /api/user-algorithms/<id>/backtest`
+- `GET /api/user-algorithms/<id>/versions`
+- `GET /api/user-algorithms/<id>/execution-logs`
+- `GET /api/user-algorithms/<id>/version-comparison`
+- `POST /api/user-algorithms/<id>/activate-version`
+
+### 竞彩足球运营
+
+- `POST /api/jingcai-football/history-backfill`：管理员补齐历史赛果与赔率详情
+- `GET /api/jingcai-football/data-health`：管理员查看本地竞彩足球历史数据覆盖率
 
 ### 公开接口
 
