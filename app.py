@@ -1996,6 +1996,8 @@ def _validate_user_algorithm_payload(data: dict, existing_algorithm: dict | None
 def _serialize_user_algorithm(item: dict | None) -> dict:
     if not item:
         return {}
+    active_version = int(item.get('active_version') or 1)
+    active_version_row = db.get_user_algorithm_version_for_user(item['id'], item['user_id'], active_version)
     return {
         'id': item['id'],
         'key': item.get('key') or f"user:{item['id']}",
@@ -2006,9 +2008,27 @@ def _serialize_user_algorithm(item: dict | None) -> dict:
         'algorithm_type': item.get('algorithm_type') or 'dsl',
         'definition': item.get('definition') or {},
         'status': item.get('status') or 'draft',
-        'active_version': item.get('active_version') or 1,
+        'active_version': active_version,
+        'active_backtest': (active_version_row or {}).get('backtest') or {},
         'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None,
         'updated_at': utc_to_beijing(item['updated_at']) if item.get('updated_at') else None
+    }
+
+
+def _serialize_user_algorithm_version(item: dict | None, active_version: int | None = None) -> dict:
+    if not item:
+        return {}
+    version = int(item.get('version') or 0)
+    return {
+        'id': item['id'],
+        'algorithm_id': item['algorithm_id'],
+        'version': version,
+        'is_active': version == int(active_version or 0),
+        'change_summary': item.get('change_summary') or '',
+        'definition': item.get('definition') or {},
+        'validation': item.get('validation') or {},
+        'backtest': item.get('backtest') or {},
+        'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None
     }
 
 
@@ -2291,6 +2311,8 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
             raise PermissionError('无权使用此用户算法')
         if user_algorithm.get('lottery_type') != lottery_type:
             raise PermissionError('用户算法彩种与预测方案彩种不一致')
+        if user_algorithm.get('status') != 'validated':
+            raise PermissionError('用户算法尚未通过校验，不能用于预测方案')
         resolved['user_algorithm'] = user_algorithm
 
     return existing, resolved
@@ -3361,6 +3383,7 @@ def generate_user_algorithm_ai_draft():
     user_message = str(data.get('message') or '').strip()
     current_definition = data.get('current_definition') if isinstance(data.get('current_definition'), dict) else None
     chat_history = data.get('chat_history') if isinstance(data.get('chat_history'), list) else []
+    backtest_summary = data.get('backtest_summary') if isinstance(data.get('backtest_summary'), dict) else None
 
     if not api_key:
         return jsonify({'error': 'AI 算法助手需要 API Key'}), 400
@@ -3381,6 +3404,7 @@ def generate_user_algorithm_ai_draft():
             user_message=user_message,
             current_definition=current_definition,
             chat_history=chat_history,
+            backtest_summary=backtest_summary,
             temperature=0.2
         )
         payload = result['payload']
@@ -3463,6 +3487,75 @@ def validate_user_algorithm(algorithm_id: int):
             return jsonify({'valid': False, 'errors': ['算法定义必须是有效 JSON'], 'warnings': []}), 400
     validation = validate_algorithm_definition(definition, lottery_type=lottery_type)
     return jsonify(validation)
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/backtest', methods=['POST'])
+@login_required
+def backtest_saved_user_algorithm(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权操作'}), 404
+    lottery_type = normalize_lottery_type(algorithm.get('lottery_type'))
+    if lottery_type != 'jingcai_football':
+        return jsonify({'error': '当前仅支持竞彩足球用户算法回测'}), 400
+
+    definition = algorithm.get('definition') or {}
+    validation = validate_algorithm_definition(definition, lottery_type=lottery_type)
+    if not validation['valid']:
+        return jsonify({'error': '算法校验未通过', 'validation': validation}), 400
+
+    data = request.get_json() or {}
+    result = backtest_jingcai_user_algorithm(
+        db,
+        validation['normalized_definition'],
+        limit=_parse_positive_int(data.get('limit'), default=50, minimum=1, maximum=200)
+    )
+    active_version = int(algorithm.get('active_version') or 1)
+    db.update_user_algorithm_version_backtest(algorithm_id, user_id, active_version, result)
+    return jsonify({
+        'message': '回测完成',
+        'validation': validation,
+        'backtest': result,
+        'algorithm': _serialize_user_algorithm(db.get_user_algorithm_for_user(algorithm_id, user_id)),
+        'version': active_version
+    })
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/versions', methods=['GET'])
+@login_required
+def get_user_algorithm_versions(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权访问'}), 404
+    active_version = int(algorithm.get('active_version') or 1)
+    versions = db.get_user_algorithm_versions_for_user(algorithm_id, user_id)
+    return jsonify([
+        _serialize_user_algorithm_version(item, active_version=active_version)
+        for item in versions
+    ])
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/activate-version', methods=['POST'])
+@login_required
+def activate_user_algorithm_version(algorithm_id: int):
+    user_id = get_current_user_id()
+    data = request.get_json() or {}
+    version = _parse_positive_int(data.get('version'), default=0, minimum=0, maximum=100000)
+    if not version:
+        return jsonify({'error': '版本号不能为空'}), 400
+    if not db.activate_user_algorithm_version(algorithm_id, user_id, version):
+        return jsonify({'error': '用户算法版本不存在或无权操作'}), 404
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    return jsonify({
+        'message': '算法版本已启用',
+        'algorithm': _serialize_user_algorithm(algorithm),
+        'versions': [
+            _serialize_user_algorithm_version(item, active_version=int(algorithm.get('active_version') or 1))
+            for item in db.get_user_algorithm_versions_for_user(algorithm_id, user_id)
+        ]
+    })
 
 
 @app.route('/api/user-algorithms/<int:algorithm_id>', methods=['DELETE'])
@@ -3567,11 +3660,48 @@ def test_predictor():
                 resolved.get('algorithm_key')
             )
         )
+        if user_algorithm:
+            validation = validate_algorithm_definition(
+                user_algorithm.get('definition') or {},
+                lottery_type=resolved['lottery_type']
+            )
+            if not validation['valid']:
+                return jsonify({'error': '用户算法校验未通过', 'validation': validation}), 400
+            items_payload, debug_payload = predict_jingcai_with_user_algorithm(
+                'predictor-test',
+                _build_user_algorithm_sample_matches(),
+                {
+                    'id': resolved.get('predictor_id') or 0,
+                    'prediction_targets': resolved.get('prediction_targets') or [],
+                    'user_algorithm': {
+                        **user_algorithm,
+                        'definition': validation['normalized_definition']
+                    }
+                }
+            )
+            first_item = (items_payload or [{}])[0]
+            return jsonify({
+                'message': '用户算法检查通过',
+                'api_mode': None,
+                'response_model': algorithm_label,
+                'finish_reason': 'user_algorithm',
+                'latency_ms': 0,
+                'response_preview': (
+                    f"当前方案将使用 {algorithm_label}。"
+                    f"样例试跑：SPF={first_item.get('predicted_spf') or '跳过'}，"
+                    f"RQSPF={first_item.get('predicted_rqspf') or '跳过'}，"
+                    f"置信度={first_item.get('confidence') if first_item.get('confidence') is not None else '--'}。"
+                ),
+                'raw_response': json.dumps({
+                    'items': items_payload,
+                    'debug': debug_payload
+                }, ensure_ascii=False)
+            })
         return jsonify({
-            'message': '用户算法检查通过' if user_algorithm else '内置机器算法检查通过',
+            'message': '内置机器算法检查通过',
             'api_mode': None,
             'response_model': algorithm_label,
-            'finish_reason': 'user_algorithm' if user_algorithm else 'builtin_machine',
+            'finish_reason': 'builtin_machine',
             'latency_ms': 0,
             'response_preview': f'当前方案将使用 {algorithm_label}，无需 API 连通性测试。',
             'raw_response': ''

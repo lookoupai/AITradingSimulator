@@ -224,6 +224,7 @@ class PredictionApp {
         this.userAlgorithms = [];
         this.selectedUserAlgorithmId = null;
         this.algorithmChatMessages = [];
+        this.lastUserAlgorithmBacktest = null;
         this.betProfiles = [];
         this.notificationSenders = [];
         this.notificationEndpoints = [];
@@ -344,6 +345,7 @@ class PredictionApp {
         this.bindEvent('validateUserAlgorithmBtn', 'click', () => this.validateUserAlgorithmForm());
         this.bindEvent('dryRunUserAlgorithmBtn', 'click', () => this.dryRunUserAlgorithm());
         this.bindEvent('backtestUserAlgorithmBtn', 'click', () => this.backtestUserAlgorithm());
+        this.bindEvent('disableUserAlgorithmBtn', 'click', () => this.disableUserAlgorithm());
         this.bindEvent('saveUserAlgorithmBtn', 'click', () => this.saveUserAlgorithm());
         this.bindEvent('userAlgorithmLotteryFilter', 'change', async (event) => {
             this.renderUserAlgorithmList(event.target.value || 'jingcai_football');
@@ -4669,6 +4671,7 @@ class PredictionApp {
     resetUserAlgorithmForm() {
         const lotteryType = document.getElementById('userAlgorithmLotteryFilter')?.value || 'jingcai_football';
         this.selectedUserAlgorithmId = null;
+        this.lastUserAlgorithmBacktest = null;
         this.clearAlgorithmChat();
         document.getElementById('userAlgorithmId').value = '';
         document.getElementById('userAlgorithmName').value = '';
@@ -4676,6 +4679,7 @@ class PredictionApp {
         document.getElementById('userAlgorithmLotteryType').value = lotteryType;
         this.loadUserAlgorithmSample();
         this.hideUserAlgorithmResult();
+        this.renderUserAlgorithmVersions([]);
     }
 
     clearAlgorithmChat() {
@@ -4809,9 +4813,11 @@ class PredictionApp {
         document.getElementById('userAlgorithmLotteryType').value = algorithm.lottery_type || 'jingcai_football';
         document.getElementById('userAlgorithmDefinition').value = JSON.stringify(algorithm.definition || {}, null, 2);
         document.getElementById('userAlgorithmLotteryFilter').value = algorithm.lottery_type || 'jingcai_football';
+        this.lastUserAlgorithmBacktest = algorithm.active_backtest || null;
         this.clearAlgorithmChat();
         this.renderUserAlgorithmList(algorithm.lottery_type || 'jingcai_football');
         this.hideUserAlgorithmResult();
+        this.loadUserAlgorithmVersions(algorithm.id);
     }
 
     parseUserAlgorithmDefinition() {
@@ -4872,7 +4878,8 @@ class PredictionApp {
             model_name: document.getElementById('algorithmAiModelName').value.trim(),
             api_mode: 'auto',
             message: messageText,
-            chat_history: this.algorithmChatMessages.slice(-8)
+            chat_history: this.algorithmChatMessages.slice(-8),
+            backtest_summary: this.lastUserAlgorithmBacktest || null
         };
         try {
             payload.current_definition = this.parseUserAlgorithmDefinition();
@@ -4999,6 +5006,7 @@ class PredictionApp {
 
     async backtestUserAlgorithm() {
         const button = document.getElementById('backtestUserAlgorithmBtn');
+        const algorithmId = document.getElementById('userAlgorithmId').value;
         const lotteryType = document.getElementById('userAlgorithmLotteryType').value || 'jingcai_football';
         let definition;
         try {
@@ -5012,48 +5020,67 @@ class PredictionApp {
         button.textContent = '回测中...';
         this.showUserAlgorithmResult('info', '正在读取本地已开奖赛事回测当前算法...');
         try {
-            const response = await fetch('/api/user-algorithms/backtest', {
+            const url = algorithmId ? `/api/user-algorithms/${algorithmId}/backtest` : '/api/user-algorithms/backtest';
+            const requestBody = algorithmId
+                ? { limit: 50 }
+                : { lottery_type: lotteryType, definition, limit: 50 };
+            const response = await fetch(url, {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ lottery_type: lotteryType, definition, limit: 50 })
+                body: JSON.stringify(requestBody)
             });
             const data = await response.json();
             if (!response.ok) {
                 throw new Error(data.error || '算法回测失败');
             }
             const backtest = data.backtest || {};
-            const hitRate = backtest.hit_rate || {};
-            const spfStats = hitRate.spf || {};
-            const rqspfStats = hitRate.rqspf || {};
-            const recentRecords = (backtest.records || []).slice(0, 5).map((item) => {
-                const spfText = item.predicted_spf
-                    ? `SPF ${item.predicted_spf}/${item.actual_spf || '--'}`
-                    : 'SPF 跳过';
-                const rqspfText = item.predicted_rqspf
-                    ? `RQSPF ${item.predicted_rqspf}/${item.actual_rqspf || '--'}`
-                    : 'RQSPF 跳过';
-                return `${item.match_no || '--'} ${spfText}，${rqspfText}`;
-            });
-            const lines = [
-                '回测完成。',
-                `样本数：${backtest.sample_size || 0}`,
-                `产生预测：${backtest.prediction_count || 0}`,
-                `跳过预测：${backtest.skip_count || 0}`,
-                `SPF 命中：${spfStats.ratio_text || '--'}${spfStats.hit_rate === null || spfStats.hit_rate === undefined ? '' : `（${spfStats.hit_rate}%）`}`,
-                `RQSPF 命中：${rqspfStats.ratio_text || '--'}${rqspfStats.hit_rate === null || rqspfStats.hit_rate === undefined ? '' : `（${rqspfStats.hit_rate}%）`}`,
-                ...recentRecords.map((item) => `样本：${item}`)
-            ];
-            if (!backtest.sample_size) {
-                lines.push('本地暂无可用于回测的已开奖竞彩足球样本。');
+            this.lastUserAlgorithmBacktest = backtest;
+            if (data.algorithm) {
+                await this.loadUserAlgorithms();
+                this.selectUserAlgorithm(data.algorithm.id);
             }
-            this.showUserAlgorithmResult('success', lines.join('\n'));
+            this.showUserAlgorithmResult('success', this.buildUserAlgorithmBacktestMessage(backtest, Boolean(algorithmId)));
         } catch (error) {
             this.showUserAlgorithmResult('error', error.message);
         } finally {
             button.disabled = false;
             button.textContent = '回测';
         }
+    }
+
+    buildUserAlgorithmBacktestMessage(backtest, savedBacktest = false) {
+        const hitRate = backtest.hit_rate || {};
+        const profitSummary = backtest.profit_summary || {};
+        const spfStats = hitRate.spf || {};
+        const rqspfStats = hitRate.rqspf || {};
+        const spfProfit = profitSummary.spf || {};
+        const rqspfProfit = profitSummary.rqspf || {};
+        const recentRecords = (backtest.records || []).slice(0, 5).map((item) => {
+            const spfText = item.predicted_spf
+                ? `SPF ${item.predicted_spf}/${item.actual_spf || '--'}`
+                : 'SPF 跳过';
+            const rqspfText = item.predicted_rqspf
+                ? `RQSPF ${item.predicted_rqspf}/${item.actual_rqspf || '--'}`
+                : 'RQSPF 跳过';
+            return `${item.match_no || '--'} ${spfText}，${rqspfText}`;
+        });
+        const lines = [
+            savedBacktest ? '回测完成，结果已保存到当前版本。' : '回测完成。',
+            `样本数：${backtest.sample_size || 0}`,
+            `产生预测：${backtest.prediction_count || 0}`,
+            `跳过预测：${backtest.skip_count || 0}`,
+            `SPF 命中：${spfStats.ratio_text || '--'}${spfStats.hit_rate === null || spfStats.hit_rate === undefined ? '' : `（${spfStats.hit_rate}%）`}`,
+            `SPF 模拟收益：${spfProfit.net_profit === undefined ? '--' : spfProfit.net_profit}${spfProfit.roi === null || spfProfit.roi === undefined ? '' : `（ROI ${spfProfit.roi}%）`}`,
+            `RQSPF 命中：${rqspfStats.ratio_text || '--'}${rqspfStats.hit_rate === null || rqspfStats.hit_rate === undefined ? '' : `（${rqspfStats.hit_rate}%）`}`,
+            `RQSPF 模拟收益：${rqspfProfit.net_profit === undefined ? '--' : rqspfProfit.net_profit}${rqspfProfit.roi === null || rqspfProfit.roi === undefined ? '' : `（ROI ${rqspfProfit.roi}%）`}`,
+            ...(backtest.risk_flags || []).map((item) => `提醒：${item}`),
+            ...recentRecords.map((item) => `样本：${item}`)
+        ];
+        if (!backtest.sample_size) {
+            lines.push('本地暂无可用于回测的已开奖竞彩足球样本。');
+        }
+        return lines.join('\n');
     }
 
     renderUserAlgorithmValidation(validation) {
@@ -5065,6 +5092,80 @@ class PredictionApp {
             ...warnings.map((item) => `提醒：${item}`)
         ];
         this.showUserAlgorithmResult(validation.valid ? 'success' : 'error', lines.join('\n'));
+    }
+
+    async loadUserAlgorithmVersions(algorithmId) {
+        const container = document.getElementById('userAlgorithmVersionList');
+        if (!container || !algorithmId) {
+            this.renderUserAlgorithmVersions([]);
+            return;
+        }
+        try {
+            const response = await fetch(`/api/user-algorithms/${algorithmId}/versions`, { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '加载算法版本失败');
+            }
+            this.renderUserAlgorithmVersions(data || []);
+        } catch (error) {
+            this.renderUserAlgorithmVersions([]);
+        }
+    }
+
+    renderUserAlgorithmVersions(versions) {
+        const container = document.getElementById('userAlgorithmVersionList');
+        if (!container) {
+            return;
+        }
+        if (!versions.length) {
+            container.style.display = 'none';
+            container.innerHTML = '';
+            return;
+        }
+        container.style.display = 'block';
+        container.innerHTML = versions.map((item) => {
+            const backtest = item.backtest || {};
+            const spfStats = (backtest.hit_rate || {}).spf || {};
+            const summary = backtest.sample_size
+                ? `样本 ${backtest.sample_size}，SPF ${spfStats.ratio_text || '--'}`
+                : '暂无回测';
+            return `
+                <div class="algorithm-chat-message assistant">
+                    <span>V${item.version}${item.is_active ? ' 当前' : ''}</span>
+                    <p>${this.escapeHtml(item.change_summary || '版本更新')}｜${this.escapeHtml(summary)}</p>
+                    ${item.is_active ? '' : `<button class="btn ghost compact" data-action="activate-user-algorithm-version" data-version="${item.version}">启用</button>`}
+                </div>
+            `;
+        }).join('');
+        container.querySelectorAll('[data-action="activate-user-algorithm-version"]').forEach((button) => {
+            button.addEventListener('click', () => this.activateUserAlgorithmVersion(Number(button.dataset.version)));
+        });
+    }
+
+    async activateUserAlgorithmVersion(version) {
+        const algorithmId = document.getElementById('userAlgorithmId').value;
+        if (!algorithmId || !version) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/user-algorithms/${algorithmId}/activate-version`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ version })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '启用算法版本失败');
+            }
+            await this.loadUserAlgorithms();
+            this.selectUserAlgorithm(data.algorithm.id);
+            this.renderUserAlgorithmVersions(data.versions || []);
+            this.showUserAlgorithmResult('success', data.message || '算法版本已启用');
+            this.updateLotteryForm();
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+        }
     }
 
     async saveUserAlgorithm() {
@@ -5098,6 +5199,33 @@ class PredictionApp {
             await this.loadUserAlgorithms();
             this.selectUserAlgorithm(data.algorithm.id);
             this.renderUserAlgorithmValidation(data.validation || { valid: data.algorithm.status === 'validated', errors: [], warnings: [] });
+            this.updateLotteryForm();
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+        }
+    }
+
+    async disableUserAlgorithm() {
+        const algorithmId = document.getElementById('userAlgorithmId').value;
+        if (!algorithmId) {
+            this.showUserAlgorithmResult('error', '请先选择要停用的算法');
+            return;
+        }
+        if (!window.confirm('确定停用这个算法吗？已绑定的预测方案将不能继续使用它。')) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/user-algorithms/${algorithmId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '停用用户算法失败');
+            }
+            await this.loadUserAlgorithms();
+            this.resetUserAlgorithmForm();
+            this.showUserAlgorithmResult('success', data.message || '用户算法已停用');
             this.updateLotteryForm();
         } catch (error) {
             this.showUserAlgorithmResult('error', error.message);

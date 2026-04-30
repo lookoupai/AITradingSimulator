@@ -64,6 +64,11 @@ def backtest_jingcai_user_algorithm(db, definition: dict, limit: int = 50) -> di
             target: _build_target_stats(records, target)
             for target in requested_targets
         },
+        'profit_summary': {
+            target: _build_profit_stats(records, target)
+            for target in requested_targets
+        },
+        'risk_flags': _build_risk_flags(records, prediction_count, skip_count),
         'records': records
     }
 
@@ -80,6 +85,11 @@ def _empty_backtest_payload(limit: int, skipped_events: int, requested_targets: 
             target: _build_target_stats([], target)
             for target in requested_targets
         },
+        'profit_summary': {
+            target: _build_profit_stats([], target)
+            for target in requested_targets
+        },
+        'risk_flags': ['本地暂无可用于回测的已开奖竞彩足球样本。'],
         'records': []
     }
 
@@ -152,10 +162,12 @@ def _has_actual_result(match: dict, requested_targets: list[str]) -> bool:
 
 def _build_backtest_record(match: dict, item: dict, debug: dict, requested_targets: list[str]) -> dict:
     hits = {}
+    odds = {}
     for target in requested_targets:
         predicted = item.get(f'predicted_{target}')
         actual = match.get(f'actual_{target}')
         hits[target] = None if predicted is None or actual is None else int(predicted == actual)
+        odds[target] = _resolve_prediction_odds(match, target, predicted)
     return {
         'event_key': match.get('event_key') or '',
         'match_no': match.get('match_no') or '',
@@ -169,6 +181,7 @@ def _build_backtest_record(match: dict, item: dict, debug: dict, requested_targe
         'score': debug.get('score'),
         'status': debug.get('status') or 'pending',
         'hits': hits,
+        'odds': odds,
         'reasoning_summary': item.get('reasoning_summary') or ''
     }
 
@@ -201,3 +214,51 @@ def _build_target_stats(records: list[dict], target: str) -> dict:
         'hit_rate': round(hit_count / sample_count * 100, 2) if sample_count else None,
         'ratio_text': f'{hit_count}/{sample_count}' if sample_count else '--'
     }
+
+
+def _resolve_prediction_odds(match: dict, target: str, predicted: str | None) -> float | None:
+    if not predicted:
+        return None
+    if target == 'spf':
+        return football_utils.parse_float((match.get('spf_odds') or {}).get(predicted))
+    if target == 'rqspf':
+        return football_utils.parse_float(((match.get('rqspf') or {}).get('odds') or {}).get(predicted))
+    return None
+
+
+def _build_profit_stats(records: list[dict], target: str) -> dict:
+    stake = 0.0
+    gross_return = 0.0
+    missing_odds = 0
+    for record in records:
+        hit = (record.get('hits') or {}).get(target)
+        if hit is None:
+            continue
+        odds = football_utils.parse_float((record.get('odds') or {}).get(target))
+        if odds is None:
+            missing_odds += 1
+            continue
+        stake += 1.0
+        if hit:
+            gross_return += odds
+    net_profit = gross_return - stake
+    return {
+        'bet_count': int(stake),
+        'stake': round(stake, 2),
+        'gross_return': round(gross_return, 2),
+        'net_profit': round(net_profit, 2),
+        'roi': round(net_profit / stake * 100, 2) if stake else None,
+        'missing_odds': missing_odds
+    }
+
+
+def _build_risk_flags(records: list[dict], prediction_count: int, skip_count: int) -> list[str]:
+    flags = []
+    sample_size = len(records)
+    if sample_size < 20:
+        flags.append('回测样本少于 20 场，命中率波动会很大。')
+    if sample_size and skip_count / sample_size >= 0.5:
+        flags.append('跳过比例较高，实际可下注机会可能不足。')
+    if prediction_count and prediction_count < 10:
+        flags.append('产生预测的样本少于 10 场，收益模拟参考价值有限。')
+    return flags

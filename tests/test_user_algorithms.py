@@ -194,6 +194,75 @@ class UserAlgorithmRouteTests(unittest.TestCase):
             self.assertEqual(backtest['prediction_count'], 2)
             self.assertEqual(backtest['hit_rate']['spf']['ratio_text'], '1/2')
             self.assertEqual(backtest['records'][0]['predicted_spf'], '胜')
+            self.assertIn('spf', backtest['profit_summary'])
+
+    def test_saved_backtest_is_stored_on_active_algorithm_version(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+            harness.db.upsert_lottery_events([
+                _build_settled_football_event('bt1', '周六001', '2026-04-25 18:00:00', 2, 1, '胜')
+            ])
+            harness.db.upsert_lottery_event_details([
+                {
+                    'lottery_type': 'jingcai_football',
+                    'event_key': 'bt1',
+                    'detail_type': detail_type,
+                    'source_provider': 'sina',
+                    'payload': payload
+                }
+                for detail_type, payload in _build_football_detail_bundle().items()
+            ])
+            algorithm_response = client.post('/api/user-algorithms', json={
+                'lottery_type': 'jingcai_football',
+                'name': '进球率预测法',
+                'definition': build_football_algorithm_definition()
+            })
+            algorithm_id = algorithm_response.get_json()['id']
+
+            response = client.post(f'/api/user-algorithms/{algorithm_id}/backtest', json={'limit': 20})
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload['version'], 1)
+            self.assertEqual(payload['algorithm']['active_backtest']['sample_size'], 1)
+            versions_response = client.get(f'/api/user-algorithms/{algorithm_id}/versions')
+            versions = versions_response.get_json()
+            self.assertEqual(versions[0]['backtest']['sample_size'], 1)
+
+    def test_can_activate_previous_user_algorithm_version(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+            algorithm_response = client.post('/api/user-algorithms', json={
+                'lottery_type': 'jingcai_football',
+                'name': '进球率预测法',
+                'definition': build_football_algorithm_definition()
+            })
+            algorithm_id = algorithm_response.get_json()['id']
+            updated_definition = build_football_algorithm_definition()
+            updated_definition['method_name'] = '新版进球率预测法'
+            update_response = client.put(f'/api/user-algorithms/{algorithm_id}', json={
+                'lottery_type': 'jingcai_football',
+                'name': '新版进球率预测法',
+                'definition': updated_definition
+            })
+            self.assertEqual(update_response.get_json()['algorithm']['active_version'], 2)
+
+            response = client.post(f'/api/user-algorithms/{algorithm_id}/activate-version', json={'version': 1})
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload['algorithm']['active_version'], 1)
+            self.assertEqual(payload['algorithm']['definition']['method_name'], '进球率预测法')
+
+            third_definition = build_football_algorithm_definition()
+            third_definition['method_name'] = '第三版进球率预测法'
+            third_response = client.put(f'/api/user-algorithms/{algorithm_id}', json={
+                'lottery_type': 'jingcai_football',
+                'name': '第三版进球率预测法',
+                'definition': third_definition
+            })
+            self.assertEqual(third_response.status_code, 200)
+            self.assertEqual(third_response.get_json()['algorithm']['active_version'], 3)
 
     def test_ai_draft_requires_user_api_credentials(self):
         with fresh_app_harness() as harness:
@@ -232,6 +301,14 @@ class UserAlgorithmRouteTests(unittest.TestCase):
                     'api_url': 'https://example.com/v1',
                     'model_name': 'test-model',
                     'message': '帮我做进球率预测法',
+                    'backtest_summary': {
+                        'sample_size': 20,
+                        'prediction_count': 18,
+                        'skip_count': 2,
+                        'hit_rate': {'spf': {'ratio_text': '12/18', 'hit_rate': 66.67}},
+                        'profit_summary': {'spf': {'net_profit': 3.2, 'roi': 17.78}},
+                        'risk_flags': ['跳过比例较高']
+                    },
                     'chat_history': [
                         {'role': 'user', 'content': '我想偏保守'},
                         {'role': 'assistant', 'content': '可以提高最低信心阈值'}
@@ -246,6 +323,8 @@ class UserAlgorithmRouteTests(unittest.TestCase):
             prompt = run_json_task.call_args.kwargs['prompt']
             self.assertIn('我想偏保守', prompt)
             self.assertIn('可以提高最低信心阈值', prompt)
+            self.assertIn('样本数：20', prompt)
+            self.assertIn('模拟净收益：3.2', prompt)
 
     def test_predictor_can_reference_owned_validated_algorithm(self):
         with fresh_app_harness() as harness:
@@ -321,6 +400,44 @@ class UserAlgorithmRouteTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 400)
             self.assertIn('无权使用此用户算法', response.get_json()['error'])
+
+    def test_predictor_test_dry_runs_user_algorithm(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+            algorithm_response = client.post('/api/user-algorithms', json={
+                'lottery_type': 'jingcai_football',
+                'name': '进球率预测法',
+                'definition': build_football_algorithm_definition()
+            })
+            algorithm_id = algorithm_response.get_json()['id']
+
+            response = client.post('/api/predictors/test', json={
+                'lottery_type': 'jingcai_football',
+                'engine_type': 'machine',
+                'algorithm_key': f'user:{algorithm_id}',
+                'name': '自建算法方案',
+                'prediction_method': '进球率预测法',
+                'api_key': '',
+                'api_url': '',
+                'model_name': '',
+                'api_mode': 'auto',
+                'primary_metric': 'spf',
+                'profit_default_metric': 'spf',
+                'profit_rule_id': 'jingcai_snapshot',
+                'share_level': 'records',
+                'system_prompt': '',
+                'data_injection_mode': 'summary',
+                'prediction_targets': ['spf'],
+                'history_window': 30,
+                'temperature': 0.2,
+                'enabled': True
+            })
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload['finish_reason'], 'user_algorithm')
+            self.assertIn('样例试跑', payload['response_preview'])
+            self.assertIn('胜', payload['raw_response'])
 
     def test_user_algorithm_can_execute_jingcai_prediction(self):
         from services.machine_prediction import predict_jingcai

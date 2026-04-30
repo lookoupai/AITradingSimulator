@@ -26,13 +26,15 @@ def generate_algorithm_draft(
     user_message: str,
     current_definition: dict | None = None,
     chat_history: list[dict] | None = None,
+    backtest_summary: dict | None = None,
     temperature: float = 0.2
 ) -> dict:
     prompt = _build_algorithm_prompt(
         lottery_type=lottery_type,
         user_message=user_message,
         current_definition=current_definition,
-        chat_history=chat_history
+        chat_history=chat_history,
+        backtest_summary=backtest_summary
     )
     client = AIPredictor(
         api_key=api_key,
@@ -70,10 +72,12 @@ def _build_algorithm_prompt(
     lottery_type: str,
     user_message: str,
     current_definition: dict | None = None,
-    chat_history: list[dict] | None = None
+    chat_history: list[dict] | None = None,
+    backtest_summary: dict | None = None
 ) -> str:
     current_block = json.dumps(current_definition or {}, ensure_ascii=False, indent=2)
     history_block = _format_chat_history(chat_history or [])
+    backtest_block = _format_backtest_summary(backtest_summary or {})
     return f"""请把用户的预测思路转换成 AITradingSimulator 用户算法 DSL。
 
 彩种：{lottery_type}
@@ -86,6 +90,9 @@ def _build_algorithm_prompt(
 
 当前算法草稿：
 {current_block}
+
+最近回测摘要：
+{backtest_block}
 
 平台 DSL 约束：
 1. 顶层必须输出 reply_type、message、questions、algorithm、change_summary、risk_notes。
@@ -158,3 +165,31 @@ def _format_chat_history(chat_history: list[dict]) -> str:
         label = '用户' if role == 'user' else '助手'
         lines.append(f'{label}: {content[:500]}')
     return '\n'.join(lines) or '无'
+
+
+def _format_backtest_summary(backtest_summary: dict) -> str:
+    if not backtest_summary:
+        return '无'
+
+    hit_rate = backtest_summary.get('hit_rate') or {}
+    profit_summary = backtest_summary.get('profit_summary') or {}
+    risk_flags = backtest_summary.get('risk_flags') or []
+    lines = [
+        f"样本数：{backtest_summary.get('sample_size', 0)}",
+        f"产生预测：{backtest_summary.get('prediction_count', 0)}",
+        f"跳过预测：{backtest_summary.get('skip_count', 0)}",
+        f"跳过率：{backtest_summary.get('skip_rate', '--')}",
+    ]
+    for target in ('spf', 'rqspf'):
+        stats = hit_rate.get(target) or {}
+        profit = profit_summary.get(target) or {}
+        if stats:
+            lines.append(
+                f"{target} 命中：{stats.get('ratio_text', '--')}，"
+                f"命中率：{stats.get('hit_rate', '--')}%，"
+                f"模拟净收益：{profit.get('net_profit', '--')}，"
+                f"ROI：{profit.get('roi', '--')}"
+            )
+    if risk_flags:
+        lines.append('风险提示：' + '；'.join(str(item)[:120] for item in risk_flags[:5]))
+    return '\n'.join(lines)

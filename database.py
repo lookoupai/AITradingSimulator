@@ -977,7 +977,7 @@ class Database:
 
         next_version = int(existing.get('active_version') or 1)
         if create_version and 'definition_json' in fields:
-            next_version += 1
+            next_version = self._next_user_algorithm_version(algorithm_id, user_id)
             updates.append('active_version = ?')
             values.append(next_version)
 
@@ -1064,6 +1064,104 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
         return [self._prepare_user_algorithm(row) for row in rows]
+
+    def get_user_algorithm_versions_for_user(self, algorithm_id: int, user_id: int) -> list[dict]:
+        if not self.user_algorithm_exists_for_user(algorithm_id, user_id):
+            return []
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM user_algorithm_versions
+            WHERE algorithm_id = ? AND user_id = ?
+            ORDER BY version DESC
+            ''',
+            (algorithm_id, user_id)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._prepare_user_algorithm_version(row) for row in rows]
+
+    def get_user_algorithm_version_for_user(self, algorithm_id: int, user_id: int, version: int) -> Optional[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM user_algorithm_versions
+            WHERE algorithm_id = ? AND user_id = ? AND version = ?
+            LIMIT 1
+            ''',
+            (algorithm_id, user_id, int(version or 0))
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return self._prepare_user_algorithm_version(row)
+
+    def update_user_algorithm_version_backtest(
+        self,
+        algorithm_id: int,
+        user_id: int,
+        version: int,
+        backtest: dict
+    ) -> bool:
+        backtest_json = json.dumps(backtest or {}, ensure_ascii=False)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE user_algorithm_versions
+            SET backtest_json = ?
+            WHERE algorithm_id = ? AND user_id = ? AND version = ?
+            ''',
+            (backtest_json, algorithm_id, user_id, int(version or 0))
+        )
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return changed
+
+    def activate_user_algorithm_version(self, algorithm_id: int, user_id: int, version: int) -> bool:
+        version_row = self.get_user_algorithm_version_for_user(algorithm_id, user_id, version)
+        if not version_row:
+            return False
+
+        status = 'validated' if (version_row.get('validation') or {}).get('valid') else 'draft'
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE user_algorithms
+            SET definition_json = ?, status = ?, active_version = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ?
+            ''',
+            (
+                json.dumps(version_row.get('definition') or {}, ensure_ascii=False),
+                status,
+                int(version_row.get('version') or version),
+                algorithm_id,
+                user_id
+            )
+        )
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return changed
+
+    def _next_user_algorithm_version(self, algorithm_id: int, user_id: int) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT MAX(version) AS max_version
+            FROM user_algorithm_versions
+            WHERE algorithm_id = ? AND user_id = ?
+            ''',
+            (algorithm_id, user_id)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return int(row['max_version'] or 0) + 1 if row else 1
 
     def user_algorithm_exists_for_user(self, algorithm_id: int, user_id: int) -> bool:
         conn = self.get_connection()
@@ -3986,6 +4084,16 @@ class Database:
         data['definition'] = self._decode_json_object(data.get('definition_json'))
         data['key'] = f"user:{data['id']}"
         data['status'] = self._normalize_user_algorithm_status(data.get('status'))
+        return data
+
+    def _prepare_user_algorithm_version(self, row) -> Optional[dict]:
+        if row is None:
+            return None
+
+        data = dict(row)
+        data['definition'] = self._decode_json_object(data.get('definition_json'))
+        data['validation'] = self._decode_json_object(data.get('validation_json'))
+        data['backtest'] = self._decode_json_object(data.get('backtest_json'))
         return data
 
     def _normalize_user_algorithm_status(self, value) -> str:
