@@ -342,6 +342,8 @@ class PredictionApp {
         this.bindEvent('generateUserAlgorithmBtn', 'click', () => this.generateUserAlgorithmDraft());
         this.bindEvent('clearAlgorithmChatBtn', 'click', () => this.clearAlgorithmChat());
         this.bindEvent('validateUserAlgorithmBtn', 'click', () => this.validateUserAlgorithmForm());
+        this.bindEvent('dryRunUserAlgorithmBtn', 'click', () => this.dryRunUserAlgorithm());
+        this.bindEvent('backtestUserAlgorithmBtn', 'click', () => this.backtestUserAlgorithm());
         this.bindEvent('saveUserAlgorithmBtn', 'click', () => this.saveUserAlgorithm());
         this.bindEvent('userAlgorithmLotteryFilter', 'change', async (event) => {
             this.renderUserAlgorithmList(event.target.value || 'jingcai_football');
@@ -4948,6 +4950,110 @@ class PredictionApp {
             throw new Error(data.error || (data.errors || []).join('；') || '算法校验失败');
         }
         return data;
+    }
+
+    async dryRunUserAlgorithm() {
+        const button = document.getElementById('dryRunUserAlgorithmBtn');
+        const lotteryType = document.getElementById('userAlgorithmLotteryType').value || 'jingcai_football';
+        let definition;
+        try {
+            definition = this.parseUserAlgorithmDefinition();
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+            return;
+        }
+
+        button.disabled = true;
+        button.textContent = '试跑中...';
+        this.showUserAlgorithmResult('info', '正在使用样例比赛试跑当前算法...');
+        try {
+            const response = await fetch('/api/user-algorithms/dry-run', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lottery_type: lotteryType, definition })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '算法试跑失败');
+            }
+            const firstItem = (data.items || [])[0] || {};
+            const firstDebug = ((data.debug || {}).rows || [])[0] || {};
+            const lines = [
+                '试跑完成。',
+                `样例场次：${firstItem.match_no || '--'}`,
+                `胜平负：${firstItem.predicted_spf || '跳过'}`,
+                `让球胜平负：${firstItem.predicted_rqspf || '跳过'}`,
+                `置信度：${firstItem.confidence === null || firstItem.confidence === undefined ? '--' : firstItem.confidence}`,
+                `评分：${firstDebug.score === undefined ? '--' : firstDebug.score}`,
+                `说明：${firstItem.reasoning_summary || '--'}`
+            ];
+            this.showUserAlgorithmResult('success', lines.join('\n'));
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = '试跑';
+        }
+    }
+
+    async backtestUserAlgorithm() {
+        const button = document.getElementById('backtestUserAlgorithmBtn');
+        const lotteryType = document.getElementById('userAlgorithmLotteryType').value || 'jingcai_football';
+        let definition;
+        try {
+            definition = this.parseUserAlgorithmDefinition();
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+            return;
+        }
+
+        button.disabled = true;
+        button.textContent = '回测中...';
+        this.showUserAlgorithmResult('info', '正在读取本地已开奖赛事回测当前算法...');
+        try {
+            const response = await fetch('/api/user-algorithms/backtest', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lottery_type: lotteryType, definition, limit: 50 })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '算法回测失败');
+            }
+            const backtest = data.backtest || {};
+            const hitRate = backtest.hit_rate || {};
+            const spfStats = hitRate.spf || {};
+            const rqspfStats = hitRate.rqspf || {};
+            const recentRecords = (backtest.records || []).slice(0, 5).map((item) => {
+                const spfText = item.predicted_spf
+                    ? `SPF ${item.predicted_spf}/${item.actual_spf || '--'}`
+                    : 'SPF 跳过';
+                const rqspfText = item.predicted_rqspf
+                    ? `RQSPF ${item.predicted_rqspf}/${item.actual_rqspf || '--'}`
+                    : 'RQSPF 跳过';
+                return `${item.match_no || '--'} ${spfText}，${rqspfText}`;
+            });
+            const lines = [
+                '回测完成。',
+                `样本数：${backtest.sample_size || 0}`,
+                `产生预测：${backtest.prediction_count || 0}`,
+                `跳过预测：${backtest.skip_count || 0}`,
+                `SPF 命中：${spfStats.ratio_text || '--'}${spfStats.hit_rate === null || spfStats.hit_rate === undefined ? '' : `（${spfStats.hit_rate}%）`}`,
+                `RQSPF 命中：${rqspfStats.ratio_text || '--'}${rqspfStats.hit_rate === null || rqspfStats.hit_rate === undefined ? '' : `（${rqspfStats.hit_rate}%）`}`,
+                ...recentRecords.map((item) => `样本：${item}`)
+            ];
+            if (!backtest.sample_size) {
+                lines.push('本地暂无可用于回测的已开奖竞彩足球样本。');
+            }
+            this.showUserAlgorithmResult('success', lines.join('\n'));
+        } catch (error) {
+            this.showUserAlgorithmResult('error', error.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = '回测';
+        }
     }
 
     renderUserAlgorithmValidation(validation) {

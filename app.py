@@ -29,8 +29,10 @@ from lotteries.registry import (
     supports_public_pages
 )
 from services.jingcai_football_service import JingcaiFootballService
+from services.algorithm_backtester import backtest_jingcai_user_algorithm
 from services.algorithm_chat_service import generate_algorithm_draft
 from services.algorithm_definition_validator import validate_algorithm_definition
+from services.algorithm_executor import predict_jingcai_with_user_algorithm
 from services.bet_strategy import BET_MODE_LABELS, build_bet_strategy, build_bet_strategy_label
 from services.lottery_runtime import LotteryRuntime
 from services.notification_rule_engine import NotificationRuleEngine, PERFORMANCE_EVENT_TYPE
@@ -2010,6 +2012,51 @@ def _serialize_user_algorithm(item: dict | None) -> dict:
     }
 
 
+def _build_user_algorithm_sample_matches() -> list[dict]:
+    return [{
+        'event_key': 'SAMPLE001',
+        'match_no': '周五001',
+        'league': '英超',
+        'home_team': '样例主队',
+        'away_team': '样例客队',
+        'team1_id': 'sample-home',
+        'team2_id': 'sample-away',
+        'match_time': '2026-04-24 20:00',
+        'spf_odds': {'胜': 1.62, '平': 3.75, '负': 5.20},
+        'rqspf': {
+            'handicap': -1,
+            'handicap_text': '-1',
+            'odds': {'胜': 2.95, '平': 3.35, '负': 2.10}
+        },
+        'detail_bundle': {
+            'recent_form_team1': [
+                {'team1': '样例主队', 'team2': '甲队', 'team1Id': 'sample-home', 'score1': '3', 'score2': '1'},
+                {'team1': '乙队', 'team2': '样例主队', 'team2Id': 'sample-home', 'score1': '0', 'score2': '2'},
+                {'team1': '样例主队', 'team2': '丙队', 'team1Id': 'sample-home', 'score1': '2', 'score2': '0'}
+            ],
+            'recent_form_team2': [
+                {'team1': '样例客队', 'team2': '丁队', 'team1Id': 'sample-away', 'score1': '0', 'score2': '1'},
+                {'team1': '戊队', 'team2': '样例客队', 'team2Id': 'sample-away', 'score1': '2', 'score2': '1'},
+                {'team1': '样例客队', 'team2': '己队', 'team1Id': 'sample-away', 'score1': '1', 'score2': '1'}
+            ],
+            'team_table': {
+                'team1': {'items': {'all': [{'position': '2', 'points': '68'}]}},
+                'team2': {'items': {'all': [{'position': '9', 'points': '46'}]}}
+            },
+            'injury': {
+                'team1': [],
+                'team2': [{'playerShortName': '样例客队主力', 'typeCn': '伤'}]
+            },
+            'odds_snapshots': {
+                'euro': {
+                    'initial': {'win': '1.72', 'draw': '3.55', 'lose': '4.60'},
+                    'current': {'win': '1.62', 'draw': '3.75', 'lose': '5.20'}
+                }
+            }
+        }
+    }]
+
+
 def _get_predictor_dashboard_data(predictor_id: int) -> dict:
     predictor = db.get_predictor(predictor_id, include_secret=True)
     if not predictor:
@@ -3231,6 +3278,75 @@ def validate_user_algorithm_draft():
             return jsonify({'valid': False, 'errors': ['算法定义必须是有效 JSON'], 'warnings': []}), 400
     validation = validate_algorithm_definition(definition, lottery_type=lottery_type)
     return jsonify(validation)
+
+
+@app.route('/api/user-algorithms/dry-run', methods=['POST'])
+@login_required
+def dry_run_user_algorithm():
+    data = request.get_json() or {}
+    definition = data.get('definition') or {}
+    lottery_type = normalize_lottery_type(data.get('lottery_type') or (definition.get('lottery_type') if isinstance(definition, dict) else 'pc28'))
+    if isinstance(definition, str):
+        try:
+            definition = json.loads(definition)
+        except json.JSONDecodeError:
+            return jsonify({'error': '算法定义必须是有效 JSON'}), 400
+    validation = validate_algorithm_definition(definition, lottery_type=lottery_type)
+    if not validation['valid']:
+        return jsonify({'error': '算法校验未通过', 'validation': validation}), 400
+    if lottery_type != 'jingcai_football':
+        return jsonify({'error': '当前仅支持竞彩足球用户算法试跑'}), 400
+
+    normalized_definition = validation['normalized_definition']
+    user_algorithm = {
+        'id': 0,
+        'name': normalized_definition.get('method_name') or '用户算法试跑',
+        'definition': normalized_definition
+    }
+    items_payload, debug_payload = predict_jingcai_with_user_algorithm(
+        'sample-run',
+        _build_user_algorithm_sample_matches(),
+        {
+            'id': 0,
+            'prediction_targets': normalized_definition.get('targets') or [],
+            'user_algorithm': user_algorithm
+        }
+    )
+    return jsonify({
+        'message': '试跑完成',
+        'validation': validation,
+        'items': items_payload,
+        'debug': debug_payload
+    })
+
+
+@app.route('/api/user-algorithms/backtest', methods=['POST'])
+@login_required
+def backtest_user_algorithm():
+    data = request.get_json() or {}
+    definition = data.get('definition') or {}
+    lottery_type = normalize_lottery_type(data.get('lottery_type') or (definition.get('lottery_type') if isinstance(definition, dict) else 'pc28'))
+    if isinstance(definition, str):
+        try:
+            definition = json.loads(definition)
+        except json.JSONDecodeError:
+            return jsonify({'error': '算法定义必须是有效 JSON'}), 400
+    validation = validate_algorithm_definition(definition, lottery_type=lottery_type)
+    if not validation['valid']:
+        return jsonify({'error': '算法校验未通过', 'validation': validation}), 400
+    if lottery_type != 'jingcai_football':
+        return jsonify({'error': '当前仅支持竞彩足球用户算法回测'}), 400
+
+    result = backtest_jingcai_user_algorithm(
+        db,
+        validation['normalized_definition'],
+        limit=_parse_positive_int(data.get('limit'), default=50, minimum=1, maximum=200)
+    )
+    return jsonify({
+        'message': '回测完成',
+        'validation': validation,
+        'backtest': result
+    })
 
 
 @app.route('/api/user-algorithms/ai-draft', methods=['POST'])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest import mock
 
@@ -34,6 +35,54 @@ def build_football_algorithm_definition() -> dict:
         },
         'explain': {
             'template': '主队近6场进球率 {home_goals_per_match_6}'
+        }
+    }
+
+
+def _build_settled_football_event(event_key: str, match_no: str, event_time: str, score1: int, score2: int, actual_spf: str) -> dict:
+    return {
+        'lottery_type': 'jingcai_football',
+        'event_key': event_key,
+        'batch_key': '2026-04-25',
+        'event_date': '2026-04-25',
+        'event_time': event_time,
+        'event_name': f'[测试] {match_no}',
+        'league': '测试联赛',
+        'home_team': '主队',
+        'away_team': '客队',
+        'status': '3',
+        'status_label': '已开奖',
+        'source_provider': 'sina',
+        'result_payload': json.dumps({
+            'score1': score1,
+            'score2': score2,
+            'actual_spf': actual_spf
+        }, ensure_ascii=False),
+        'meta_payload': json.dumps({
+            'match_no': match_no,
+            'spf_sell_status': '2',
+            'spf_odds': {'胜': 1.62, '平': 3.75, '负': 5.2},
+            'settled': True
+        }, ensure_ascii=False),
+        'source_payload': '{}'
+    }
+
+
+def _build_football_detail_bundle() -> dict:
+    return {
+        'recent_form_team1': [
+            {'team1': '主队', 'team2': '甲队', 'score1': '3', 'score2': '1'},
+            {'team1': '乙队', 'team2': '主队', 'score1': '0', 'score2': '2'},
+            {'team1': '主队', 'team2': '丙队', 'score1': '2', 'score2': '0'}
+        ],
+        'recent_form_team2': [
+            {'team1': '客队', 'team2': '丁队', 'score1': '0', 'score2': '1'},
+            {'team1': '戊队', 'team2': '客队', 'score1': '2', 'score2': '1'},
+            {'team1': '客队', 'team2': '己队', 'score1': '1', 'score2': '1'}
+        ],
+        'injury': {
+            'team1': [],
+            'team2': [{'playerShortName': '客队主力', 'typeCn': '伤'}]
         }
     }
 
@@ -94,6 +143,57 @@ class UserAlgorithmRouteTests(unittest.TestCase):
             list_response = client.get('/api/user-algorithms?include_disabled=1')
             self.assertEqual(list_response.status_code, 200)
             self.assertEqual(list_response.get_json(), [])
+
+    def test_dry_run_user_algorithm(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+
+            response = client.post('/api/user-algorithms/dry-run', json={
+                'lottery_type': 'jingcai_football',
+                'definition': build_football_algorithm_definition()
+            })
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload['message'], '试跑完成')
+            self.assertTrue(payload['validation']['valid'])
+            self.assertEqual(payload['items'][0]['predicted_spf'], '胜')
+
+    def test_backtest_user_algorithm_with_settled_football_events(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+
+            harness.db.upsert_lottery_events([
+                _build_settled_football_event('bt1', '周六001', '2026-04-25 18:00:00', 2, 1, '胜'),
+                _build_settled_football_event('bt2', '周六002', '2026-04-25 20:00:00', 1, 1, '平')
+            ])
+            harness.db.upsert_lottery_event_details([
+                {
+                    'lottery_type': 'jingcai_football',
+                    'event_key': event_key,
+                    'detail_type': detail_type,
+                    'source_provider': 'sina',
+                    'payload': payload
+                }
+                for event_key in ('bt1', 'bt2')
+                for detail_type, payload in _build_football_detail_bundle().items()
+            ])
+
+            response = client.post('/api/user-algorithms/backtest', json={
+                'lottery_type': 'jingcai_football',
+                'definition': build_football_algorithm_definition(),
+                'limit': 20
+            })
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            backtest = payload['backtest']
+            self.assertEqual(payload['message'], '回测完成')
+            self.assertTrue(payload['validation']['valid'])
+            self.assertEqual(backtest['sample_size'], 2)
+            self.assertEqual(backtest['prediction_count'], 2)
+            self.assertEqual(backtest['hit_rate']['spf']['ratio_text'], '1/2')
+            self.assertEqual(backtest['records'][0]['predicted_spf'], '胜')
 
     def test_ai_draft_requires_user_api_credentials(self):
         with fresh_app_harness() as harness:

@@ -4140,7 +4140,7 @@ class Database:
 
     def _prepare_lottery_event_detail(self, row) -> dict:
         data = dict(row)
-        data['payload'] = self._decode_json_object(data.get('payload'))
+        data['payload'] = self._decode_json_value(data.get('payload'))
         return data
 
     def _prepare_draw(self, row) -> dict:
@@ -4190,6 +4190,17 @@ class Database:
         try:
             parsed = json.loads(value)
             return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    def _decode_json_value(self, value: Any):
+        if value is None:
+            return {}
+        if isinstance(value, (dict, list)):
+            return value
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, (dict, list)) else {}
         except (TypeError, json.JSONDecodeError):
             return {}
 
