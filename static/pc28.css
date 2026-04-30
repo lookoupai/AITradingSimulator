@@ -1211,6 +1211,44 @@ a {
     margin-bottom: 0;
 }
 
+.algorithm-chat-log {
+    display: grid;
+    gap: 8px;
+    max-height: 220px;
+    overflow: auto;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--panel-soft);
+}
+
+.algorithm-chat-message {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel);
+}
+
+.algorithm-chat-message.user {
+    border-color: color-mix(in srgb, var(--primary) 40%, var(--border) 60%);
+}
+
+.algorithm-chat-message span {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.algorithm-chat-message p {
+    margin: 0;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+}
+
 .algorithm-list {
     display: grid;
     gap: 10px;

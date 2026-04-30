@@ -25,12 +25,14 @@ def generate_algorithm_draft(
     lottery_type: str,
     user_message: str,
     current_definition: dict | None = None,
+    chat_history: list[dict] | None = None,
     temperature: float = 0.2
 ) -> dict:
     prompt = _build_algorithm_prompt(
         lottery_type=lottery_type,
         user_message=user_message,
-        current_definition=current_definition
+        current_definition=current_definition,
+        chat_history=chat_history
     )
     client = AIPredictor(
         api_key=api_key,
@@ -64,11 +66,20 @@ def generate_algorithm_draft(
     }
 
 
-def _build_algorithm_prompt(lottery_type: str, user_message: str, current_definition: dict | None = None) -> str:
+def _build_algorithm_prompt(
+    lottery_type: str,
+    user_message: str,
+    current_definition: dict | None = None,
+    chat_history: list[dict] | None = None
+) -> str:
     current_block = json.dumps(current_definition or {}, ensure_ascii=False, indent=2)
+    history_block = _format_chat_history(chat_history or [])
     return f"""请把用户的预测思路转换成 AITradingSimulator 用户算法 DSL。
 
 彩种：{lottery_type}
+
+最近对话：
+{history_block}
 
 用户需求：
 {user_message}
@@ -130,3 +141,20 @@ PC28 可用字段：
 }}
 
 现在只输出 JSON。"""
+
+
+def _format_chat_history(chat_history: list[dict]) -> str:
+    if not chat_history:
+        return '无'
+
+    lines = []
+    for item in chat_history[-8:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get('role') or '').strip()
+        content = str(item.get('content') or '').strip()
+        if role not in {'user', 'assistant'} or not content:
+            continue
+        label = '用户' if role == 'user' else '助手'
+        lines.append(f'{label}: {content[:500]}')
+    return '\n'.join(lines) or '无'

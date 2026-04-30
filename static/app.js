@@ -223,6 +223,7 @@ class PredictionApp {
         this.predictors = [];
         this.userAlgorithms = [];
         this.selectedUserAlgorithmId = null;
+        this.algorithmChatMessages = [];
         this.betProfiles = [];
         this.notificationSenders = [];
         this.notificationEndpoints = [];
@@ -339,6 +340,7 @@ class PredictionApp {
         this.bindEvent('newUserAlgorithmBtn', 'click', () => this.resetUserAlgorithmForm());
         this.bindEvent('loadAlgorithmSampleBtn', 'click', () => this.loadUserAlgorithmSample());
         this.bindEvent('generateUserAlgorithmBtn', 'click', () => this.generateUserAlgorithmDraft());
+        this.bindEvent('clearAlgorithmChatBtn', 'click', () => this.clearAlgorithmChat());
         this.bindEvent('validateUserAlgorithmBtn', 'click', () => this.validateUserAlgorithmForm());
         this.bindEvent('saveUserAlgorithmBtn', 'click', () => this.saveUserAlgorithm());
         this.bindEvent('userAlgorithmLotteryFilter', 'change', async (event) => {
@@ -4665,12 +4667,40 @@ class PredictionApp {
     resetUserAlgorithmForm() {
         const lotteryType = document.getElementById('userAlgorithmLotteryFilter')?.value || 'jingcai_football';
         this.selectedUserAlgorithmId = null;
+        this.clearAlgorithmChat();
         document.getElementById('userAlgorithmId').value = '';
         document.getElementById('userAlgorithmName').value = '';
         document.getElementById('userAlgorithmDescription').value = '';
         document.getElementById('userAlgorithmLotteryType').value = lotteryType;
         this.loadUserAlgorithmSample();
         this.hideUserAlgorithmResult();
+    }
+
+    clearAlgorithmChat() {
+        this.algorithmChatMessages = [];
+        const input = document.getElementById('algorithmAiMessage');
+        if (input) {
+            input.value = '';
+        }
+        this.renderAlgorithmChat();
+    }
+
+    renderAlgorithmChat() {
+        const container = document.getElementById('algorithmChatLog');
+        if (!container) {
+            return;
+        }
+        if (!this.algorithmChatMessages.length) {
+            container.innerHTML = '<div class="empty-panel">暂无对话</div>';
+            return;
+        }
+        container.innerHTML = this.algorithmChatMessages.map((message) => `
+            <div class="algorithm-chat-message ${message.role === 'user' ? 'user' : 'assistant'}">
+                <span>${message.role === 'user' ? '你' : 'AI'}</span>
+                <p>${this.escapeHtml(message.content || '')}</p>
+            </div>
+        `).join('');
+        container.scrollTop = container.scrollHeight;
     }
 
     loadUserAlgorithmSample() {
@@ -4777,6 +4807,7 @@ class PredictionApp {
         document.getElementById('userAlgorithmLotteryType').value = algorithm.lottery_type || 'jingcai_football';
         document.getElementById('userAlgorithmDefinition').value = JSON.stringify(algorithm.definition || {}, null, 2);
         document.getElementById('userAlgorithmLotteryFilter').value = algorithm.lottery_type || 'jingcai_football';
+        this.clearAlgorithmChat();
         this.renderUserAlgorithmList(algorithm.lottery_type || 'jingcai_football');
         this.hideUserAlgorithmResult();
     }
@@ -4831,13 +4862,15 @@ class PredictionApp {
     async generateUserAlgorithmDraft() {
         const button = document.getElementById('generateUserAlgorithmBtn');
         const lotteryType = document.getElementById('userAlgorithmLotteryType').value || 'jingcai_football';
+        const messageText = document.getElementById('algorithmAiMessage').value.trim();
         const payload = {
             lottery_type: lotteryType,
             api_key: document.getElementById('algorithmAiApiKey').value.trim(),
             api_url: document.getElementById('algorithmAiApiUrl').value.trim(),
             model_name: document.getElementById('algorithmAiModelName').value.trim(),
             api_mode: 'auto',
-            message: document.getElementById('algorithmAiMessage').value.trim()
+            message: messageText,
+            chat_history: this.algorithmChatMessages.slice(-8)
         };
         try {
             payload.current_definition = this.parseUserAlgorithmDefinition();
@@ -4849,6 +4882,9 @@ class PredictionApp {
             return;
         }
 
+        this.algorithmChatMessages.push({ role: 'user', content: messageText });
+        this.renderAlgorithmChat();
+        document.getElementById('algorithmAiMessage').value = '';
         button.disabled = true;
         button.textContent = '生成中...';
         this.showUserAlgorithmResult('info', '正在调用你的模型生成算法草稿...');
@@ -4865,7 +4901,10 @@ class PredictionApp {
             }
             if (data.reply_type === 'need_clarification') {
                 const questions = (data.questions || []).map((item) => `- ${item}`).join('\n');
-                this.showUserAlgorithmResult('info', `${data.message || 'AI 需要补充信息'}\n${questions}`);
+                const assistantText = `${data.message || 'AI 需要补充信息'}${questions ? `\n${questions}` : ''}`;
+                this.algorithmChatMessages.push({ role: 'assistant', content: assistantText });
+                this.renderAlgorithmChat();
+                this.showUserAlgorithmResult('info', assistantText);
                 return;
             }
             document.getElementById('userAlgorithmDefinition').value = JSON.stringify(data.algorithm || {}, null, 2);
@@ -4878,6 +4917,8 @@ class PredictionApp {
                 data.change_summary ? `变更：${data.change_summary}` : '',
                 ...(data.risk_notes || []).map((item) => `提醒：${item}`)
             ].filter(Boolean);
+            this.algorithmChatMessages.push({ role: 'assistant', content: notes.join('\n') || '已生成算法草稿' });
+            this.renderAlgorithmChat();
             this.renderUserAlgorithmValidation(data.validation || { valid: false, errors: [], warnings: [] });
             if (notes.length) {
                 this.showUserAlgorithmResult(
@@ -4886,10 +4927,12 @@ class PredictionApp {
                 );
             }
         } catch (error) {
+            this.algorithmChatMessages.push({ role: 'assistant', content: `生成失败：${error.message}` });
+            this.renderAlgorithmChat();
             this.showUserAlgorithmResult('error', error.message);
         } finally {
             button.disabled = false;
-            button.textContent = 'AI 生成草稿';
+            button.textContent = '发送给 AI';
         }
     }
 

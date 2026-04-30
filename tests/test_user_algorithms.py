@@ -125,13 +125,17 @@ class UserAlgorithmRouteTests(unittest.TestCase):
                     'change_summary': '生成初始算法',
                     'risk_notes': ['样本窗口较短时波动较大']
                 }
-            }):
+            }) as run_json_task:
                 response = client.post('/api/user-algorithms/ai-draft', json={
                     'lottery_type': 'jingcai_football',
                     'api_key': 'test-key',
                     'api_url': 'https://example.com/v1',
                     'model_name': 'test-model',
-                    'message': '帮我做进球率预测法'
+                    'message': '帮我做进球率预测法',
+                    'chat_history': [
+                        {'role': 'user', 'content': '我想偏保守'},
+                        {'role': 'assistant', 'content': '可以提高最低信心阈值'}
+                    ]
                 })
 
             self.assertEqual(response.status_code, 200)
@@ -139,6 +143,9 @@ class UserAlgorithmRouteTests(unittest.TestCase):
             self.assertEqual(payload['reply_type'], 'draft_algorithm')
             self.assertTrue(payload['validation']['valid'])
             self.assertEqual(payload['algorithm']['method_name'], '进球率预测法')
+            prompt = run_json_task.call_args.kwargs['prompt']
+            self.assertIn('我想偏保守', prompt)
+            self.assertIn('可以提高最低信心阈值', prompt)
 
     def test_predictor_can_reference_owned_validated_algorithm(self):
         with fresh_app_harness() as harness:

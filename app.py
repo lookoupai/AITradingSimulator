@@ -3244,6 +3244,7 @@ def generate_user_algorithm_ai_draft():
     lottery_type = normalize_lottery_type(data.get('lottery_type') or 'jingcai_football')
     user_message = str(data.get('message') or '').strip()
     current_definition = data.get('current_definition') if isinstance(data.get('current_definition'), dict) else None
+    chat_history = data.get('chat_history') if isinstance(data.get('chat_history'), list) else []
 
     if not api_key:
         return jsonify({'error': 'AI 算法助手需要 API Key'}), 400
@@ -3263,6 +3264,7 @@ def generate_user_algorithm_ai_draft():
             lottery_type=lottery_type,
             user_message=user_message,
             current_definition=current_definition,
+            chat_history=chat_history,
             temperature=0.2
         )
         payload = result['payload']

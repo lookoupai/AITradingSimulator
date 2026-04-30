@@ -872,13 +872,17 @@
                                 <span>API Key</span>
                                 <input type="password" id="algorithmAiApiKey" placeholder="仅用于本次生成请求">
                             </label>
+                            <div class="span-2 algorithm-chat-log" id="algorithmChatLog">
+                                <div class="empty-panel">暂无对话</div>
+                            </div>
                             <label class="form-field span-2">
                                 <span>算法思路</span>
-                                <textarea id="algorithmAiMessage" rows="4" placeholder="例如：我想做进球率预测法，重点看主队近6场进球率、客队近6场失球率，赔率低于1.35跳过。"></textarea>
+                                <textarea id="algorithmAiMessage" rows="3" placeholder="例如：我想做进球率预测法，重点看主队近6场进球率、客队近6场失球率，赔率低于1.35跳过。"></textarea>
                             </label>
                         </div>
                         <div class="modal-actions left-actions">
-                            <button class="btn ghost" id="generateUserAlgorithmBtn">AI 生成草稿</button>
+                            <button class="btn ghost" id="generateUserAlgorithmBtn">发送给 AI</button>
+                            <button class="btn ghost" id="clearAlgorithmChatBtn">清空对话</button>
                         </div>
                     </div>
                     <label class="form-field">
