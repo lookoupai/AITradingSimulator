@@ -26,8 +26,11 @@ wheels/
 
 # Database
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 
 # IDE
 .vscode/
@@ -42,6 +45,7 @@ Thumbs.db
 
 # Logs
 *.log
+*.log.*
 
 # Environment
 .env
