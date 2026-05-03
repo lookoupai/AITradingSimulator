@@ -4693,6 +4693,7 @@ class PredictionApp {
         this.resetUserAlgorithmBacktestFilters();
         this.loadUserAlgorithmSample();
         this.hideUserAlgorithmResult();
+        this.renderUserAlgorithmOpsSummary(null);
         this.renderUserAlgorithmVersions([]);
         this.renderUserAlgorithmExecutionLogs([]);
     }
@@ -4884,6 +4885,7 @@ class PredictionApp {
         this.clearAlgorithmChat();
         this.renderUserAlgorithmList(algorithm.lottery_type || 'jingcai_football');
         this.hideUserAlgorithmResult();
+        this.loadUserAlgorithmOpsSummary(algorithm.id);
         this.loadUserAlgorithmVersions(algorithm.id);
         this.loadUserAlgorithmExecutionLogs(algorithm.id);
     }
@@ -5275,6 +5277,54 @@ class PredictionApp {
             ...warnings.map((item) => `提醒：${item}`)
         ];
         this.showUserAlgorithmResult(validation.valid ? 'success' : 'error', lines.join('\n'));
+    }
+
+    async loadUserAlgorithmOpsSummary(algorithmId) {
+        const container = document.getElementById('userAlgorithmOpsSummary');
+        if (!container || !algorithmId) {
+            this.renderUserAlgorithmOpsSummary(null);
+            return;
+        }
+        try {
+            const response = await fetch(`/api/user-algorithms/${algorithmId}/ops-summary`, { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '加载运营摘要失败');
+            }
+            this.renderUserAlgorithmOpsSummary(data);
+        } catch (error) {
+            this.renderUserAlgorithmOpsSummary(null);
+        }
+    }
+
+    renderUserAlgorithmOpsSummary(summary) {
+        const container = document.getElementById('userAlgorithmOpsSummary');
+        if (!container) {
+            return;
+        }
+        if (!summary) {
+            container.style.display = 'none';
+            container.innerHTML = '';
+            return;
+        }
+        const backtest = (summary.recent_backtest || {}).summary || {};
+        const risk = summary.risk_summary || {};
+        const spf = ((backtest.targets || {}).spf) || {};
+        const logs = summary.recent_execution_logs || [];
+        const predictors = summary.bound_predictors || [];
+        const latestLog = logs[0] || {};
+        const riskFlags = (risk.flags || []).slice(0, 3);
+        container.style.display = 'block';
+        container.innerHTML = `
+            <div class="algorithm-chat-message assistant">
+                <span>运营摘要</span>
+                <p>版本 ${summary.versions?.active_version || '--'} / 共 ${summary.versions?.total || 0} 版｜绑定方案 ${predictors.length} 个｜风险 ${this.escapeHtml(risk.label || '--')}</p>
+                <p>最近回测 V${summary.recent_backtest?.version || '--'}｜样本 ${backtest.sample_size || 0}｜出手 ${backtest.prediction_count || 0}｜跳过 ${backtest.skip_rate === null || backtest.skip_rate === undefined ? '--' : `${backtest.skip_rate}%`}｜字段完整率 ${backtest.field_completeness_rate === null || backtest.field_completeness_rate === undefined ? '--' : `${backtest.field_completeness_rate}%`}</p>
+                <p>SPF 命中 ${spf.ratio_text || '--'}${spf.hit_rate === null || spf.hit_rate === undefined ? '' : `（${spf.hit_rate}%）`}｜ROI ${spf.roi === null || spf.roi === undefined ? '--' : `${spf.roi}%`}</p>
+                <p>最近执行 ${latestLog.run_key || '--'}｜${latestLog.status || '暂无'}｜预测 ${latestLog.prediction_count || 0}/${latestLog.match_count || 0}${latestLog.fallback_used ? '｜已降级' : ''}</p>
+                ${riskFlags.map((item) => `<p>提醒：${this.escapeHtml(item)}</p>`).join('')}
+            </div>
+        `;
     }
 
     async loadUserAlgorithmVersions(algorithmId) {

@@ -330,6 +330,161 @@ class UserAlgorithmRouteTests(unittest.TestCase):
             self.assertEqual(comparison['rows'][0]['delta_from_previous']['targets']['spf']['hit_rate'], 8.33)
             self.assertEqual(comparison['best_version']['version'], 2)
 
+    def test_user_algorithm_ops_summary_aggregates_runtime_context(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            algorithm_response = client.post('/api/user-algorithms', json={
+                'lottery_type': 'jingcai_football',
+                'name': '进球率预测法',
+                'definition': build_football_algorithm_definition()
+            })
+            algorithm_id = algorithm_response.get_json()['id']
+            harness.db.update_user_algorithm_version_backtest(algorithm_id, user_id, 1, {
+                'sample_size': 25,
+                'effective_sample_count': 20,
+                'prediction_count': 15,
+                'skip_count': 10,
+                'skip_rate': 40,
+                'targets': ['spf'],
+                'confidence_report': {'level': 'medium', 'label': '中等可信', 'score': 65},
+                'data_quality': {'field_completeness_rate': 88},
+                'hit_rate': {'spf': {'hit_rate': 53.33, 'ratio_text': '8/15'}},
+                'profit_summary': {'spf': {'roi': 4.5, 'net_profit': 0.68}},
+                'max_drawdown': {'spf': {'amount': 2.0}},
+                'risk_flags': ['跳过比例较高']
+            })
+            predictor_response = client.post('/api/predictors', json={
+                'lottery_type': 'jingcai_football',
+                'engine_type': 'machine',
+                'algorithm_key': f'user:{algorithm_id}',
+                'name': '自建算法方案',
+                'prediction_method': '进球率预测法',
+                'api_key': '',
+                'api_url': '',
+                'model_name': '',
+                'api_mode': 'auto',
+                'primary_metric': 'spf',
+                'profit_default_metric': 'spf',
+                'profit_rule_id': 'jingcai_snapshot',
+                'share_level': 'records',
+                'system_prompt': '',
+                'data_injection_mode': 'summary',
+                'prediction_targets': ['spf'],
+                'history_window': 30,
+                'temperature': 0.2,
+                'enabled': True
+            })
+            predictor_id = predictor_response.get_json()['id']
+            harness.db.create_user_algorithm_execution_log({
+                'user_id': user_id,
+                'algorithm_id': algorithm_id,
+                'algorithm_version': 1,
+                'predictor_id': predictor_id,
+                'run_key': '2026-04-30',
+                'status': 'succeeded',
+                'match_count': 2,
+                'prediction_count': 1,
+                'skip_count': 1,
+                'duration_ms': 12,
+                'fallback_strategy': 'fail',
+                'fallback_used': False,
+                'debug': {'source': 'test'}
+            })
+
+            response = client.get(f'/api/user-algorithms/{algorithm_id}/ops-summary')
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload['versions']['active_version'], 1)
+            self.assertEqual(payload['recent_backtest']['summary']['sample_size'], 25)
+            self.assertEqual(payload['recent_execution_logs'][0]['status'], 'succeeded')
+            self.assertEqual(payload['bound_predictors'][0]['id'], predictor_id)
+            self.assertEqual(payload['risk_summary']['bound_predictor_count'], 1)
+
+    def test_compare_user_algorithm_versions_runs_same_filters(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+            harness.db.upsert_lottery_events([
+                _build_settled_football_event('bt1', '周六001', '2026-04-25 18:00:00', 2, 1, '胜'),
+                _build_settled_football_event('bt2', '周六002', '2026-04-25 20:00:00', 1, 1, '平')
+            ])
+            harness.db.upsert_lottery_event_details([
+                {
+                    'lottery_type': 'jingcai_football',
+                    'event_key': event_key,
+                    'detail_type': detail_type,
+                    'source_provider': 'sina',
+                    'payload': payload
+                }
+                for event_key in ('bt1', 'bt2')
+                for detail_type, payload in _build_football_detail_bundle().items()
+            ])
+            algorithm_response = client.post('/api/user-algorithms', json={
+                'lottery_type': 'jingcai_football',
+                'name': '进球率预测法',
+                'definition': build_football_algorithm_definition()
+            })
+            algorithm_id = algorithm_response.get_json()['id']
+            updated_definition = build_football_algorithm_definition()
+            updated_definition['decision']['min_confidence'] = 0.62
+            client.put(f'/api/user-algorithms/{algorithm_id}', json={
+                'lottery_type': 'jingcai_football',
+                'name': '进球率预测法',
+                'definition': updated_definition
+            })
+
+            response = client.post(f'/api/user-algorithms/{algorithm_id}/compare-versions', json={
+                'base_version': 1,
+                'candidate_version': 2,
+                'filters': {'recent_n': 2, 'market_type': 'spf'},
+                'limit': 20
+            })
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload['message'], '版本对比回测完成')
+            self.assertEqual(payload['base_version'], 1)
+            self.assertEqual(payload['candidate_version'], 2)
+            self.assertEqual(payload['base']['sample_size'], 2)
+            self.assertEqual(payload['candidate']['sample_size'], 2)
+            self.assertIn('hit_rate', payload['delta']['targets']['spf'])
+            self.assertIn('odds_interval_performance', payload['delta'])
+
+    def test_diagnose_user_algorithm_uses_recent_backtest_rules(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+            harness.db.upsert_lottery_events([
+                _build_settled_football_event('bt1', '周六001', '2026-04-25 18:00:00', 2, 1, '胜')
+            ])
+            harness.db.upsert_lottery_event_details([
+                {
+                    'lottery_type': 'jingcai_football',
+                    'event_key': 'bt1',
+                    'detail_type': detail_type,
+                    'source_provider': 'sina',
+                    'payload': payload
+                }
+                for detail_type, payload in _build_football_detail_bundle().items()
+            ])
+            algorithm_response = client.post('/api/user-algorithms', json={
+                'lottery_type': 'jingcai_football',
+                'name': '进球率预测法',
+                'definition': build_football_algorithm_definition()
+            })
+            algorithm_id = algorithm_response.get_json()['id']
+            client.post(f'/api/user-algorithms/{algorithm_id}/backtest', json={'limit': 20})
+
+            response = client.post(f'/api/user-algorithms/{algorithm_id}/diagnose', json={})
+
+            self.assertEqual(response.status_code, 200)
+            diagnosis = response.get_json()['diagnosis']
+            self.assertIn('sample_quality', diagnosis)
+            self.assertIn('skip_analysis', diagnosis)
+            self.assertIn('odds_analysis', diagnosis)
+            self.assertIn('drawdown_analysis', diagnosis)
+            self.assertIn('data_quality_analysis', diagnosis)
+            self.assertGreaterEqual(len(diagnosis['recommended_actions']), 1)
+
     def test_algorithm_templates_and_adjustment_create_new_version(self):
         with fresh_app_harness() as harness:
             client, _ = harness.make_client()

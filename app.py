@@ -2272,6 +2272,249 @@ def _resolve_best_user_algorithm_version(rows: list[dict]) -> dict | None:
     }
 
 
+def _serialize_bound_user_algorithm_predictor(predictor: dict) -> dict:
+    runtime_status, runtime_status_label = _resolve_predictor_runtime_status(predictor)
+    return {
+        'id': predictor.get('id'),
+        'name': predictor.get('name') or '',
+        'enabled': bool(predictor.get('enabled')),
+        'auto_paused': bool(predictor.get('auto_paused')),
+        'runtime_status': runtime_status,
+        'runtime_status_label': runtime_status_label,
+        'fallback_strategy': predictor.get('user_algorithm_fallback_strategy') or 'fail',
+        'prediction_targets': normalize_prediction_targets('jingcai_football', predictor.get('prediction_targets')),
+        'updated_at': utc_to_beijing(predictor['updated_at']) if predictor.get('updated_at') else None
+    }
+
+
+def _resolve_recent_user_algorithm_backtest(algorithm_id: int, user_id: int, active_version: int) -> dict:
+    versions = db.get_user_algorithm_versions_for_user(algorithm_id, user_id)
+    active_row = next((item for item in versions if int(item.get('version') or 0) == active_version), None)
+    candidates = [active_row] if active_row else []
+    candidates.extend(item for item in versions if item is not active_row)
+    for item in candidates:
+        backtest = (item or {}).get('backtest') or {}
+        if backtest:
+            return {
+                'version': int(item.get('version') or 0),
+                'backtest': backtest,
+                'summary': _summarize_user_algorithm_backtest(backtest),
+                'created_at': utc_to_beijing(item['created_at']) if item.get('created_at') else None
+            }
+    return {
+        'version': active_version,
+        'backtest': {},
+        'summary': _summarize_user_algorithm_backtest({}),
+        'created_at': None
+    }
+
+
+def _build_user_algorithm_risk_summary(backtest: dict, logs: list[dict], bound_predictors: list[dict]) -> dict:
+    confidence = backtest.get('confidence_report') or {}
+    risk_flags = list(backtest.get('risk_flags') or [])
+    failed_logs = [item for item in logs if item.get('status') in {'failed', 'fallback_succeeded'}]
+    if failed_logs:
+        risk_flags.append('最近执行出现失败或降级，请优先检查执行日志。')
+    if not bound_predictors:
+        risk_flags.append('当前算法还没有绑定预测方案，无法形成生产执行闭环。')
+    if not backtest:
+        risk_flags.append('当前版本暂无回测结果。')
+    risk_flags = list(dict.fromkeys(risk_flags))
+
+    level = confidence.get('level') or 'unknown'
+    score = confidence.get('score')
+    if failed_logs and level == 'high':
+        level = 'medium'
+    if not backtest or not bound_predictors or failed_logs:
+        label = '需关注'
+    else:
+        label = confidence.get('label') or '待观察'
+
+    return {
+        'level': level,
+        'label': label,
+        'score': score,
+        'flags': risk_flags,
+        'recent_failure_count': len(failed_logs),
+        'bound_predictor_count': len(bound_predictors)
+    }
+
+
+def _build_user_algorithm_ops_summary(algorithm: dict, user_id: int) -> dict:
+    active_version = int(algorithm.get('active_version') or 1)
+    versions = [
+        _serialize_user_algorithm_version(item, active_version=active_version)
+        for item in db.get_user_algorithm_versions_for_user(algorithm['id'], user_id)
+    ]
+    recent_backtest = _resolve_recent_user_algorithm_backtest(algorithm['id'], user_id, active_version)
+    logs = [
+        _serialize_user_algorithm_execution_log(item)
+        for item in db.get_user_algorithm_execution_logs_for_user(algorithm['id'], user_id, limit=10)
+    ]
+    bound_predictors = [
+        _serialize_bound_user_algorithm_predictor(item)
+        for item in db.get_predictors_using_user_algorithm(user_id, algorithm['id'])
+    ]
+    return {
+        'algorithm': _serialize_user_algorithm(algorithm),
+        'versions': {
+            'total': len(versions),
+            'active_version': active_version,
+            'recent': versions[:5]
+        },
+        'recent_backtest': recent_backtest,
+        'recent_execution_logs': logs,
+        'bound_predictors': bound_predictors,
+        'risk_summary': _build_user_algorithm_risk_summary(
+            recent_backtest.get('backtest') or {},
+            logs,
+            bound_predictors
+        )
+    }
+
+
+def _build_compare_backtest_metrics(backtest: dict) -> dict:
+    summary = _summarize_user_algorithm_backtest(backtest)
+    return {
+        'sample_size': summary['sample_size'],
+        'effective_sample_count': summary['effective_sample_count'],
+        'prediction_count': summary['prediction_count'],
+        'skip_rate': summary['skip_rate'],
+        'field_completeness_rate': summary['field_completeness_rate'],
+        'targets': summary['targets'],
+        'odds_interval_performance': backtest.get('odds_interval_performance') or {}
+    }
+
+
+def _build_odds_interval_delta(base_backtest: dict, candidate_backtest: dict) -> dict:
+    result = {}
+    base_map = base_backtest.get('odds_interval_performance') or {}
+    candidate_map = candidate_backtest.get('odds_interval_performance') or {}
+    for target in sorted(set(base_map) | set(candidate_map)):
+        base_ranges = {item.get('range'): item for item in base_map.get(target, [])}
+        candidate_ranges = {item.get('range'): item for item in candidate_map.get(target, [])}
+        result[target] = [
+            {
+                'range': range_key,
+                'sample_count': int((candidate_ranges.get(range_key) or {}).get('sample_count') or 0)
+                - int((base_ranges.get(range_key) or {}).get('sample_count') or 0),
+                'hit_rate': _numeric_delta(
+                    (candidate_ranges.get(range_key) or {}).get('hit_rate'),
+                    (base_ranges.get(range_key) or {}).get('hit_rate')
+                )
+            }
+            for range_key in sorted(set(base_ranges) | set(candidate_ranges))
+            if range_key
+        ]
+    return result
+
+
+def _build_user_algorithm_compare_payload(
+    base_version_row: dict,
+    candidate_version_row: dict,
+    base_backtest: dict,
+    candidate_backtest: dict,
+    filters: dict
+) -> dict:
+    base_metrics = _build_compare_backtest_metrics(base_backtest)
+    candidate_metrics = _build_compare_backtest_metrics(candidate_backtest)
+    return {
+        'base_version': int(base_version_row.get('version') or 0),
+        'candidate_version': int(candidate_version_row.get('version') or 0),
+        'filters': filters,
+        'base': base_metrics,
+        'candidate': candidate_metrics,
+        'delta': {
+            **_build_backtest_summary_delta(candidate_metrics, base_metrics),
+            'odds_interval_performance': _build_odds_interval_delta(base_backtest, candidate_backtest)
+        }
+    }
+
+
+def _diagnosis_status(level: str, label: str, findings: list[str]) -> dict:
+    return {
+        'level': level,
+        'label': label,
+        'findings': findings or ['未触发明显风险。']
+    }
+
+
+def _build_user_algorithm_diagnosis(backtest: dict) -> dict:
+    summary = _summarize_user_algorithm_backtest(backtest)
+    sample_findings = list((backtest.get('confidence_report') or {}).get('reasons') or [])
+    sample_level = 'ok'
+    if summary['effective_sample_count'] < 20:
+        sample_level = 'high_risk'
+    elif summary['effective_sample_count'] < 50:
+        sample_level = 'watch'
+
+    skip_rate = summary.get('skip_rate')
+    skip_findings = [
+        f"{item.get('label') or key}: {item.get('count')}"
+        for key, item in (backtest.get('skip_reason_stats') or {}).items()
+    ]
+    skip_level = 'ok'
+    if skip_rate is not None and skip_rate >= 70:
+        skip_level = 'high_risk'
+    elif skip_rate is not None and skip_rate >= 50:
+        skip_level = 'watch'
+
+    odds_findings = []
+    for target, intervals in (backtest.get('odds_interval_performance') or {}).items():
+        active = [item for item in intervals if int(item.get('sample_count') or 0) > 0]
+        if not active:
+            odds_findings.append(f'{target.upper()} 暂无可分析赔率区间。')
+            continue
+        odds_findings.extend(
+            f"{target.upper()} {item.get('range')}: {item.get('hit_rate') if item.get('hit_rate') is not None else '--'}% / {item.get('sample_count')} 场"
+            for item in active
+        )
+
+    drawdown_findings = []
+    drawdown_level = 'ok'
+    for target, item in (backtest.get('max_drawdown') or {}).items():
+        amount = item.get('amount')
+        drawdown_findings.append(f"{target.upper()} 最大回撤 {amount if amount is not None else '--'}")
+        if amount is not None and float(amount) >= 5:
+            drawdown_level = 'watch'
+
+    data_quality = backtest.get('data_quality') or {}
+    completeness = data_quality.get('field_completeness_rate')
+    data_quality_findings = [
+        f"字段完整率 {completeness if completeness is not None else '--'}%",
+        *[
+            f'{field}: 缺失 {count} 场'
+            for field, count in (data_quality.get('missing_field_stats') or {}).items()
+        ]
+    ]
+    data_quality_level = 'ok'
+    if completeness is None or completeness < 60:
+        data_quality_level = 'high_risk'
+    elif completeness < 80:
+        data_quality_level = 'watch'
+
+    actions = []
+    if sample_level != 'ok':
+        actions.append('先补齐更多已开奖历史样本，再判断算法优劣。')
+    if skip_level != 'ok':
+        actions.append('检查过滤条件和 min_confidence，优先降低无效跳过。')
+    if data_quality_level != 'ok':
+        actions.append('补齐近期战绩、赔率和伤停字段，避免评分退化为少数字段。')
+    if drawdown_level != 'ok':
+        actions.append('降低高波动赔率区间权重，或提高出手门槛。')
+    if not actions:
+        actions.append('保持当前 DSL 简洁，继续用同一筛选条件观察新版本表现。')
+
+    return {
+        'sample_quality': _diagnosis_status(sample_level, '样本质量', sample_findings),
+        'skip_analysis': _diagnosis_status(skip_level, '跳过分析', skip_findings),
+        'odds_analysis': _diagnosis_status('ok' if odds_findings else 'watch', '赔率区间', odds_findings),
+        'drawdown_analysis': _diagnosis_status(drawdown_level, '回撤分析', drawdown_findings),
+        'data_quality_analysis': _diagnosis_status(data_quality_level, '数据质量', data_quality_findings),
+        'recommended_actions': actions
+    }
+
+
 def _numeric_delta(current, previous):
     if current is None or previous is None:
         return None
@@ -3979,6 +4222,107 @@ def get_user_algorithm_execution_logs(algorithm_id: int):
         _serialize_user_algorithm_execution_log(item)
         for item in logs
     ])
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/ops-summary', methods=['GET'])
+@login_required
+def get_user_algorithm_ops_summary(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权访问'}), 404
+    return jsonify(_build_user_algorithm_ops_summary(algorithm, user_id))
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/compare-versions', methods=['POST'])
+@login_required
+def compare_user_algorithm_versions(algorithm_id: int):
+    user_id = get_current_user_id()
+    allowed, wait_seconds = _check_user_algorithm_backtest_rate_limit(user_id)
+    if not allowed:
+        return jsonify({'error': f'回测请求过于频繁，请 {wait_seconds} 秒后再试'}), 429
+
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权操作'}), 404
+    lottery_type = normalize_lottery_type(algorithm.get('lottery_type'))
+    if lottery_type != 'jingcai_football':
+        return jsonify({'error': '当前仅支持竞彩足球用户算法版本对比'}), 400
+
+    data = request.get_json() or {}
+    base_version = _parse_positive_int(data.get('base_version'), default=0, minimum=0, maximum=100000)
+    candidate_version = _parse_positive_int(data.get('candidate_version'), default=0, minimum=0, maximum=100000)
+    if not base_version or not candidate_version:
+        return jsonify({'error': 'base_version 和 candidate_version 不能为空'}), 400
+    if base_version == candidate_version:
+        return jsonify({'error': 'base_version 和 candidate_version 不能相同'}), 400
+
+    base_row = db.get_user_algorithm_version_for_user(algorithm_id, user_id, base_version)
+    candidate_row = db.get_user_algorithm_version_for_user(algorithm_id, user_id, candidate_version)
+    if not base_row or not candidate_row:
+        return jsonify({'error': '用户算法版本不存在或无权操作'}), 404
+
+    base_validation = validate_algorithm_definition(base_row.get('definition') or {}, lottery_type=lottery_type)
+    candidate_validation = validate_algorithm_definition(candidate_row.get('definition') or {}, lottery_type=lottery_type)
+    if not base_validation['valid']:
+        return jsonify({'error': f'基准版本 V{base_version} 校验未通过', 'validation': base_validation}), 400
+    if not candidate_validation['valid']:
+        return jsonify({'error': f'候选版本 V{candidate_version} 校验未通过', 'validation': candidate_validation}), 400
+
+    filters = _build_user_algorithm_backtest_filters(data, candidate_validation['normalized_definition'])
+    limit = _parse_positive_int(data.get('limit'), default=50, minimum=1, maximum=200)
+    base_backtest = backtest_jingcai_user_algorithm(
+        db,
+        base_validation['normalized_definition'],
+        limit=limit,
+        filters=filters
+    )
+    candidate_backtest = backtest_jingcai_user_algorithm(
+        db,
+        candidate_validation['normalized_definition'],
+        limit=limit,
+        filters=filters
+    )
+    return jsonify({
+        'message': '版本对比回测完成',
+        **_build_user_algorithm_compare_payload(
+            base_row,
+            candidate_row,
+            base_backtest,
+            candidate_backtest,
+            base_backtest.get('filters') or filters
+        )
+    })
+
+
+@app.route('/api/user-algorithms/<int:algorithm_id>/diagnose', methods=['POST'])
+@login_required
+def diagnose_user_algorithm(algorithm_id: int):
+    user_id = get_current_user_id()
+    algorithm = db.get_user_algorithm_for_user(algorithm_id, user_id)
+    if not algorithm:
+        return jsonify({'error': '用户算法不存在或无权操作'}), 404
+
+    data = request.get_json() or {}
+    version = _parse_positive_int(
+        data.get('version'),
+        default=int(algorithm.get('active_version') or 1),
+        minimum=1,
+        maximum=100000
+    )
+    version_row = db.get_user_algorithm_version_for_user(algorithm_id, user_id, version)
+    if not version_row:
+        return jsonify({'error': '用户算法版本不存在或无权操作'}), 404
+    backtest = version_row.get('backtest') or {}
+    if not backtest:
+        return jsonify({'error': '当前版本暂无回测结果，请先运行回测'}), 400
+
+    return jsonify({
+        'algorithm_id': algorithm_id,
+        'version': version,
+        'backtest_summary': _summarize_user_algorithm_backtest(backtest),
+        'diagnosis': _build_user_algorithm_diagnosis(backtest)
+    })
 
 
 @app.route('/api/user-algorithms/<int:algorithm_id>/version-comparison', methods=['GET'])
