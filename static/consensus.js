@@ -5,6 +5,7 @@
     const SCOPE = window.CONSENSUS_PAGE_SCOPE || 'user';
     const LOTTERY_TYPE = 'jingcai_football';
     const LS_AI_CONFIG_KEY = 'consensus_ai_config';
+    const LS_INTRO_DISMISSED_KEY = 'consensus_intro_dismissed_v1';
 
     let currentAnalysis = null;
     let currentTodayDetail = null;  // /api/consensus/today-detail 返回的明细
@@ -164,12 +165,12 @@
                 // 粗粒度桶展示
                 let coarseHtml;
                 if (f.historical_rate == null || (f.historical_sample || 0) === 0) {
-                    coarseHtml = `<span class="rate-coarse na" title="历史上没有 ${f.agree_count} 个方案在该字段共同预测「${f.consensus_value}」的样本">无历史样本</span>`;
+                    coarseHtml = `<span class="rate-coarse na" title="历史上没有 ${f.agree_count} 个方案在该字段共同预测「${f.consensus_value}」的样本，无法判断可信度">⚠️ 无历史样本</span>`;
                 } else if (!f.is_reliable) {
-                    coarseHtml = `<span class="rate-coarse weak" title="样本量 ${f.historical_sample} 条，少于阈值 ${f.reliability_threshold}，仅供参考">${fmtRate(f.historical_rate)} <small>(n=${f.historical_sample})</small></span>`;
+                    coarseHtml = `<span class="rate-coarse weak" title="只有 ${f.historical_sample} 条样本（少于 ${f.reliability_threshold}），数字可能是巧合，不可作为决策依据。请看下方"实际组合"。">⚠️ ${fmtRate(f.historical_rate)} <small>(n=${f.historical_sample}，样本不足)</small></span>`;
                 } else {
                     const cls = (f.historical_rate || 0) >= 50 ? '' : 'low';
-                    coarseHtml = `<span class="rate-coarse ${cls}">${fmtRate(f.historical_rate)} <small>(n=${f.historical_sample})</small></span>`;
+                    coarseHtml = `<span class="rate-coarse ${cls}" title="${f.historical_sample} 条样本足够支撑这个数字，可作参考">${fmtRate(f.historical_rate)} <small>(n=${f.historical_sample})</small></span>`;
                 }
 
                 // 实际组合展示
@@ -183,7 +184,7 @@
                         return `<li><span class="pair-names">${escapeHtml(names)}</span><span class="pair-rate ${cls}">${fmtRate(p.rate)} <small>(n=${p.total})</small></span></li>`;
                     }).join('');
                     pairHtml = `
-                        <details class="pair-breakdown">
+                        <details class="pair-breakdown" title="点击展开本场具体支持方案的两两组合历史命中率，比桶率更能反映这几个方案的真实质量">
                             <summary>
                                 实际组合平均 <strong class="${avgClass}">${fmtRate(pb.avg_rate)}</strong>
                                 ${reliableTag}
@@ -207,7 +208,7 @@
                             </div>
                         </div>
                         <div class="field-rate-row">
-                            <span class="rate-label" title="同样数量的任意方案在该字段一致预测同值的历史平均命中率">桶率</span>
+                            <span class="rate-label" title="桶率：历史上「N 方案一致预测此值」的平均命中率，不区分是哪些方案。样本足时反映群体规律，样本少时仅供参考。">桶率</span>
                             ${coarseHtml}
                         </div>
                         ${pairHtml}
@@ -774,8 +775,26 @@
         rulesDeleteBtn.addEventListener('click', deleteRules);
     }
 
+    // ============= 新手指南 =============
+    function setupIntroGuide() {
+        const introGuide = $('introGuide');
+        const introCloseBtn = $('introCloseBtn');
+        if (!introGuide || !introCloseBtn) return;
+
+        // 检查 localStorage 决定是否显示
+        if (localStorage.getItem(LS_INTRO_DISMISSED_KEY) === '1') {
+            introGuide.hidden = true;
+            return;
+        }
+        introCloseBtn.addEventListener('click', () => {
+            introGuide.hidden = true;
+            localStorage.setItem(LS_INTRO_DISMISSED_KEY, '1');
+        });
+    }
+
     // ---------- 启动 ----------
     function init() {
+        setupIntroGuide();
         setupTabs();
         setupEvents();
         setupAIToggle();

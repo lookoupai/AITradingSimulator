@@ -1,5 +1,122 @@
 /* 共识分析页面专用样式 */
 
+/* ============= 新手指南 ============= */
+.intro-panel {
+    background: linear-gradient(135deg, rgba(108, 156, 255, 0.06), rgba(102, 192, 144, 0.04));
+    border: 1px solid rgba(108, 156, 255, 0.2);
+}
+.intro-header h3 {
+    color: #6c9cff;
+}
+.intro-header h3 i {
+    color: #ffa726;
+    margin-right: 4px;
+}
+.intro-close-btn {
+    padding: 4px 8px !important;
+    font-size: 0.85rem;
+}
+.intro-body {
+    padding-top: 4px;
+}
+.intro-lead {
+    margin: 0 0 14px 0;
+    line-height: 1.7;
+    font-size: 0.92rem;
+}
+.intro-lead strong {
+    color: #6c9cff;
+}
+.intro-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.intro-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    padding: 12px 14px;
+}
+.intro-card-title {
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 8px;
+}
+.intro-card-body {
+    font-size: 0.85rem;
+    line-height: 1.6;
+}
+.intro-card-body strong {
+    color: var(--text, #fff);
+    display: block;
+    margin-bottom: 6px;
+}
+.intro-card-note {
+    color: var(--muted, #999);
+    margin: 6px 0;
+    font-size: 0.8rem;
+}
+.intro-card-note em {
+    font-style: normal;
+    color: #6c9cff;
+}
+.intro-warning {
+    background: rgba(255, 167, 38, 0.1);
+    border: 1px solid rgba(255, 167, 38, 0.25);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-top: 8px;
+    font-size: 0.78rem;
+    color: #ffa726;
+    line-height: 1.55;
+}
+.intro-tip {
+    background: rgba(102, 192, 144, 0.1);
+    border: 1px solid rgba(102, 192, 144, 0.25);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-top: 8px;
+    font-size: 0.78rem;
+    color: #66c090;
+    line-height: 1.55;
+}
+.intro-tip strong { color: #66c090; display: inline; }
+.intro-steps {
+    margin: 6px 0 0 0;
+    padding-left: 18px;
+    font-size: 0.82rem;
+    line-height: 1.7;
+}
+.intro-steps li { margin-bottom: 2px; }
+.intro-chip {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    margin: 0 2px;
+}
+.intro-chip.green {
+    background: rgba(102, 192, 144, 0.18);
+    color: #66c090;
+}
+.intro-footnote {
+    color: var(--muted, #888);
+    font-size: 0.78rem;
+    margin: 12px 0 0 0;
+    padding: 8px 12px;
+    border-top: 1px dashed rgba(255, 255, 255, 0.08);
+    text-align: center;
+}
+
+.panel-tip {
+    display: inline-block;
+    margin-top: 4px;
+    color: #66c090;
+    font-size: 0.82rem;
+}
+
 .consensus-chip-list {
     display: flex;
     flex-wrap: wrap;

@@ -57,6 +57,78 @@
 
         <main class="pc28-main">
 
+            <!-- 新手指南（可关闭） -->
+            <section class="panel intro-panel" id="introGuide">
+                <div class="panel-header intro-header">
+                    <div>
+                        <h3><i class="bi bi-lightbulb"></i> 怎么看这个页面（新手必读）</h3>
+                    </div>
+                    <button class="btn ghost intro-close-btn" id="introCloseBtn" type="button" title="不再显示">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
+                <div class="intro-body">
+                    <p class="intro-lead">
+                        这里是<strong>多方案共识分析</strong>页面。它不预测比赛，而是把所有方案的预测**汇总**起来，
+                        告诉你<strong>哪些场比赛多个方案说法一致</strong>、以及<strong>历史上这种"几方案一致"靠不靠谱</strong>。
+                    </p>
+
+                    <div class="intro-grid">
+                        <div class="intro-card">
+                            <div class="intro-card-title">📊 桶率</div>
+                            <div class="intro-card-body">
+                                <strong>"过去 N 个方案一起预测同一结果时，整体命中多少？"</strong>
+                                <p class="intro-card-note">这是<em>群体规律</em>，不区分是哪些方案。</p>
+                                <div class="intro-warning">
+                                    ⚠️ 当样本数 < 20 时不可靠，会标黄、用斜体显示。
+                                    例如 "100% (n=5)"——5 次都对了，可能只是巧合。
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="intro-card">
+                            <div class="intro-card-title">🤝 实际组合</div>
+                            <div class="intro-card-body">
+                                <strong>"本场支持共识的这几个具体方案，过去两两组合时命中多少？"</strong>
+                                <p class="intro-card-note">这才能反映<em>"是哪几个方案"</em>的真实质量。</p>
+                                <div class="intro-tip">
+                                    💡 <strong>这是更值得参考的数字</strong>。
+                                    如果桶率 36%、但实际组合 avg 68%，说明本场是"强方案集合一致"，比平均水平好。
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="intro-card">
+                            <div class="intro-card-title">🎯 怎么决策</div>
+                            <div class="intro-card-body">
+                                <strong>看绿色高亮卡 + 实际组合 ≥ 50%</strong>
+                                <ol class="intro-steps">
+                                    <li>先看是否被<span class="intro-chip green">绿色高亮</span>（说明方案数和命中率都达标）</li>
+                                    <li>展开"实际组合"看看 avg 是否远高于桶率</li>
+                                    <li>样本数 (n=) 越大越可信，n &lt; 20 慎用</li>
+                                </ol>
+                            </div>
+                        </div>
+
+                        <div class="intro-card">
+                            <div class="intro-card-title">🪄 我的规则（推荐）</div>
+                            <div class="intro-card-body">
+                                <strong>不想自己看数字？让 AI 帮你提炼规则。</strong>
+                                <p class="intro-card-note">
+                                    "我的规则"面板会基于你的方案池让 AI 写出 3-6 条决策建议，
+                                    自动评分今日哪场命中你的规则，并在方案池变动时提醒重生成。
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p class="intro-footnote">
+                        看完了？点右上角 <i class="bi bi-x-lg"></i> 关闭，下次不再显示。
+                        如果还有疑问，下面"AI 深度分析"面板可以问 AI（用你自己配的 API）。
+                    </p>
+                </div>
+            </section>
+
             <!-- 第一块：方案池 -->
             <section class="panel">
                 <div class="panel-header">
@@ -83,7 +155,10 @@
                     <div>
                         <h3>今日共识推荐</h3>
                         <p class="panel-subtitle">
-                            对每场未结算比赛，找出多数方案的共识值，并参考历史"共识=N 时该值的命中率"作为打分依据。
+                            每场比赛都列出<strong>多数方案的共识值</strong>，并附上两个可信度参考：<br>
+                            ① <strong>桶率</strong> = 历史上"N 方案一致预测此值"的整体命中率（n &lt; 20 标黄不可信）<br>
+                            ② <strong>实际组合</strong> = 本场具体支持方案两两组合的历史命中率（更准确）<br>
+                            <span class="panel-tip">💡 当桶率与实际组合差距大时，以实际组合为准。绿色高亮 = 推荐关注。</span>
                         </p>
                     </div>
                     <div class="panel-actions consensus-filter-bar">
