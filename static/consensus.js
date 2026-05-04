@@ -400,44 +400,61 @@
         aiChatBox.scrollTop = aiChatBox.scrollHeight;
     }
 
+    // 公共：从 AI 配置表单读取设置；返回 {api_key,...} 或 {predictor_id}，失败返回 null（已 alert）
+    function readAIConfigFromForm() {
+        const useManual = document.querySelector('input[name="aiSource"][value="manual"]').checked;
+        if (useManual) {
+            const cfg = {
+                api_key: aiKeyInput.value.trim(),
+                api_url: aiUrlInput.value.trim(),
+                model_name: aiModelInput.value.trim(),
+                api_mode: aiModeSelect.value
+            };
+            if (!cfg.api_key || !cfg.api_url || !cfg.model_name) {
+                alert('请填写完整的 API Key / URL / 模型名');
+                expandAIPanel();
+                return null;
+            }
+            if (aiRememberInput.checked) {
+                localStorage.setItem(LS_AI_CONFIG_KEY, JSON.stringify(cfg));
+            } else {
+                localStorage.removeItem(LS_AI_CONFIG_KEY);
+            }
+            return cfg;
+        }
+        const pid = aiPredictorSelect.value;
+        if (!pid) {
+            alert('请先在下方"AI 深度分析"面板选择一个 AI 方案，或切换到自定义 API');
+            expandAIPanel();
+            return null;
+        }
+        return { predictor_id: parseInt(pid, 10) };
+    }
+
+    function expandAIPanel() {
+        if (aiPanelBody && aiPanelBody.hidden) {
+            aiPanelBody.hidden = false;
+            aiPanelToggleIcon.className = 'bi bi-chevron-up';
+            if (!currentTodayDetail) loadTodayDetail();
+            aiPanelBody.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
+
     async function sendChatMessage() {
         const message = aiChatInput.value.trim();
         if (!message) return;
 
-        const useManual = document.querySelector('input[name="aiSource"][value="manual"]').checked;
+        const config = readAIConfigFromForm();
+        if (!config) return;  // readAIConfigFromForm 内部已 alert
+
         const payload = {
             message: message,
             chat_history: chatHistory,
             consensus_summary: currentAnalysis,
             today_matches: (currentTodayDetail && currentTodayDetail.today_matches) || [],
-            history_sample: (currentTodayDetail && currentTodayDetail.history_sample) || []
+            history_sample: (currentTodayDetail && currentTodayDetail.history_sample) || [],
+            ...config
         };
-
-        if (useManual) {
-            payload.api_key = aiKeyInput.value.trim();
-            payload.api_url = aiUrlInput.value.trim();
-            payload.model_name = aiModelInput.value.trim();
-            payload.api_mode = aiModeSelect.value;
-            if (!payload.api_key || !payload.api_url || !payload.model_name) {
-                alert('请填写完整的 API Key / URL / 模型名');
-                return;
-            }
-            if (aiRememberInput.checked) {
-                localStorage.setItem(LS_AI_CONFIG_KEY, JSON.stringify({
-                    api_key: payload.api_key, api_url: payload.api_url,
-                    model_name: payload.model_name, api_mode: payload.api_mode
-                }));
-            } else {
-                localStorage.removeItem(LS_AI_CONFIG_KEY);
-            }
-        } else {
-            const pid = aiPredictorSelect.value;
-            if (!pid) {
-                alert('请选择一个 AI 方案，或切换到自定义 API');
-                return;
-            }
-            payload.predictor_id = parseInt(pid, 10);
-        }
 
         appendChatMessage('user', message);
         chatHistory.push({ role: 'user', content: message });
@@ -491,12 +508,235 @@
         });
     }
 
+    // ============= "我的规则" 模块 =============
+    const rulesPanel = $('myRulesPanel');
+    const rulesGenerateBtn = $('rulesGenerateBtn');
+    const rulesGenerateBtnText = $('rulesGenerateBtnText');
+    const rulesDeleteBtn = $('rulesDeleteBtn');
+    const rulesEmptyState = $('rulesEmptyState');
+    const rulesContent = $('rulesContent');
+    const rulesDriftBanner = $('rulesDriftBanner');
+    const rulesSummary = $('rulesSummary');
+    const rulesList = $('rulesList');
+    const rulesTodayMatches = $('rulesTodayMatches');
+    const rulesTodayMatchesHeader = $('rulesTodayMatchesHeader');
+    const rulesTodayMatchesCount = $('rulesTodayMatchesCount');
+
+    async function loadMyRules() {
+        if (!rulesPanel) return;  // admin 视角没有这个 panel
+        try {
+            const res = await fetch('/api/consensus/rules?lottery_type=' + LOTTERY_TYPE);
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                console.warn('加载规则失败:', err);
+                showRulesEmptyState();
+                return;
+            }
+            const data = await res.json();
+            if (!data.has_rules) {
+                showRulesEmptyState();
+                return;
+            }
+            renderRules(data);
+            // 同时拉评分
+            loadRulesScore();
+        } catch (e) {
+            console.warn('加载规则异常:', e);
+            showRulesEmptyState();
+        }
+    }
+
+    function showRulesEmptyState() {
+        rulesEmptyState.hidden = false;
+        rulesContent.hidden = true;
+        rulesDeleteBtn.hidden = true;
+        rulesDriftBanner.hidden = true;
+        rulesGenerateBtnText.textContent = '用 AI 生成规则';
+    }
+
+    function renderRules(data) {
+        const rules = data.rules || {};
+        const drift = data.drift || {};
+
+        rulesEmptyState.hidden = true;
+        rulesContent.hidden = false;
+        rulesDeleteBtn.hidden = false;
+        rulesGenerateBtnText.textContent = '重新生成';
+
+        // 漂移提示
+        if (drift.is_drifted) {
+            rulesDriftBanner.hidden = false;
+            rulesDriftBanner.className = 'rules-drift-banner severity-' + (drift.severity || 'minor');
+            const addedNames = (drift.added || []).map(p => p.name).join('、');
+            const removedNames = (drift.removed || []).map(p => p.name).join('、');
+            const parts = [];
+            if (addedNames) parts.push(`新增了 ${addedNames}`);
+            if (removedNames) parts.push(`移除了 ${removedNames}`);
+            rulesDriftBanner.innerHTML = `
+                <i class="bi bi-exclamation-triangle"></i>
+                <div>
+                    <strong>方案池已变化（漂移 ${(drift.drift_ratio * 100).toFixed(0)}%）</strong>：${escapeHtml(parts.join('，'))}。
+                    规则的统计基础已不完整，建议点击右上角"重新生成"。
+                </div>
+            `;
+        } else {
+            rulesDriftBanner.hidden = true;
+        }
+
+        // Summary
+        const summary = rules.summary || '（AI 未生成整体描述）';
+        const meta = `生成于 ${rules.created_at || ''} · 模型 ${rules.generated_by_model || '未知'} · 基于 ${rules.sample_count || 0} 条样本`;
+        rulesSummary.innerHTML = `
+            <div>${escapeHtml(summary)}</div>
+            <div class="rules-meta">${escapeHtml(meta)}</div>
+        `;
+
+        // 规则卡片
+        const ruleItems = rules.rules || [];
+        if (!ruleItems.length) {
+            rulesList.innerHTML = '<div class="empty-panel">规则集为空</div>';
+            return;
+        }
+        rulesList.innerHTML = ruleItems.map(rule => {
+            const conf = rule.confidence || 'medium';
+            const action = rule.action || '参考';
+            const actionClass =
+                /反向|警惕|降低|忽略/.test(action) ? 'warn' :
+                /禁止|拒绝|危险/.test(action) ? 'danger' : '';
+            const fieldLabel = rule.field === 'spf' ? '胜平负' : (rule.field === 'rqspf' ? '让球胜平负' : rule.field);
+            const scorableBadge = rule.auto_scorable
+                ? '<span class="rule-badge scorable" title="可对今日自动评分">可评分</span>'
+                : '<span class="rule-badge not-scorable" title="自定义类型，不参与自动评分">仅展示</span>';
+            return `
+                <div class="rule-card confidence-${escapeHtml(conf)}">
+                    <div class="rule-card-header">
+                        <span class="rule-title">${escapeHtml(rule.title || '未命名规则')}</span>
+                        <span class="rule-badges">
+                            <span class="rule-badge field">${escapeHtml(fieldLabel)}</span>
+                            <span class="rule-badge confidence-${escapeHtml(conf)}">${escapeHtml(conf)}</span>
+                            ${scorableBadge}
+                        </span>
+                    </div>
+                    <div class="rule-condition">${escapeHtml(rule.condition_natural || '')}</div>
+                    <div class="rule-action ${actionClass}">→ ${escapeHtml(action)}</div>
+                    ${rule.rationale ? `<div class="rule-rationale">${escapeHtml(rule.rationale)}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function loadRulesScore() {
+        try {
+            const res = await fetch('/api/consensus/rules/score?lottery_type=' + LOTTERY_TYPE);
+            if (!res.ok) return;
+            const data = await res.json();
+            renderRulesScore(data);
+        } catch (e) {
+            console.warn('规则评分加载失败:', e);
+        }
+    }
+
+    function renderRulesScore(data) {
+        const matches = data.matched_matches || [];
+        const total = data.total_today_matches || 0;
+        if (!matches.length) {
+            rulesTodayMatchesHeader.hidden = true;
+            rulesTodayMatches.innerHTML = total > 0
+                ? `<div class="empty-panel">今天 ${total} 场未结算比赛中没有命中你的规则</div>`
+                : '';
+            return;
+        }
+        rulesTodayMatchesHeader.hidden = false;
+        rulesTodayMatchesCount.textContent = `${matches.length} / ${total} 场`;
+        rulesTodayMatches.innerHTML = matches.map(m => {
+            const ruleLines = m.matched_rules.map(r => {
+                const fieldLabel = r.field === 'spf' ? '胜平负' : (r.field === 'rqspf' ? '让球胜平负' : r.field);
+                const valueChip = r.consensus_value
+                    ? `<span class="small-chip">${escapeHtml(r.consensus_value)}</span>`
+                    : '';
+                return `
+                    <div class="matched-rule">
+                        <strong>${escapeHtml(r.rule_title)}</strong>
+                        <span class="small-chip">${escapeHtml(fieldLabel)}</span>
+                        ${valueChip}
+                        <span>→ ${escapeHtml(r.action || '')}</span>
+                    </div>
+                `;
+            }).join('');
+            return `
+                <div class="rules-match-card">
+                    <div class="match-title">${escapeHtml(m.title || m.event_key)}</div>
+                    ${ruleLines}
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function generateRules() {
+        if (!rulesPanel) return;
+        const config = readAIConfigFromForm();
+        if (!config) return;
+
+        rulesGenerateBtn.disabled = true;
+        const oldText = rulesGenerateBtnText.textContent;
+        rulesGenerateBtnText.textContent = '生成中...';
+
+        try {
+            const res = await fetch('/api/consensus/rules', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lottery_type: LOTTERY_TYPE,
+                    window_days: parseInt(windowSelect.value, 10) || 30,
+                    ...config
+                })
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                alert('生成失败：' + (err.error || `HTTP ${res.status}`));
+                return;
+            }
+            const data = await res.json();
+            renderRules(data);
+            loadRulesScore();
+        } catch (e) {
+            alert('请求失败：' + e.message);
+        } finally {
+            rulesGenerateBtn.disabled = false;
+            rulesGenerateBtnText.textContent = oldText;
+        }
+    }
+
+    async function deleteRules() {
+        if (!confirm('确认清空当前规则？这个操作不可撤销，但你随时可以让 AI 重新生成。')) {
+            return;
+        }
+        try {
+            const res = await fetch('/api/consensus/rules?lottery_type=' + LOTTERY_TYPE, { method: 'DELETE' });
+            if (!res.ok) {
+                alert('删除失败');
+                return;
+            }
+            showRulesEmptyState();
+        } catch (e) {
+            alert('删除失败：' + e.message);
+        }
+    }
+
+    function setupRulesEvents() {
+        if (!rulesPanel) return;
+        rulesGenerateBtn.addEventListener('click', generateRules);
+        rulesDeleteBtn.addEventListener('click', deleteRules);
+    }
+
     // ---------- 启动 ----------
     function init() {
         setupTabs();
         setupEvents();
         setupAIToggle();
+        setupRulesEvents();
         loadAnalysis();
+        loadMyRules();
     }
 
     if (document.readyState === 'loading') {

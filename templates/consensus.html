@@ -98,7 +98,42 @@
                 </div>
             </section>
 
-            <!-- 第三块：历史规律 -->
+            <!-- 第三块：我的规则（AI 个性化）—— 仅 scope=user 显示 -->
+            {% if scope == 'user' %}
+            <section class="panel" id="myRulesPanel">
+                <div class="panel-header">
+                    <div>
+                        <h3><i class="bi bi-magic"></i> 我的规则（AI 个性化）</h3>
+                        <p class="panel-subtitle">基于你当前方案池和历史数据生成的可操作决策规则。规则保存在你的账号下，方案池变动时会提示重生成。</p>
+                    </div>
+                    <div class="panel-actions">
+                        <button class="btn ghost" id="rulesGenerateBtn" type="button">
+                            <i class="bi bi-stars"></i>
+                            <span id="rulesGenerateBtnText">用 AI 生成规则</span>
+                        </button>
+                        <button class="btn ghost" id="rulesDeleteBtn" type="button" hidden>
+                            <i class="bi bi-trash"></i> 清空
+                        </button>
+                    </div>
+                </div>
+                <div id="rulesDriftBanner" class="rules-drift-banner" hidden></div>
+                <div id="rulesEmptyState" class="empty-panel">
+                    还没有规则。点击右上角"用 AI 生成规则"，AI 会基于你当前方案池和最近 30 天数据生成专属决策建议。<br>
+                    AI 配置可在下方"AI 深度分析"面板里设置（也可手动填）。
+                </div>
+                <div id="rulesContent" hidden>
+                    <div id="rulesSummary" class="rules-summary"></div>
+                    <div id="rulesList" class="rules-list"></div>
+                    <div id="rulesTodayMatchesHeader" class="rules-today-header" hidden>
+                        <strong>今日命中你规则的比赛</strong>
+                        <span id="rulesTodayMatchesCount" class="rules-today-count"></span>
+                    </div>
+                    <div id="rulesTodayMatches" class="rules-today-matches"></div>
+                </div>
+            </section>
+            {% endif %}
+
+            <!-- 第四块：历史规律 -->
             <section class="panel">
                 <div class="panel-header">
                     <div>

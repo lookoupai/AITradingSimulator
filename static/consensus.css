@@ -245,3 +245,159 @@
     .consensus-ai-save { grid-column: span 1; }
     .consensus-today-list { grid-template-columns: 1fr; }
 }
+
+/* ============= "我的规则" panel ============= */
+
+.rules-drift-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: rgba(255, 167, 38, 0.1);
+    border: 1px solid rgba(255, 167, 38, 0.4);
+    color: #ffa726;
+    font-size: 0.85rem;
+    margin-bottom: 12px;
+    line-height: 1.5;
+}
+.rules-drift-banner.severity-major {
+    background: rgba(229, 115, 115, 0.1);
+    border-color: rgba(229, 115, 115, 0.5);
+    color: #e57373;
+}
+
+.rules-summary {
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-left: 3px solid #6c9cff;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 0.92rem;
+    line-height: 1.6;
+    margin-bottom: 12px;
+}
+
+.rules-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 10px;
+    margin-bottom: 16px;
+}
+.rule-card {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.02);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.rule-card.confidence-high { border-left: 4px solid #66c090; }
+.rule-card.confidence-medium { border-left: 4px solid #6c9cff; }
+.rule-card.confidence-low { border-left: 4px solid #ffa726; }
+
+.rule-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+}
+.rule-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+.rule-badges {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.rule-badge {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(108, 156, 255, 0.18);
+    color: #6c9cff;
+}
+.rule-badge.field { background: rgba(255, 255, 255, 0.06); color: var(--muted, #888); }
+.rule-badge.confidence-high { background: rgba(102, 192, 144, 0.18); color: #66c090; }
+.rule-badge.confidence-low { background: rgba(255, 167, 38, 0.18); color: #ffa726; }
+.rule-badge.scorable { background: rgba(102, 192, 144, 0.12); color: #66c090; }
+.rule-badge.not-scorable { background: rgba(255, 255, 255, 0.05); color: var(--muted, #888); }
+
+.rule-condition {
+    color: var(--muted, #aaa);
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+.rule-action {
+    font-size: 0.85rem;
+    color: #66c090;
+    font-weight: 500;
+}
+.rule-action.warn { color: #ffa726; }
+.rule-action.danger { color: #e57373; }
+
+.rule-rationale {
+    color: var(--muted, #888);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    border-top: 1px dashed rgba(255, 255, 255, 0.08);
+    padding-top: 6px;
+    margin-top: 2px;
+}
+
+.rules-today-header {
+    margin: 4px 0 8px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 0.92rem;
+}
+.rules-today-count {
+    color: var(--muted, #888);
+    font-size: 0.78rem;
+}
+
+.rules-today-matches {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 8px;
+}
+.rules-match-card {
+    background: rgba(102, 192, 144, 0.06);
+    border: 1px solid rgba(102, 192, 144, 0.25);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+.rules-match-card .match-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 6px;
+}
+.rules-match-card .matched-rule {
+    font-size: 0.78rem;
+    color: var(--muted, #aaa);
+    padding: 3px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.rules-match-card .matched-rule strong {
+    color: #66c090;
+}
+.rules-match-card .matched-rule .small-chip {
+    background: rgba(108, 156, 255, 0.15);
+    color: #6c9cff;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+}
+
+.rules-meta {
+    color: var(--muted, #888);
+    font-size: 0.75rem;
+    margin-top: 6px;
+}

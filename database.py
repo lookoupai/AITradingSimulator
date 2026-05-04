@@ -590,6 +590,27 @@ class Database:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS user_consensus_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                lottery_type TEXT NOT NULL DEFAULT 'jingcai_football',
+                rules_json TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                predictor_pool_snapshot TEXT NOT NULL DEFAULT '[]',
+                window_days INTEGER,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                generated_by_model TEXT NOT NULL DEFAULT '',
+                raw_prompt TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, lottery_type)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS scheduler_state (
                 name TEXT PRIMARY KEY,
                 owner_id TEXT NOT NULL,
@@ -612,6 +633,7 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status, issue_no)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pc28_prediction_daily_summary_predictor ON pc28_prediction_daily_summary(predictor_id, summary_date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_jingcai_prediction_daily_summary_predictor ON jingcai_prediction_daily_summary(predictor_id, summary_date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_consensus_rules_user ON user_consensus_rules(user_id, lottery_type)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictor_runtime_state_paused ON predictor_runtime_state(auto_paused, predictor_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_algorithms_user ON user_algorithms(user_id, lottery_type, status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_algorithm_versions_algorithm ON user_algorithm_versions(algorithm_id, version)')
@@ -1548,6 +1570,124 @@ class Database:
         )
         conn.commit()
         conn.close()
+
+    # ============= user_consensus_rules CRUD =============
+
+    def save_user_consensus_rules(
+        self,
+        *,
+        user_id: int,
+        lottery_type: str,
+        rules: list,
+        summary: str,
+        predictor_pool_snapshot: list,
+        window_days: int | None,
+        sample_count: int,
+        generated_by_model: str,
+        raw_prompt: str | None = None
+    ) -> int:
+        """INSERT OR REPLACE：每个用户每彩种只保留一份当前规则。"""
+        normalized_lottery = normalize_lottery_type(lottery_type)
+        rules_json = json.dumps(rules or [], ensure_ascii=False)
+        snapshot_json = json.dumps(predictor_pool_snapshot or [], ensure_ascii=False)
+        # raw_prompt 截断 4KB，防止表膨胀
+        prompt_text = (raw_prompt or '')[:4096]
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                INSERT INTO user_consensus_rules (
+                    user_id, lottery_type, rules_json, summary,
+                    predictor_pool_snapshot, window_days, sample_count,
+                    generated_by_model, raw_prompt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, lottery_type) DO UPDATE SET
+                    rules_json = excluded.rules_json,
+                    summary = excluded.summary,
+                    predictor_pool_snapshot = excluded.predictor_pool_snapshot,
+                    window_days = excluded.window_days,
+                    sample_count = excluded.sample_count,
+                    generated_by_model = excluded.generated_by_model,
+                    raw_prompt = excluded.raw_prompt,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    int(user_id), normalized_lottery, rules_json,
+                    str(summary or '').strip(),
+                    snapshot_json,
+                    int(window_days) if window_days is not None else None,
+                    int(sample_count or 0),
+                    str(generated_by_model or '').strip(),
+                    prompt_text
+                )
+            )
+            conn.commit()
+            cursor.execute(
+                'SELECT id FROM user_consensus_rules WHERE user_id = ? AND lottery_type = ?',
+                (int(user_id), normalized_lottery)
+            )
+            row = cursor.fetchone()
+            return int(row['id']) if row else 0
+        finally:
+            conn.close()
+
+    def get_user_consensus_rules(self, user_id: int, lottery_type: str) -> Optional[dict]:
+        """返回包含 rules / snapshot 已解析的 dict；不存在返回 None。"""
+        normalized_lottery = normalize_lottery_type(lottery_type)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                SELECT * FROM user_consensus_rules
+                WHERE user_id = ? AND lottery_type = ?
+                LIMIT 1
+                ''',
+                (int(user_id), normalized_lottery)
+            )
+            row = cursor.fetchone()
+        finally:
+            conn.close()
+
+        if not row:
+            return None
+        try:
+            rules = json.loads(row['rules_json'] or '[]')
+        except (TypeError, ValueError):
+            rules = []
+        try:
+            snapshot = json.loads(row['predictor_pool_snapshot'] or '[]')
+        except (TypeError, ValueError):
+            snapshot = []
+        return {
+            'id': row['id'],
+            'user_id': row['user_id'],
+            'lottery_type': row['lottery_type'],
+            'rules': rules,
+            'summary': row['summary'] or '',
+            'predictor_pool_snapshot': snapshot,
+            'window_days': row['window_days'],
+            'sample_count': row['sample_count'],
+            'generated_by_model': row['generated_by_model'] or '',
+            'created_at': row['created_at'],
+            'updated_at': row['updated_at']
+        }
+
+    def delete_user_consensus_rules(self, user_id: int, lottery_type: str) -> bool:
+        normalized_lottery = normalize_lottery_type(lottery_type)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'DELETE FROM user_consensus_rules WHERE user_id = ? AND lottery_type = ?',
+                (int(user_id), normalized_lottery)
+            )
+            conn.commit()
+            return (cursor.rowcount or 0) > 0
+        finally:
+            conn.close()
 
     def run_pc28_data_retention_maintenance(self, prediction_retention_days: int, draw_retention_days: int) -> dict:
         prediction_retention_days = max(1, int(prediction_retention_days or 1))

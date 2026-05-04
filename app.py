@@ -5276,34 +5276,12 @@ def api_consensus_chat():
     if not user_message:
         return jsonify({'error': '请输入问题'}), 400
 
-    # 解析 AI 配置：优先用户手填，其次复用某个方案
-    api_key = str(data.get('api_key') or '').strip()
-    api_url = str(data.get('api_url') or '').strip()
-    model_name = str(data.get('model_name') or '').strip()
-    api_mode = normalize_api_mode(data.get('api_mode') or 'auto')
-    predictor_id = data.get('predictor_id')
-
-    if not (api_key and api_url and model_name) and predictor_id:
-        # 从指定方案读取 AI 配置
-        try:
-            predictor_id_int = int(predictor_id)
-        except (TypeError, ValueError):
-            return jsonify({'error': '无效的 predictor_id'}), 400
-        predictor = db.get_predictor(predictor_id_int, include_secret=True)
-        if not predictor:
-            return jsonify({'error': '方案不存在'}), 404
-        # 仅允许使用自己的方案，或管理员任意方案
-        current_uid = get_current_user_id()
-        if int(predictor.get('user_id') or 0) != int(current_uid) and not get_current_user_is_admin():
-            return jsonify({'error': '无权使用该方案的 AI 配置'}), 403
-        api_key = api_key or str(predictor.get('api_key') or '').strip()
-        api_url = api_url or str(predictor.get('api_url') or '').strip()
-        model_name = model_name or str(predictor.get('model_name') or '').strip()
-        if not (data.get('api_mode')):
-            api_mode = normalize_api_mode(predictor.get('api_mode') or 'auto')
-
-    if not api_key or not api_url or not model_name:
-        return jsonify({'error': '缺少 AI 配置（api_key/api_url/model_name）'}), 400
+    try:
+        api_key, api_url, model_name, api_mode = _resolve_ai_config_for_user(data)
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     consensus_summary = data.get('consensus_summary') if isinstance(data.get('consensus_summary'), dict) else None
     today_matches = data.get('today_matches') if isinstance(data.get('today_matches'), list) else []
@@ -5327,6 +5305,43 @@ def api_consensus_chat():
         return jsonify({'error': f'AI 调用失败: {exc}'}), 500
 
     return jsonify(result)
+
+
+def _resolve_ai_config_for_user(data: dict) -> tuple[str, str, str, str]:
+    """
+    从请求 body 中解析 AI 配置：优先用户手填，否则从 predictor_id 指向的方案读取。
+    返回 (api_key, api_url, model_name, api_mode)。
+    错误情况：
+      - 方案不存在 / 无权访问 -> raise PermissionError
+      - 无效 predictor_id / 配置不全 -> raise ValueError
+    """
+    api_key = str(data.get('api_key') or '').strip()
+    api_url = str(data.get('api_url') or '').strip()
+    model_name = str(data.get('model_name') or '').strip()
+    api_mode = normalize_api_mode(data.get('api_mode') or 'auto')
+    predictor_id = data.get('predictor_id')
+
+    if not (api_key and api_url and model_name) and predictor_id:
+        try:
+            predictor_id_int = int(predictor_id)
+        except (TypeError, ValueError):
+            raise ValueError('无效的 predictor_id')
+        predictor = db.get_predictor(predictor_id_int, include_secret=True)
+        if not predictor:
+            raise PermissionError('方案不存在或无权访问')
+        current_uid = get_current_user_id()
+        if int(predictor.get('user_id') or 0) != int(current_uid) and not get_current_user_is_admin():
+            raise PermissionError('无权使用该方案的 AI 配置')
+        api_key = api_key or str(predictor.get('api_key') or '').strip()
+        api_url = api_url or str(predictor.get('api_url') or '').strip()
+        model_name = model_name or str(predictor.get('model_name') or '').strip()
+        if not data.get('api_mode'):
+            api_mode = normalize_api_mode(predictor.get('api_mode') or 'auto')
+
+    if not api_key or not api_url or not model_name:
+        raise ValueError('缺少 AI 配置（api_key/api_url/model_name）')
+
+    return api_key, api_url, model_name, api_mode
 
 
 @app.route('/api/export/consensus/<lottery_type>', methods=['GET'])
@@ -5355,6 +5370,212 @@ def export_consensus(lottery_type: str):
         return jsonify({'error': f'导出失败: {exc}'}), 500
 
     return jsonify(build_export_envelope(analysis, scope=scope))
+
+
+# ============= 个性化共识规则 API =============
+
+@app.route('/api/consensus/rules', methods=['GET'])
+@login_required
+def api_get_consensus_rules():
+    """返回当前用户的规则与方案池漂移信息。"""
+    from services.consensus_rules_service import detect_pool_drift
+
+    user_id = get_current_user_id()
+    lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
+    if lottery_type != 'jingcai_football':
+        return jsonify({'error': '当前只支持竞彩足球的规则功能'}), 400
+
+    rules_row = db.get_user_consensus_rules(user_id, lottery_type)
+    if not rules_row:
+        return jsonify({'has_rules': False})
+
+    # 当前方案池
+    try:
+        analysis = build_consensus_analysis(
+            db, user_id=user_id, lottery_type=lottery_type,
+            time_window_days=rules_row.get('window_days') or 30
+        )
+    except Exception as exc:
+        runtime_logger.exception('查询规则时构建当前共识分析失败: %s', exc)
+        analysis = {'predictors': [], 'sample_count': 0}
+
+    drift = detect_pool_drift(
+        snapshot=rules_row.get('predictor_pool_snapshot') or [],
+        current_pool=analysis.get('predictors') or []
+    )
+    return jsonify({
+        'has_rules': True,
+        'rules': rules_row,
+        'drift': drift,
+        'current_sample_count': analysis.get('sample_count') or 0
+    })
+
+
+@app.route('/api/consensus/rules', methods=['POST'])
+@login_required
+def api_generate_consensus_rules():
+    """调 AI 生成规则并保存。"""
+    from services.consensus_rules_service import generate_consensus_rules, MIN_SAMPLE_COUNT
+
+    data = request.get_json() or {}
+    lottery_type = normalize_lottery_type(data.get('lottery_type') or 'jingcai_football')
+    if lottery_type != 'jingcai_football':
+        return jsonify({'error': '当前只支持竞彩足球的规则功能'}), 400
+
+    try:
+        api_key, api_url, model_name, api_mode = _resolve_ai_config_for_user(data)
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    user_id = get_current_user_id()
+    window_days = data.get('window_days')
+    try:
+        window_days_int = int(window_days) if window_days is not None else 30
+    except (TypeError, ValueError):
+        window_days_int = 30
+
+    try:
+        analysis = build_consensus_analysis(
+            db, user_id=user_id, lottery_type=lottery_type,
+            time_window_days=window_days_int
+        )
+    except Exception as exc:
+        runtime_logger.exception('生成规则前构建共识分析失败: %s', exc)
+        return jsonify({'error': f'分析失败: {exc}'}), 500
+
+    sample_count = int(analysis.get('settled_item_count') or 0)
+    if sample_count < MIN_SAMPLE_COUNT:
+        return jsonify({
+            'error': f'样本量不足（{sample_count} 条），至少需要 {MIN_SAMPLE_COUNT} 条已结算预测才能生成稳定的规则'
+        }), 400
+
+    user_message = str(data.get('message') or '').strip()
+    try:
+        gen_result = generate_consensus_rules(
+            api_key=api_key,
+            api_url=api_url,
+            model_name=model_name,
+            api_mode=api_mode,
+            consensus_summary=analysis,
+            user_message=user_message,
+            temperature=0.3
+        )
+    except Exception as exc:
+        runtime_logger.exception('AI 生成规则失败: %s', exc)
+        return jsonify({'error': f'AI 生成失败: {exc}'}), 500
+
+    # 保存到 DB
+    try:
+        db.save_user_consensus_rules(
+            user_id=user_id,
+            lottery_type=lottery_type,
+            rules=gen_result['rules'],
+            summary=gen_result.get('summary') or '',
+            predictor_pool_snapshot=analysis.get('predictors') or [],
+            window_days=window_days_int,
+            sample_count=sample_count,
+            generated_by_model=gen_result.get('response_model') or model_name,
+            raw_prompt=gen_result.get('prompt')
+        )
+    except Exception as exc:
+        runtime_logger.exception('保存规则失败: %s', exc)
+        return jsonify({'error': f'保存失败: {exc}'}), 500
+
+    saved = db.get_user_consensus_rules(user_id, lottery_type)
+    return jsonify({
+        'has_rules': True,
+        'rules': saved,
+        'drift': {
+            'is_drifted': False, 'added': [], 'removed': [],
+            'drift_ratio': 0.0, 'severity': 'none'
+        },
+        'current_sample_count': sample_count,
+        'generation_meta': {
+            'response_model': gen_result.get('response_model'),
+            'api_mode': gen_result.get('api_mode'),
+            'finish_reason': gen_result.get('finish_reason'),
+            'latency_ms': gen_result.get('latency_ms')
+        }
+    })
+
+
+@app.route('/api/consensus/rules', methods=['DELETE'])
+@login_required
+def api_delete_consensus_rules():
+    """清空当前用户的规则。"""
+    user_id = get_current_user_id()
+    lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
+    deleted = db.delete_user_consensus_rules(user_id, lottery_type)
+    return jsonify({'deleted': bool(deleted)})
+
+
+@app.route('/api/consensus/rules/score', methods=['GET'])
+@login_required
+def api_score_consensus_rules():
+    """对今日比赛跑一遍规则评分（不调 AI，纯静态）。"""
+    from services.consensus_rules_service import score_today_against_rules
+    from services.consensus_analysis_service import (
+        _select_predictor_pool, _fetch_prediction_items, _group_by_match
+    )
+
+    user_id = get_current_user_id()
+    lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
+    if lottery_type != 'jingcai_football':
+        return jsonify({'error': '当前只支持竞彩足球'}), 400
+
+    rules_row = db.get_user_consensus_rules(user_id, lottery_type)
+    if not rules_row:
+        return jsonify({'has_rules': False, 'matched_matches': []})
+
+    # 当前 analysis（拿 today_recommendations）
+    try:
+        analysis = build_consensus_analysis(
+            db, user_id=user_id, lottery_type=lottery_type,
+            time_window_days=rules_row.get('window_days') or 30
+        )
+    except Exception as exc:
+        runtime_logger.exception('规则评分构建分析失败: %s', exc)
+        return jsonify({'error': f'分析失败: {exc}'}), 500
+
+    # 拿 today 明细（pair_agree 类规则需要）
+    pool = _select_predictor_pool(db, user_id=user_id, lottery_type=lottery_type)
+    pids = [p['id'] for p in pool]
+    today_items = _fetch_prediction_items(
+        db,
+        predictor_ids=pids,
+        lottery_type=lottery_type,
+        only_settled=False, only_pending=True,
+        time_window_days=None
+    )
+    today_grouped = _group_by_match(today_items)
+    today_matches_detail = []
+    for (run_key, event_key), items in today_grouped.items():
+        today_matches_detail.append({
+            'run_key': run_key,
+            'event_key': event_key,
+            'title': next((it.get('title') or '' for it in items), ''),
+            'predictions': [
+                {
+                    'predictor_id': it['predictor_id'],
+                    'prediction': it.get('prediction') or {},
+                    'hit': it.get('hit') or {}
+                }
+                for it in items
+            ]
+        })
+
+    matched = score_today_against_rules(
+        rules=rules_row.get('rules') or [],
+        today_recommendations=analysis.get('today_recommendations') or [],
+        today_matches_detail=today_matches_detail
+    )
+    return jsonify({
+        'has_rules': True,
+        'matched_matches': matched,
+        'total_today_matches': len(today_matches_detail)
+    })
 
 
 initialize_application()
