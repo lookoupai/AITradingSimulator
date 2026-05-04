@@ -885,9 +885,23 @@ def _build_pc28_performance_export_view(predictor: dict) -> dict | None:
     for metric_key in ['big_small', 'odd_even', 'combo']:
         metric_stats = (stats.get('metrics') or {}).get(metric_key) or {}
         metric_streaks = (stats.get('metric_streaks') or {}).get(metric_key) or {}
+        recent_20 = metric_stats.get('recent_20') or {}
+        recent_50 = metric_stats.get('recent_50') or {}
         recent_100 = metric_stats.get('recent_100') or {}
         metrics[metric_key] = {
             'label': metric_stats.get('label') or metric_key,
+            'recent_20': {
+                'hit_rate': recent_20.get('hit_rate'),
+                'sample_count': int(recent_20.get('sample_count') or 0),
+                'hit_count': int(recent_20.get('hit_count') or 0),
+                'ratio_text': recent_20.get('ratio_text') or '--',
+            },
+            'recent_50': {
+                'hit_rate': recent_50.get('hit_rate'),
+                'sample_count': int(recent_50.get('sample_count') or 0),
+                'hit_count': int(recent_50.get('hit_count') or 0),
+                'ratio_text': recent_50.get('ratio_text') or '--',
+            },
             'recent_100': {
                 'hit_rate': recent_100.get('hit_rate'),
                 'sample_count': int(recent_100.get('sample_count') or 0),

@@ -88,7 +88,7 @@ class SignalExportTests(unittest.TestCase):
             self.assertEqual(data['items'][0]['prediction']['prediction_number'], 14)
             self.assertEqual(data['items'][0]['raw']['raw_response'], 'raw-analysis')
 
-    def test_export_performance_view_contains_recent_100_metrics(self):
+    def test_export_performance_view_contains_recent_window_metrics(self):
         with fresh_app_harness() as harness:
             client, user_id = harness.make_client()
             predictor_id = create_predictor(harness, user_id, 'pc28')
@@ -130,6 +130,14 @@ class SignalExportTests(unittest.TestCase):
             self.assertEqual(data['schema_version'], '1.0')
             self.assertEqual(data['predictor_id'], predictor_id)
             self.assertEqual(data['latest_settled_issue'], '20260408100')
+            self.assertEqual(data['metrics']['big_small']['recent_20']['sample_count'], 20)
+            self.assertEqual(data['metrics']['big_small']['recent_20']['hit_rate'], 0.0)
+            self.assertEqual(data['metrics']['odd_even']['recent_20']['hit_rate'], 0.0)
+            self.assertEqual(data['metrics']['combo']['recent_20']['hit_rate'], 0.0)
+            self.assertEqual(data['metrics']['big_small']['recent_50']['sample_count'], 50)
+            self.assertEqual(data['metrics']['big_small']['recent_50']['hit_rate'], 0.0)
+            self.assertEqual(data['metrics']['odd_even']['recent_50']['hit_rate'], 22.0)
+            self.assertEqual(data['metrics']['combo']['recent_50']['hit_rate'], 0.0)
             self.assertEqual(data['metrics']['big_small']['recent_100']['sample_count'], 100)
             self.assertEqual(data['metrics']['big_small']['recent_100']['hit_rate'], 38.0)
             self.assertEqual(data['metrics']['odd_even']['recent_100']['hit_rate'], 61.0)

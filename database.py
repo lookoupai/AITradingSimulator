@@ -2887,6 +2887,7 @@ class Database:
         metric_keys = ['number', 'big_small', 'odd_even', 'combo', 'double_group', 'kill_group']
         windows = {
             'recent_20': settled_rows[:20],
+            'recent_50': settled_rows[:50],
             'recent_100': settled_rows[:100],
             'overall': settled_rows
         }
@@ -2903,6 +2904,7 @@ class Database:
             metrics[metric_key] = {
                 'label': self._metric_label(metric_key),
                 'recent_20': self._build_metric_stats(windows['recent_20'], metric_key),
+                'recent_50': self._build_metric_stats(windows['recent_50'], metric_key),
                 'recent_100': self._build_metric_stats(windows['recent_100'], metric_key),
                 'overall': self._build_metric_stats_from_sequence(overall_sequence_summary)
             }
