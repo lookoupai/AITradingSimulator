@@ -80,6 +80,16 @@ def build_consensus_analysis(
     # 4. 各方案自身命中率
     per_predictor = _build_per_predictor_stats(settled_items, predictors_pool, fields)
 
+    # 4a. 从 jingcai_prediction_daily_summary 补充已归档的历史命中率（仅单方案级，
+    #     因为 daily_summary 是日聚合，无法重建明细级共识/组合指标）
+    archive_per_predictor = _load_archived_per_predictor(
+        db,
+        predictor_ids=predictor_ids,
+        time_window_days=time_window_days,
+        fields=fields
+    )
+    per_predictor = _merge_per_predictor_with_archive(per_predictor, archive_per_predictor, fields)
+
     # 5. 按比赛重新组织：{(run_key, event_key): [item, item, ...]}
     matches = _group_by_match(settled_items)
 
@@ -117,6 +127,7 @@ def build_consensus_analysis(
         'sample_count': len(matches),
         'settled_item_count': len(settled_items),
         'pending_item_count': len(pending_items),
+        'archive_used': bool(archive_per_predictor),
         'per_predictor': per_predictor,
         'consensus_by_count': consensus_by_count,
         'pair_combinations': pair_combinations,
@@ -136,6 +147,7 @@ def _empty_analysis(lottery_type: str, fields: list[dict], window: int | None) -
         'sample_count': 0,
         'settled_item_count': 0,
         'pending_item_count': 0,
+        'archive_used': False,
         'per_predictor': [],
         'consensus_by_count': {f['key']: [] for f in fields},
         'pair_combinations': {f['key']: [] for f in fields},
@@ -473,6 +485,95 @@ def _safe_rate(hit: int, total: int) -> float | None:
     if total <= 0:
         return None
     return round(100.0 * hit / total, 2)
+
+
+def _load_archived_per_predictor(
+    db,
+    *,
+    predictor_ids: list[int],
+    time_window_days: int | None,
+    fields: list[dict]
+) -> dict[int, dict[str, dict]]:
+    """
+    从 jingcai_prediction_daily_summary 读取已归档的单方案历史命中率。
+    返回结构：{predictor_id: {field_key: {'total': N, 'hit': M}}}
+
+    daily_summary 是日粒度聚合，丢失了 (run_key, event_key) 明细，所以只能用于
+    重建"单方案历史命中率"这个指标，无法重建两两组合或共识规律。
+    """
+    if not predictor_ids:
+        return {}
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        placeholders = ','.join('?' for _ in predictor_ids)
+        sql = f"""
+            SELECT predictor_id, summary_date, hit_breakdown_json
+            FROM jingcai_prediction_daily_summary
+            WHERE predictor_id IN ({placeholders})
+        """
+        params: list[Any] = list(predictor_ids)
+        if time_window_days is not None:
+            cutoff = (datetime.utcnow() - timedelta(days=int(time_window_days))).strftime('%Y-%m-%d')
+            sql += " AND summary_date >= ?"
+            params.append(cutoff)
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+    except Exception:
+        # 表可能还不存在（旧库），忽略即可
+        return {}
+    finally:
+        conn.close()
+
+    result: dict[int, dict[str, dict]] = defaultdict(
+        lambda: {f['key']: {'total': 0, 'hit': 0} for f in fields}
+    )
+    field_keys = {f['key'] for f in fields}
+    for row in rows:
+        pid = int(row['predictor_id'])
+        try:
+            breakdown = json.loads(row['hit_breakdown_json'] or '{}')
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(breakdown, dict):
+            continue
+        for field_key, stat in breakdown.items():
+            if field_key not in field_keys or not isinstance(stat, dict):
+                continue
+            result[pid][field_key]['total'] += int(stat.get('total') or 0)
+            result[pid][field_key]['hit'] += int(stat.get('hit') or 0)
+    return dict(result)
+
+
+def _merge_per_predictor_with_archive(
+    per_predictor: list[dict],
+    archive: dict[int, dict[str, dict]],
+    fields: list[dict]
+) -> list[dict]:
+    """把归档数据加到 per_predictor 的 total/hit 中并重算 rate。"""
+    if not archive:
+        return per_predictor
+    for entry in per_predictor:
+        pid = entry['predictor_id']
+        archive_entry = archive.get(pid)
+        if not archive_entry:
+            continue
+        for field in fields:
+            fkey = field['key']
+            archived = archive_entry.get(fkey) or {}
+            metric = entry['metrics'][fkey]
+            metric['total'] += int(archived.get('total') or 0)
+            metric['hit'] += int(archived.get('hit') or 0)
+            metric['rate'] = _safe_rate(metric['hit'], metric['total'])
+    # 重新按主字段排序
+    primary_field = fields[0]['key'] if fields else None
+    if primary_field:
+        per_predictor.sort(
+            key=lambda x: (x['metrics'][primary_field]['rate'] or 0),
+            reverse=True
+        )
+    return per_predictor
 
 
 def build_export_envelope(analysis: dict, *, scope: str) -> dict:

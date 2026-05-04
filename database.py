@@ -570,6 +570,26 @@ class Database:
 
         cursor.execute(
             '''
+            CREATE TABLE IF NOT EXISTS jingcai_prediction_daily_summary (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                predictor_id INTEGER NOT NULL,
+                summary_date TEXT NOT NULL,
+                total_items INTEGER NOT NULL DEFAULT 0,
+                settled_items INTEGER NOT NULL DEFAULT 0,
+                failed_items INTEGER NOT NULL DEFAULT 0,
+                expired_items INTEGER NOT NULL DEFAULT 0,
+                hit_breakdown_json TEXT NOT NULL DEFAULT '{}',
+                latest_run_key TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (predictor_id) REFERENCES predictors(id),
+                UNIQUE(predictor_id, summary_date)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
             CREATE TABLE IF NOT EXISTS scheduler_state (
                 name TEXT PRIMARY KEY,
                 owner_id TEXT NOT NULL,
@@ -591,6 +611,7 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_predictor ON predictions(predictor_id, issue_no)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status, issue_no)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pc28_prediction_daily_summary_predictor ON pc28_prediction_daily_summary(predictor_id, summary_date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_jingcai_prediction_daily_summary_predictor ON jingcai_prediction_daily_summary(predictor_id, summary_date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictor_runtime_state_paused ON predictor_runtime_state(auto_paused, predictor_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_algorithms_user ON user_algorithms(user_id, lottery_type, status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_algorithm_versions_algorithm ON user_algorithm_versions(algorithm_id, version)')
@@ -1560,6 +1581,215 @@ class Database:
             conn.close()
 
         return result
+
+    def run_jingcai_data_retention_maintenance(self, retention_days: int) -> dict:
+        """
+        竞彩足球（lottery_type='jingcai_football'）的归档+清理。
+        把超过 retention_days 的已结算/失败/过期 prediction_items 聚合到
+        jingcai_prediction_daily_summary，再删除原始 prediction_items 与对应的
+        prediction_runs（仅当一条 run 下所有 items 都已被删除时）。
+        """
+        retention_days = max(1, int(retention_days or 1))
+        cutoff_date = self._get_beijing_cutoff_date(retention_days)
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        result = {
+            'cutoff_date': cutoff_date,
+            'archived_item_rows': 0,
+            'archived_item_days': 0,
+            'deleted_item_rows': 0,
+            'deleted_run_rows': 0
+        }
+
+        try:
+            archive_result = self._archive_jingcai_predictions_before_date(cursor, cutoff_date)
+            conn.commit()
+            result.update(archive_result)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        return result
+
+    def _archive_jingcai_predictions_before_date(self, cursor, cutoff_date: str) -> dict:
+        """聚合竞彩足球过期 items 到 daily summary 后删除原始记录。"""
+        cursor.execute(
+            '''
+            SELECT
+                predictor_id,
+                run_key,
+                status,
+                created_at,
+                date(datetime(created_at, '+8 hours')) AS summary_date,
+                hit_payload
+            FROM prediction_items
+            WHERE lottery_type = 'jingcai_football'
+              AND status IN ('settled', 'failed', 'expired')
+              AND date(datetime(created_at, '+8 hours')) < ?
+            ORDER BY predictor_id ASC, summary_date DESC
+            ''',
+            (cutoff_date,)
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return {
+                'archived_item_rows': 0,
+                'archived_item_days': 0,
+                'deleted_item_rows': 0,
+                'deleted_run_rows': 0
+            }
+
+        # 聚合 (predictor_id, summary_date) -> 统计
+        daily_summary_map: dict[tuple[int, str], dict] = {}
+        for row in rows:
+            predictor_id = int(row['predictor_id'])
+            summary_date = row['summary_date']
+            key = (predictor_id, summary_date)
+            bucket = daily_summary_map.get(key)
+            if bucket is None:
+                bucket = {
+                    'predictor_id': predictor_id,
+                    'summary_date': summary_date,
+                    'total_items': 0,
+                    'settled_items': 0,
+                    'failed_items': 0,
+                    'expired_items': 0,
+                    'latest_run_key': None,
+                    'hit_breakdown': {}  # field -> {'total': n, 'hit': n}
+                }
+                daily_summary_map[key] = bucket
+
+            bucket['total_items'] += 1
+            status = str(row['status'] or '').strip().lower()
+            if bucket['latest_run_key'] is None:
+                bucket['latest_run_key'] = row['run_key']
+
+            if status == 'settled':
+                bucket['settled_items'] += 1
+                # 拆解 hit_payload，按字段累计 total/hit
+                try:
+                    hit_payload = json.loads(row['hit_payload'] or '{}')
+                except (TypeError, ValueError):
+                    hit_payload = {}
+                if isinstance(hit_payload, dict):
+                    for field_key, hit_value in hit_payload.items():
+                        if hit_value is None:
+                            continue
+                        breakdown = bucket['hit_breakdown'].setdefault(
+                            field_key, {'total': 0, 'hit': 0}
+                        )
+                        breakdown['total'] += 1
+                        breakdown['hit'] += int(bool(hit_value))
+            elif status == 'failed':
+                bucket['failed_items'] += 1
+            elif status == 'expired':
+                bucket['expired_items'] += 1
+
+        for summary in daily_summary_map.values():
+            self._upsert_jingcai_prediction_daily_summary(cursor, summary)
+
+        # 删除已归档的 prediction_items
+        cursor.execute(
+            '''
+            DELETE FROM prediction_items
+            WHERE lottery_type = 'jingcai_football'
+              AND status IN ('settled', 'failed', 'expired')
+              AND date(datetime(created_at, '+8 hours')) < ?
+            ''',
+            (cutoff_date,)
+        )
+        deleted_item_rows = cursor.rowcount if cursor.rowcount is not None else len(rows)
+
+        # 清理"已没有任何 items 关联"的 prediction_runs（仅竞彩足球，且 run 自身也旧）
+        cursor.execute(
+            '''
+            DELETE FROM prediction_runs
+            WHERE lottery_type = 'jingcai_football'
+              AND date(datetime(created_at, '+8 hours')) < ?
+              AND id NOT IN (SELECT DISTINCT run_id FROM prediction_items WHERE run_id IS NOT NULL)
+            ''',
+            (cutoff_date,)
+        )
+        deleted_run_rows = cursor.rowcount if cursor.rowcount is not None else 0
+
+        return {
+            'archived_item_rows': len(rows),
+            'archived_item_days': len(daily_summary_map),
+            'deleted_item_rows': deleted_item_rows,
+            'deleted_run_rows': deleted_run_rows
+        }
+
+    def _upsert_jingcai_prediction_daily_summary(self, cursor, summary: dict):
+        """合并写入：如果同一 (predictor_id, summary_date) 已存在记录，把计数与字段统计相加。"""
+        cursor.execute(
+            '''
+            SELECT total_items, settled_items, failed_items, expired_items,
+                   hit_breakdown_json, latest_run_key
+            FROM jingcai_prediction_daily_summary
+            WHERE predictor_id = ? AND summary_date = ?
+            ''',
+            (summary['predictor_id'], summary['summary_date'])
+        )
+        existing = cursor.fetchone()
+
+        new_breakdown = dict(summary.get('hit_breakdown') or {})
+        if existing:
+            try:
+                old_breakdown = json.loads(existing['hit_breakdown_json'] or '{}')
+            except (TypeError, ValueError):
+                old_breakdown = {}
+            if isinstance(old_breakdown, dict):
+                for field_key, stat in old_breakdown.items():
+                    if not isinstance(stat, dict):
+                        continue
+                    merged = new_breakdown.setdefault(field_key, {'total': 0, 'hit': 0})
+                    merged['total'] += int(stat.get('total') or 0)
+                    merged['hit'] += int(stat.get('hit') or 0)
+
+            total_items = int(existing['total_items'] or 0) + summary['total_items']
+            settled_items = int(existing['settled_items'] or 0) + summary['settled_items']
+            failed_items = int(existing['failed_items'] or 0) + summary['failed_items']
+            expired_items = int(existing['expired_items'] or 0) + summary['expired_items']
+            latest_run_key = summary.get('latest_run_key') or existing['latest_run_key']
+
+            cursor.execute(
+                '''
+                UPDATE jingcai_prediction_daily_summary
+                SET total_items = ?,
+                    settled_items = ?,
+                    failed_items = ?,
+                    expired_items = ?,
+                    hit_breakdown_json = ?,
+                    latest_run_key = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE predictor_id = ? AND summary_date = ?
+                ''',
+                (
+                    total_items, settled_items, failed_items, expired_items,
+                    json.dumps(new_breakdown, ensure_ascii=False),
+                    latest_run_key,
+                    summary['predictor_id'], summary['summary_date']
+                )
+            )
+        else:
+            cursor.execute(
+                '''
+                INSERT INTO jingcai_prediction_daily_summary (
+                    predictor_id, summary_date, total_items, settled_items,
+                    failed_items, expired_items, hit_breakdown_json, latest_run_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    summary['predictor_id'], summary['summary_date'],
+                    summary['total_items'], summary['settled_items'],
+                    summary['failed_items'], summary['expired_items'],
+                    json.dumps(new_breakdown, ensure_ascii=False),
+                    summary.get('latest_run_key')
+                )
+            )
 
     def vacuum(self):
         conn = self.get_connection()

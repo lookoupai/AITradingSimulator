@@ -33,6 +33,11 @@ PC28_DRAW_RETENTION_DAYS = max(1, int(os.getenv('PC28_DRAW_RETENTION_DAYS', 60))
 PC28_ARCHIVE_MAINTENANCE_INTERVAL = max(300, int(os.getenv('PC28_ARCHIVE_MAINTENANCE_INTERVAL', 21600)))
 PC28_ARCHIVE_VACUUM_INTERVAL = max(3600, int(os.getenv('PC28_ARCHIVE_VACUUM_INTERVAL', 86400)))
 
+# 竞彩足球 prediction_runs / prediction_items 的保留窗口（按 created_at 北京时间日期算）。
+# 比 PC28 略长，因为足球赛程节奏更慢，希望保留更多上下文供共识分析使用。
+# 超过此窗口的已结算/失败/过期项会被聚合进 jingcai_prediction_daily_summary 后删除。
+JINGCAI_PREDICTION_RETENTION_DAYS = max(1, int(os.getenv('JINGCAI_PREDICTION_RETENTION_DAYS', 90)))
+
 # ============ 预测任务配置 ============
 AUTO_PREDICTION = os.getenv(
     'AUTO_PREDICTION',

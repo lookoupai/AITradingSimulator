@@ -266,6 +266,7 @@ def prediction_loop():
     last_retention_maintenance_at = 0.0
     last_vacuum_at = 0.0
     last_jingcai_backfill_at = 0.0
+    last_jingcai_retention_maintenance_at = 0.0
 
     while config.AUTO_PREDICTION:
         try:
@@ -374,6 +375,35 @@ def prediction_loop():
                                 'pc28_retention_vacuum_completed',
                                 scheduler_name=scheduler_name,
                                 owner_id=_scheduler_owner_id
+                            )
+
+                # 竞彩足球 retention 维护：复用 PC28 的 maintenance_interval，避免引入新调度配置
+                if now_monotonic - last_jingcai_retention_maintenance_at >= maintenance_interval:
+                    try:
+                        jingcai_maintenance_result = db.run_jingcai_data_retention_maintenance(
+                            config.JINGCAI_PREDICTION_RETENTION_DAYS
+                        )
+                    except Exception as exc:
+                        _log_runtime_event(
+                            'warning',
+                            'jingcai_retention_maintenance_failed',
+                            scheduler_name=scheduler_name,
+                            owner_id=_scheduler_owner_id,
+                            error=str(exc)
+                        )
+                    else:
+                        last_jingcai_retention_maintenance_at = now_monotonic
+                        deleted_jingcai_item_rows = int(jingcai_maintenance_result.get('deleted_item_rows') or 0)
+                        deleted_jingcai_run_rows = int(jingcai_maintenance_result.get('deleted_run_rows') or 0)
+                        if deleted_jingcai_item_rows or deleted_jingcai_run_rows:
+                            _log_runtime_event(
+                                'info',
+                                'jingcai_retention_maintenance',
+                                scheduler_name=scheduler_name,
+                                owner_id=_scheduler_owner_id,
+                                deleted_item_rows=deleted_jingcai_item_rows,
+                                deleted_run_rows=deleted_jingcai_run_rows,
+                                cutoff_date=jingcai_maintenance_result.get('cutoff_date')
                             )
 
                 backfill_interval = max(3600, int(getattr(config, 'JINGCAI_HISTORY_BACKFILL_INTERVAL_SECONDS', 86400)))

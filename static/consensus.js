@@ -100,7 +100,10 @@
 
     function renderPoolMeta() {
         const a = currentAnalysis;
-        const windowText = a.window_days == null ? '全部历史' : `最近 ${a.window_days} 天`;
+        const windowText = a.window_days == null ? '保留窗口内全部' : `最近 ${a.window_days} 天`;
+        const archiveNote = a.archive_used
+            ? ' · <span style="color:#ffa726;">部分历史已归档为日聚合，单方案命中率已合并归档数据；两两组合/共识指标只反映明细样本</span>'
+            : '';
         poolMeta.classList.remove('empty-panel');
         poolMeta.innerHTML = `
             <div>
@@ -108,7 +111,7 @@
                 <strong>${a.sample_count}</strong> 场比赛样本 ·
                 <strong>${a.settled_item_count}</strong> 条已结算预测 ·
                 <strong>${a.pending_item_count}</strong> 条待结算
-                <span style="color:var(--muted,#888);margin-left:8px;">（窗口：${windowText}）</span>
+                <span style="color:var(--muted,#888);margin-left:8px;">（窗口：${windowText}${archiveNote}）</span>
             </div>
         `;
     }
@@ -210,7 +213,10 @@
     function renderPair() {
         const rows = (currentAnalysis.pair_combinations[pairField] || []);
         if (!rows.length) {
-            pairTableBody.innerHTML = '<tr><td colspan="4" class="empty-cell">没有足够样本</td></tr>';
+            const archiveNote = currentAnalysis.archive_used
+                ? '当前窗口内没有足够的明细样本。归档机制保留的是日聚合，无法重建两两组合指标，需要新明细积累一段时间后再查看。'
+                : '没有足够样本';
+            pairTableBody.innerHTML = `<tr><td colspan="4" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
             return;
         }
         pairTableBody.innerHTML = rows.map(r => {
@@ -229,7 +235,10 @@
     function renderByCount() {
         const rows = (currentAnalysis.consensus_by_count[byCountField] || []);
         if (!rows.length) {
-            byCountTableBody.innerHTML = '<tr><td colspan="5" class="empty-cell">没有足够样本</td></tr>';
+            const archiveNote = currentAnalysis.archive_used
+                ? '当前窗口内没有足够的明细样本。归档机制保留的是日聚合，无法重建共识强度指标，需要新明细积累一段时间后再查看。'
+                : '没有足够样本';
+            byCountTableBody.innerHTML = `<tr><td colspan="5" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
             return;
         }
         // 排序：先按共识数升序，再按命中率降序

@@ -65,11 +65,11 @@
                         <p class="panel-subtitle">参与本次共识分析的方案。新增/禁用方案后刷新即可自动重算。</p>
                     </div>
                     <div class="panel-actions">
-                        <select id="windowSelect" class="home-select" title="历史样本时间窗口">
+                        <select id="windowSelect" class="home-select" title="历史样本时间窗口（最长不超过保留窗口，超出部分已归档为日聚合，无法用于共识分析）">
                             <option value="7">最近 7 天</option>
                             <option value="30" selected>最近 30 天</option>
                             <option value="90">最近 90 天</option>
-                            <option value="all">全部历史</option>
+                            <option value="all">保留窗口内全部</option>
                         </select>
                     </div>
                 </div>
