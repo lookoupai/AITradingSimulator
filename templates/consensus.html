@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <title>方案共识分析{% if scope == 'all' %} · 管理员视角{% endif %}</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v={{ app_version }}">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/pc28.css?v={{ app_version }}">
+    <link rel="stylesheet" href="/static/consensus.css?v={{ app_version }}">
+</head>
+<body class="pc28-theme" data-page="consensus" data-scope="{{ scope }}">
+    <div class="pc28-shell">
+        <header class="pc28-header">
+            <div>
+                <div class="eyebrow">Consensus Analyzer{% if scope == 'all' %} · Admin{% endif %}</div>
+                <h1>方案共识分析</h1>
+                <p>
+                    {% if scope == 'all' %}
+                    平台所有方案的共识规律 + 今日比赛推荐 — 基于历史命中率纯统计计算，无需 AI 即可使用。
+                    {% else %}
+                    分析你自己的所有方案，发现哪些组合搭档时命中率最高，并给出今日的共识推荐。
+                    {% endif %}
+                </p>
+            </div>
+            <div class="header-actions">
+                <button class="btn ghost" id="consensusRefreshBtn">
+                    <i class="bi bi-arrow-clockwise"></i>
+                    刷新
+                </button>
+                <button class="btn ghost" id="consensusExportBtn">
+                    <i class="bi bi-download"></i>
+                    导出 JSON
+                </button>
+                <button class="btn ghost" id="consensusCopyBtn">
+                    <i class="bi bi-clipboard"></i>
+                    复制 JSON
+                </button>
+                {% if scope == 'all' %}
+                <a class="btn ghost" href="/admin">
+                    <i class="bi bi-shield-lock"></i>
+                    管理后台
+                </a>
+                {% else %}
+                <a class="btn ghost" href="/dashboard">
+                    <i class="bi bi-columns-gap"></i>
+                    控制台
+                </a>
+                {% endif %}
+                <a class="btn ghost" href="/">
+                    <i class="bi bi-house-door"></i>
+                    主页
+                </a>
+            </div>
+        </header>
+
+        <main class="pc28-main">
+
+            <!-- 第一块：方案池 -->
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h3>当前方案池</h3>
+                        <p class="panel-subtitle">参与本次共识分析的方案。新增/禁用方案后刷新即可自动重算。</p>
+                    </div>
+                    <div class="panel-actions">
+                        <select id="windowSelect" class="home-select" title="历史样本时间窗口">
+                            <option value="7">最近 7 天</option>
+                            <option value="30" selected>最近 30 天</option>
+                            <option value="90">最近 90 天</option>
+                            <option value="all">全部历史</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="poolMeta" class="prediction-summary empty-panel">加载中...</div>
+                <div id="poolChips" class="consensus-chip-list"></div>
+            </section>
+
+            <!-- 第二块：今日推荐 -->
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h3>今日共识推荐</h3>
+                        <p class="panel-subtitle">
+                            对每场未结算比赛，找出多数方案的共识值，并参考历史"共识=N 时该值的命中率"作为打分依据。
+                        </p>
+                    </div>
+                    <div class="panel-actions consensus-filter-bar">
+                        <label>最少共识方案数：<span id="minAgreeLabel">3</span></label>
+                        <input type="range" id="minAgreeSlider" min="1" max="6" value="3" step="1">
+                        <label>最低历史命中率：<span id="minRateLabel">50</span>%</label>
+                        <input type="range" id="minRateSlider" min="0" max="100" value="50" step="5">
+                    </div>
+                </div>
+                <div id="todayList" class="consensus-today-list">
+                    <div class="empty-panel">加载中...</div>
+                </div>
+            </section>
+
+            <!-- 第三块：历史规律 -->
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h3>历史规律</h3>
+                        <p class="panel-subtitle">基于已结算的预测样本统计的共识规律，用于辅助判断今日推荐的可信度。</p>
+                    </div>
+                </div>
+                <div class="tabs consensus-tabs">
+                    <button class="tab-btn active" data-tab="pair">两两方案组合</button>
+                    <button class="tab-btn" data-tab="byCount">按共识数分布</button>
+                    <button class="tab-btn" data-tab="perPredictor">单方案命中率</button>
+                </div>
+
+                <div class="tab-panel" data-tab-panel="pair">
+                    <div class="consensus-field-tabs">
+                        <button class="chip-btn active" data-field="rqspf">让球胜平负</button>
+                        <button class="chip-btn" data-field="spf">胜平负</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>方案组合</th>
+                                    <th>一致样本数</th>
+                                    <th>命中数</th>
+                                    <th>命中率</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pairTableBody">
+                                <tr><td colspan="4" class="empty-cell">加载中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="tab-panel" data-tab-panel="byCount" hidden>
+                    <div class="consensus-field-tabs">
+                        <button class="chip-btn active" data-field-bycount="rqspf">让球胜平负</button>
+                        <button class="chip-btn" data-field-bycount="spf">胜平负</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>共识方案数</th>
+                                    <th>预测值</th>
+                                    <th>样本数</th>
+                                    <th>命中数</th>
+                                    <th>命中率</th>
+                                </tr>
+                            </thead>
+                            <tbody id="byCountTableBody">
+                                <tr><td colspan="5" class="empty-cell">加载中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="tab-panel" data-tab-panel="perPredictor" hidden>
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>方案</th>
+                                    <th>引擎</th>
+                                    <th>胜平负命中率</th>
+                                    <th>胜平负样本</th>
+                                    <th>让球命中率</th>
+                                    <th>让球样本</th>
+                                </tr>
+                            </thead>
+                            <tbody id="perPredictorTableBody">
+                                <tr><td colspan="6" class="empty-cell">加载中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 第四块：AI 深度分析（折叠） -->
+            <section class="panel">
+                <div class="panel-header consensus-ai-header" id="aiPanelToggle" role="button" tabindex="0">
+                    <div>
+                        <h3>
+                            <i class="bi bi-stars"></i>
+                            AI 深度分析（可选）
+                        </h3>
+                        <p class="panel-subtitle">配置你自己的 AI，让它基于上述统计 + 今日明细做更深的解读。</p>
+                    </div>
+                    <span class="icon-btn">
+                        <i class="bi bi-chevron-down" id="aiPanelToggleIcon"></i>
+                    </span>
+                </div>
+                <div id="aiPanelBody" hidden>
+                    <div class="consensus-ai-config">
+                        <div class="field-row">
+                            <label>
+                                <input type="radio" name="aiSource" value="predictor" checked>
+                                复用现有方案的 AI 配置
+                            </label>
+                            <label>
+                                <input type="radio" name="aiSource" value="manual">
+                                自定义 API 配置
+                            </label>
+                        </div>
+                        <div id="aiPredictorPicker" class="field-row">
+                            <select id="aiPredictorSelect" class="home-select">
+                                <option value="">加载中...</option>
+                            </select>
+                        </div>
+                        <div id="aiManualForm" class="consensus-ai-grid" hidden>
+                            <input type="password" id="aiKeyInput" placeholder="API Key" class="home-input">
+                            <input type="text" id="aiUrlInput" placeholder="API URL（如 https://api.openai.com/v1）" class="home-input">
+                            <input type="text" id="aiModelInput" placeholder="模型名（如 gpt-4o-mini）" class="home-input">
+                            <select id="aiModeSelect" class="home-select">
+                                <option value="auto">auto</option>
+                                <option value="chat_completions">chat_completions</option>
+                                <option value="responses">responses</option>
+                            </select>
+                            <label class="consensus-ai-save">
+                                <input type="checkbox" id="aiRememberInput" checked>
+                                保存到本地（仅本浏览器）
+                            </label>
+                        </div>
+                    </div>
+                    <div id="aiChatBox" class="consensus-chat-box">
+                        <div class="empty-panel">向 AI 提问，例如：「今天哪场最稳？」「为什么 6 个方案一致时反而错？」</div>
+                    </div>
+                    <div class="consensus-chat-suggestions">
+                        <button class="chip-btn suggest" data-prompt="基于当前方案池，今天哪场比赛最值得跟？请按风险排序。">今日最稳</button>
+                        <button class="chip-btn suggest" data-prompt="哪两个方案的组合命中率最高？为什么？请结合数据说明。">最佳搭档</button>
+                        <button class="chip-btn suggest" data-prompt="哪些方案应该被淘汰？为什么？">谁该淘汰</button>
+                        <button class="chip-btn suggest" data-prompt="为什么有些情况下多方案集体一致反而错？">共识陷阱</button>
+                    </div>
+                    <div class="consensus-chat-input-row">
+                        <textarea id="aiChatInput" placeholder="输入问题，Enter 发送（Shift+Enter 换行）..." rows="2"></textarea>
+                        <button class="btn primary" id="aiChatSendBtn">
+                            <i class="bi bi-send"></i> 发送
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <script>
+        window.CONSENSUS_PAGE_SCOPE = "{{ scope }}";
+    </script>
+    <script src="/static/consensus.js?v={{ app_version }}"></script>
+</body>
+</html>

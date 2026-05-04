@@ -1,0 +1,247 @@
+/* 共识分析页面专用样式 */
+
+.consensus-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.consensus-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--surface, rgba(255, 255, 255, 0.05));
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.85rem;
+}
+
+.consensus-chip .badge {
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(108, 156, 255, 0.18);
+    color: #6c9cff;
+}
+
+.consensus-chip .badge.machine { background: rgba(102, 192, 144, 0.18); color: #66c090; }
+.consensus-chip .sample { color: var(--muted, #888); margin-left: 4px; font-size: 0.75rem; }
+
+.consensus-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+}
+.consensus-filter-bar label {
+    font-size: 0.85rem;
+    color: var(--muted, #888);
+    white-space: nowrap;
+}
+.consensus-filter-bar input[type="range"] {
+    width: 130px;
+    accent-color: #6c9cff;
+}
+
+.consensus-today-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.consensus-match-card {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.025);
+    transition: border-color 0.2s;
+}
+.consensus-match-card.highlight {
+    border-color: #66c090;
+    box-shadow: 0 0 0 1px rgba(102, 192, 144, 0.2);
+}
+.consensus-match-card .match-title {
+    font-weight: 600;
+    margin-bottom: 8px;
+    font-size: 0.95rem;
+}
+.consensus-match-card .field-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-top: 1px dashed rgba(255, 255, 255, 0.08);
+    font-size: 0.85rem;
+}
+.consensus-match-card .field-row:first-of-type { border-top: none; }
+.consensus-match-card .field-label { color: var(--muted, #888); }
+.consensus-match-card .consensus-pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+}
+.consensus-match-card .consensus-pick .agree {
+    background: rgba(108, 156, 255, 0.18);
+    color: #6c9cff;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+.consensus-match-card .consensus-pick .rate {
+    color: #66c090;
+    font-size: 0.8rem;
+}
+.consensus-match-card .consensus-pick .rate.low { color: #e57373; }
+.consensus-match-card .field-supporters {
+    color: var(--muted, #888);
+    font-size: 0.7rem;
+    margin-top: 2px;
+    line-height: 1.4;
+}
+
+.consensus-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.consensus-tabs .tab-btn {
+    background: none;
+    border: none;
+    color: var(--muted, #888);
+    padding: 8px 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    font-size: 0.9rem;
+}
+.consensus-tabs .tab-btn.active {
+    color: var(--text, #fff);
+    border-bottom-color: #6c9cff;
+}
+
+.consensus-field-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.chip-btn {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--muted, #888);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.chip-btn.active {
+    background: rgba(108, 156, 255, 0.2);
+    color: #6c9cff;
+    border-color: rgba(108, 156, 255, 0.4);
+}
+.chip-btn.suggest {
+    background: rgba(102, 192, 144, 0.1);
+    border-color: rgba(102, 192, 144, 0.25);
+    color: #66c090;
+}
+
+/* AI 聊天 */
+.consensus-ai-header { cursor: pointer; }
+.consensus-ai-config {
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+}
+.consensus-ai-config .field-row {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+.consensus-ai-config .field-row:last-child { margin-bottom: 0; }
+.consensus-ai-config label { font-size: 0.85rem; }
+.consensus-ai-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+.consensus-ai-grid .home-input,
+.consensus-ai-grid .home-select {
+    width: 100%;
+}
+.consensus-ai-save { grid-column: span 2; font-size: 0.8rem; }
+
+.consensus-chat-box {
+    min-height: 200px;
+    max-height: 480px;
+    overflow-y: auto;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.18);
+    border-radius: 8px;
+    margin: 12px 0;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.chat-message {
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    line-height: 1.55;
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.chat-message.user {
+    background: rgba(108, 156, 255, 0.12);
+    border-left: 3px solid #6c9cff;
+}
+.chat-message.assistant {
+    background: rgba(102, 192, 144, 0.08);
+    border-left: 3px solid #66c090;
+}
+.chat-message.error {
+    background: rgba(229, 115, 115, 0.1);
+    border-left: 3px solid #e57373;
+    color: #e57373;
+}
+.chat-message .meta {
+    font-size: 0.7rem;
+    color: var(--muted, #888);
+    margin-bottom: 4px;
+}
+
+.consensus-chat-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.consensus-chat-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+.consensus-chat-input-row textarea {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: var(--text, #fff);
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    resize: vertical;
+}
+.consensus-chat-input-row .btn { white-space: nowrap; align-self: stretch; }
+
+@media (max-width: 720px) {
+    .consensus-ai-grid { grid-template-columns: 1fr; }
+    .consensus-ai-save { grid-column: span 1; }
+    .consensus-today-list { grid-template-columns: 1fr; }
+}

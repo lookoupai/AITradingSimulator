@@ -31,6 +31,8 @@ from lotteries.registry import (
 from services.jingcai_football_service import JingcaiFootballService
 from services.algorithm_backtester import backtest_jingcai_user_algorithm
 from services.algorithm_chat_service import generate_algorithm_draft
+from services.consensus_analysis_service import build_consensus_analysis, build_export_envelope
+from services.consensus_chat_service import chat_consensus_analysis
 from services.algorithm_definition_validator import validate_algorithm_definition
 from services.algorithm_executor import predict_jingcai_with_user_algorithm
 from services.algorithm_templates import (
@@ -2938,6 +2940,29 @@ def admin_page():
     return render_template('admin.html')
 
 
+@app.route('/consensus')
+def consensus_page():
+    """竞彩足球方案共识分析页面（用户视角，只看自己方案）"""
+    if not get_current_user_id():
+        return redirect('/login')
+    return render_template('consensus.html', scope='user')
+
+
+@app.route('/admin/consensus')
+def admin_consensus_page():
+    """竞彩足球方案共识分析页面（管理员视角，看全部方案）"""
+    user_id = get_current_user_id()
+    if not user_id:
+        return redirect('/login')
+    if not get_current_user_is_admin():
+        user = db.get_user_by_id(user_id)
+        if user and user.get('is_admin'):
+            set_current_user_with_role(user['id'], user['username'], True)
+        else:
+            return redirect('/consensus')
+    return render_template('consensus.html', scope='all')
+
+
 @app.route('/api/health', methods=['GET'])
 def healthcheck():
     return jsonify({
@@ -5061,6 +5086,245 @@ def resume_predictor_auto_pause(predictor_id: int):
         'message': '方案已解除自动暂停',
         'predictor': _serialize_predictor(updated)
     })
+
+
+# ============= 共识分析 API =============
+
+def _resolve_consensus_scope(scope_arg: str | None) -> tuple[str, int | None]:
+    """
+    解析共识接口的 scope 参数。
+    返回 (scope, user_id)。当 scope='all' 时校验管理员权限并返回 user_id=None。
+    若无权限抛 PermissionError。
+    """
+    scope = (scope_arg or 'user').strip().lower()
+    if scope not in {'user', 'all'}:
+        scope = 'user'
+    if scope == 'all':
+        if not get_current_user_is_admin():
+            raise PermissionError('需要管理员权限')
+        return 'all', None
+    user_id = get_current_user_id()
+    if not user_id:
+        raise PermissionError('未登录')
+    return 'user', int(user_id)
+
+
+def _resolve_consensus_window(window_arg: str | None) -> int | None:
+    """
+    解析时间窗口参数。
+    支持 7 / 30 / 90 / all（或空 -> 默认 30）。
+    """
+    text = (window_arg or '30').strip().lower()
+    if text in {'all', 'full', '0'}:
+        return None
+    try:
+        days = int(text)
+    except (TypeError, ValueError):
+        days = 30
+    if days <= 0:
+        return None
+    return min(days, 3650)
+
+
+@app.route('/api/consensus/analysis', methods=['GET'])
+@login_required
+def api_consensus_analysis():
+    """返回方案共识分析结果。"""
+    try:
+        scope, user_id = _resolve_consensus_scope(request.args.get('scope'))
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+
+    lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
+    if lottery_type != 'jingcai_football':
+        return jsonify({'error': '当前只支持竞彩足球的共识分析'}), 400
+
+    window = _resolve_consensus_window(request.args.get('window'))
+    try:
+        analysis = build_consensus_analysis(
+            db,
+            user_id=user_id,
+            lottery_type=lottery_type,
+            time_window_days=window
+        )
+    except Exception as exc:
+        runtime_logger.exception('build_consensus_analysis 失败: %s', exc)
+        return jsonify({'error': f'分析失败: {exc}'}), 500
+    return jsonify({**analysis, 'scope': scope})
+
+
+@app.route('/api/consensus/today-detail', methods=['GET'])
+@login_required
+def api_consensus_today_detail():
+    """
+    返回今日（含未结算）所有比赛的方案预测明细 + 最近 N 条历史样本，给 AI 聊天用。
+    """
+    try:
+        scope, user_id = _resolve_consensus_scope(request.args.get('scope'))
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+
+    lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
+    if lottery_type != 'jingcai_football':
+        return jsonify({'error': '当前只支持竞彩足球'}), 400
+
+    history_limit = max(20, min(int(request.args.get('history_limit') or 100), 300))
+
+    # 复用 analysis_service 的内部函数：用 build_consensus_analysis 生成的 today_recommendations 已经够用，
+    # 这里再补充原始 prediction_payload 明细
+    from services.consensus_analysis_service import (
+        _select_predictor_pool,
+        _fetch_prediction_items,
+        _group_by_match
+    )
+    pool = _select_predictor_pool(db, user_id=user_id, lottery_type=lottery_type)
+    pids = [p['id'] for p in pool]
+    today_items = _fetch_prediction_items(
+        db,
+        predictor_ids=pids,
+        lottery_type=lottery_type,
+        only_settled=False,
+        only_pending=True,
+        time_window_days=None
+    )
+    history_items_raw = _fetch_prediction_items(
+        db,
+        predictor_ids=pids,
+        lottery_type=lottery_type,
+        only_settled=True,
+        only_pending=False,
+        time_window_days=30
+    )
+    # 历史只截取 history_limit 个 item（不是 match）作为给 AI 的样本
+    history_items = history_items_raw[:history_limit]
+
+    name_lookup = {p['id']: p.get('name') or f"方案#{p['id']}" for p in pool}
+
+    def _slim(item):
+        return {
+            'predictor_id': item['predictor_id'],
+            'predictor_name': name_lookup.get(item['predictor_id'], str(item['predictor_id'])),
+            'run_key': item['run_key'],
+            'event_key': item['event_key'],
+            'title': item['title'],
+            'prediction': item['prediction'],
+            'hit': item['hit'],
+            'actual': item['actual'],
+            'status': item['status']
+        }
+
+    today_grouped = _group_by_match(today_items)
+    today_payload = []
+    for (run_key, event_key), items in today_grouped.items():
+        today_payload.append({
+            'run_key': run_key,
+            'event_key': event_key,
+            'title': next((it.get('title') or '' for it in items), ''),
+            'predictions': [_slim(it) for it in items]
+        })
+
+    return jsonify({
+        'scope': scope,
+        'lottery_type': lottery_type,
+        'predictor_pool': [
+            {'id': p['id'], 'name': name_lookup[p['id']], 'engine_type': p.get('engine_type')}
+            for p in pool
+        ],
+        'today_matches': today_payload,
+        'history_sample': [_slim(it) for it in history_items]
+    })
+
+
+@app.route('/api/consensus/chat', methods=['POST'])
+@login_required
+def api_consensus_chat():
+    """AI 深度分析聊天接口。"""
+    data = request.get_json() or {}
+    user_message = str(data.get('message') or '').strip()
+    chat_history = data.get('chat_history') if isinstance(data.get('chat_history'), list) else []
+
+    if not user_message:
+        return jsonify({'error': '请输入问题'}), 400
+
+    # 解析 AI 配置：优先用户手填，其次复用某个方案
+    api_key = str(data.get('api_key') or '').strip()
+    api_url = str(data.get('api_url') or '').strip()
+    model_name = str(data.get('model_name') or '').strip()
+    api_mode = normalize_api_mode(data.get('api_mode') or 'auto')
+    predictor_id = data.get('predictor_id')
+
+    if not (api_key and api_url and model_name) and predictor_id:
+        # 从指定方案读取 AI 配置
+        try:
+            predictor_id_int = int(predictor_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': '无效的 predictor_id'}), 400
+        predictor = db.get_predictor(predictor_id_int, include_secret=True)
+        if not predictor:
+            return jsonify({'error': '方案不存在'}), 404
+        # 仅允许使用自己的方案，或管理员任意方案
+        current_uid = get_current_user_id()
+        if int(predictor.get('user_id') or 0) != int(current_uid) and not get_current_user_is_admin():
+            return jsonify({'error': '无权使用该方案的 AI 配置'}), 403
+        api_key = api_key or str(predictor.get('api_key') or '').strip()
+        api_url = api_url or str(predictor.get('api_url') or '').strip()
+        model_name = model_name or str(predictor.get('model_name') or '').strip()
+        if not (data.get('api_mode')):
+            api_mode = normalize_api_mode(predictor.get('api_mode') or 'auto')
+
+    if not api_key or not api_url or not model_name:
+        return jsonify({'error': '缺少 AI 配置（api_key/api_url/model_name）'}), 400
+
+    consensus_summary = data.get('consensus_summary') if isinstance(data.get('consensus_summary'), dict) else None
+    today_matches = data.get('today_matches') if isinstance(data.get('today_matches'), list) else []
+    history_sample = data.get('history_sample') if isinstance(data.get('history_sample'), list) else []
+
+    try:
+        result = chat_consensus_analysis(
+            api_key=api_key,
+            api_url=api_url,
+            model_name=model_name,
+            api_mode=api_mode,
+            user_message=user_message,
+            chat_history=chat_history,
+            consensus_summary=consensus_summary,
+            today_matches_detail=today_matches,
+            historical_sample=history_sample,
+            temperature=0.4
+        )
+    except Exception as exc:
+        runtime_logger.exception('共识聊天调用失败: %s', exc)
+        return jsonify({'error': f'AI 调用失败: {exc}'}), 500
+
+    return jsonify(result)
+
+
+@app.route('/api/export/consensus/<lottery_type>', methods=['GET'])
+@login_required
+def export_consensus(lottery_type: str):
+    """导出共识分析的标准化 JSON（与 PC28 export 风格一致）。"""
+    try:
+        scope, user_id = _resolve_consensus_scope(request.args.get('scope'))
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+
+    normalized_lottery = normalize_lottery_type(lottery_type)
+    if normalized_lottery != 'jingcai_football':
+        return jsonify({'error': '当前只支持竞彩足球的共识导出'}), 400
+
+    window = _resolve_consensus_window(request.args.get('window'))
+    try:
+        analysis = build_consensus_analysis(
+            db,
+            user_id=user_id,
+            lottery_type=normalized_lottery,
+            time_window_days=window
+        )
+    except Exception as exc:
+        runtime_logger.exception('共识导出失败: %s', exc)
+        return jsonify({'error': f'导出失败: {exc}'}), 500
+
+    return jsonify(build_export_envelope(analysis, scope=scope))
 
 
 initialize_application()
