@@ -25,6 +25,10 @@ from lotteries.registry import get_lottery_definition, normalize_lottery_type
 # 历史样本上限（避免大表全量扫描）
 HISTORICAL_QUERY_LIMIT = 20000
 
+# 历史命中率被认为"可靠"的最小样本量。
+# 低于此值时今日推荐里的命中率仅作参考，不参与排序加权。
+MIN_RELIABLE_SAMPLE = 20
+
 
 def build_consensus_analysis(
     db,
@@ -410,8 +414,10 @@ def _build_today_recommendations(
     """
     对每场未结算比赛：
       - 找出每个字段的共识值（票数最多的预测值）
-      - 关联历史"共识=N且值=V"时的命中率作为参考
-      - 同时给出本场支持该共识的方案列表
+      - 关联历史"共识=N且值=V"时的命中率作为参考（粗粒度桶）
+      - 当共识方案数 >= 2 时，额外查"实际这几个方案两两组合"在历史中的命中率
+        （细粒度），让强方案集合的真实表现可以独立判断
+      - 标记 is_reliable：粗粒度桶样本 >= MIN_RELIABLE_SAMPLE
     """
     if not pending_items:
         return []
@@ -423,6 +429,18 @@ def _build_today_recommendations(
         fkey: {(row['agree_count'], row['value']): row for row in rows}
         for fkey, rows in consensus_by_count.items()
     }
+
+    # pair_combinations 转 lookup：(p1, p2) (排序后) -> 行
+    pair_lookup: dict[str, dict[tuple, dict]] = {}
+    for fkey, rows in pair_combinations.items():
+        sub: dict[tuple, dict] = {}
+        for row in rows:
+            pair = row.get('pair') or []
+            if len(pair) != 2:
+                continue
+            key = tuple(sorted(int(x) for x in pair))
+            sub[key] = row
+        pair_lookup[fkey] = sub
 
     recommendations = []
     for (run_key, event_key), items in matches.items():
@@ -446,6 +464,18 @@ def _build_today_recommendations(
             )
             agree_count = len(supporters)
             historical = rate_lookup.get(fkey, {}).get((agree_count, consensus_value))
+            historical_rate = historical.get('rate') if historical else None
+            historical_sample = int(historical.get('total') if historical else 0)
+            is_reliable = historical_sample >= MIN_RELIABLE_SAMPLE and historical_rate is not None
+
+            # 细粒度：实际共识方案两两组合的历史表现
+            pair_breakdown = _build_pair_breakdown_for_supporters(
+                supporters=supporters,
+                field_key=fkey,
+                pair_lookup=pair_lookup.get(fkey) or {},
+                name_lookup=name_lookup
+            )
+
             per_field_rec.append({
                 'field': fkey,
                 'field_label': field['label'],
@@ -460,8 +490,13 @@ def _build_today_recommendations(
                     }
                     for val, pids in value_supporters.items()
                 },
-                'historical_rate': historical.get('rate') if historical else None,
-                'historical_sample': historical.get('total') if historical else 0
+                # 粗粒度桶：所有 N 方案一致预测同值的历史平均命中率
+                'historical_rate': historical_rate,
+                'historical_sample': historical_sample,
+                'is_reliable': is_reliable,
+                'reliability_threshold': MIN_RELIABLE_SAMPLE,
+                # 细粒度：实际方案两两组合
+                'pair_breakdown': pair_breakdown
             })
         if per_field_rec:
             recommendations.append({
@@ -470,15 +505,87 @@ def _build_today_recommendations(
                 'title': title,
                 'fields': per_field_rec
             })
-    # 按 "最高字段共识数 * 历史命中率" 简单打分排序
+
+    # 排序：贝叶斯收缩 — 小样本不会因为偶然 100% 排到前面
+    # score = agree_count * historical_rate * min(1, sample / threshold)
+    # pair_breakdown 的 avg_rate 也参与（取 max 作为更乐观的"实际组合"信号）
     def score(rec):
         best = 0.0
         for f in rec['fields']:
-            rate = f.get('historical_rate') or 0
-            best = max(best, f.get('agree_count', 0) * rate)
+            agree = f.get('agree_count') or 0
+            sample = f.get('historical_sample') or 0
+            shrinkage = min(1.0, sample / float(MIN_RELIABLE_SAMPLE)) if MIN_RELIABLE_SAMPLE > 0 else 1.0
+            rate = (f.get('historical_rate') or 0) * shrinkage
+            # pair_breakdown 提供"该实际组合"的额外可信度
+            pair_avg = (f.get('pair_breakdown') or {}).get('avg_rate') or 0
+            pair_n = (f.get('pair_breakdown') or {}).get('total_sample') or 0
+            pair_shrinkage = min(1.0, pair_n / float(MIN_RELIABLE_SAMPLE)) if MIN_RELIABLE_SAMPLE > 0 else 1.0
+            pair_score = pair_avg * pair_shrinkage * agree
+            best = max(best, agree * rate, pair_score)
         return best
     recommendations.sort(key=score, reverse=True)
     return recommendations
+
+
+def _build_pair_breakdown_for_supporters(
+    *,
+    supporters: list[int],
+    field_key: str,
+    pair_lookup: dict[tuple, dict],
+    name_lookup: dict[int, str]
+) -> dict:
+    """
+    给定本场实际共识的 supporters（>=2 个方案），从 pair_combinations 查出他们之间
+    所有两两组合的历史一致命中率，并计算 avg_rate / max_rate。
+
+    返回结构：
+        {
+          "pairs": [
+              {"pair":[p1,p2], "names":[n1,n2], "rate":..., "total":..., "hit":...},
+              ...
+          ],
+          "avg_rate": float | None,    # 加权平均（按各 pair 的 total）
+          "max_rate": float | None,
+          "max_pair": [p1, p2] | None,
+          "total_sample": int           # 所有 pair 的 total 之和
+        }
+    """
+    pairs_out: list[dict] = []
+    if len(supporters) < 2:
+        return {'pairs': [], 'avg_rate': None, 'max_rate': None,
+                'max_pair': None, 'total_sample': 0}
+
+    for p1, p2 in combinations(sorted(supporters), 2):
+        row = pair_lookup.get((p1, p2))
+        if not row:
+            continue
+        pairs_out.append({
+            'pair': [p1, p2],
+            'names': [name_lookup.get(p1, str(p1)), name_lookup.get(p2, str(p2))],
+            'rate': row.get('rate'),
+            'total': int(row.get('total') or 0),
+            'hit': int(row.get('hit') or 0)
+        })
+
+    if not pairs_out:
+        return {'pairs': [], 'avg_rate': None, 'max_rate': None,
+                'max_pair': None, 'total_sample': 0}
+
+    total_sample = sum(p['total'] for p in pairs_out)
+    if total_sample <= 0:
+        avg_rate = None
+    else:
+        weighted_hit = sum(p['hit'] for p in pairs_out)
+        avg_rate = round(100.0 * weighted_hit / total_sample, 2)
+
+    max_p = max(pairs_out, key=lambda p: p.get('rate') or -1)
+    return {
+        'pairs': sorted(pairs_out, key=lambda p: -(p.get('rate') or 0)),
+        'avg_rate': avg_rate,
+        'max_rate': max_p.get('rate'),
+        'max_pair': max_p.get('pair'),
+        'total_sample': total_sample
+    }
 
 
 def _safe_rate(hit: int, total: int) -> float | None:

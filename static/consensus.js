@@ -148,24 +148,69 @@
         }
 
         const cards = recs.map(rec => {
-            // 判断是否高亮：任一字段 满足 agree>=minAgree 且 rate>=minRate
+            // 高亮：任一字段满足 agree>=minAgree 且 (粗粒度 reliable 且 rate>=minRate) 或 (实际组合 avg>=minRate 且样本足)
             let highlight = false;
             const fieldRows = rec.fields.map(f => {
-                const ok = f.agree_count >= minAgree && (f.historical_rate || 0) >= minRate;
-                if (ok) highlight = true;
-                const rateClass = (f.historical_rate || 0) >= 50 ? '' : 'low';
+                const pb = f.pair_breakdown || {};
+                const pbReliable = (pb.total_sample || 0) >= (f.reliability_threshold || 20);
+                const coarseOk = f.is_reliable && (f.historical_rate || 0) >= minRate;
+                const pairOk = pbReliable && (pb.avg_rate || 0) >= minRate;
+                if (f.agree_count >= minAgree && (coarseOk || pairOk)) {
+                    highlight = true;
+                }
+
                 const supporters = (f.supporter_names || []).join('、');
+
+                // 粗粒度桶展示
+                let coarseHtml;
+                if (f.historical_rate == null || (f.historical_sample || 0) === 0) {
+                    coarseHtml = `<span class="rate-coarse na" title="历史上没有 ${f.agree_count} 个方案在该字段共同预测「${f.consensus_value}」的样本">无历史样本</span>`;
+                } else if (!f.is_reliable) {
+                    coarseHtml = `<span class="rate-coarse weak" title="样本量 ${f.historical_sample} 条，少于阈值 ${f.reliability_threshold}，仅供参考">${fmtRate(f.historical_rate)} <small>(n=${f.historical_sample})</small></span>`;
+                } else {
+                    const cls = (f.historical_rate || 0) >= 50 ? '' : 'low';
+                    coarseHtml = `<span class="rate-coarse ${cls}">${fmtRate(f.historical_rate)} <small>(n=${f.historical_sample})</small></span>`;
+                }
+
+                // 实际组合展示
+                let pairHtml = '';
+                if (pb && pb.pairs && pb.pairs.length) {
+                    const avgClass = (pb.avg_rate || 0) >= 50 ? 'good' : 'low';
+                    const reliableTag = pbReliable ? '' : '<small class="weak-tag">样本偏少</small>';
+                    const pairItems = pb.pairs.map(p => {
+                        const names = (p.names || []).join(' + ');
+                        const cls = (p.rate || 0) >= 50 ? 'good' : 'low';
+                        return `<li><span class="pair-names">${escapeHtml(names)}</span><span class="pair-rate ${cls}">${fmtRate(p.rate)} <small>(n=${p.total})</small></span></li>`;
+                    }).join('');
+                    pairHtml = `
+                        <details class="pair-breakdown">
+                            <summary>
+                                实际组合平均 <strong class="${avgClass}">${fmtRate(pb.avg_rate)}</strong>
+                                ${reliableTag}
+                                <span class="pair-summary-meta">最高 ${fmtRate(pb.max_rate)} · ${pb.pairs.length} 对组合</span>
+                            </summary>
+                            <ul class="pair-list">${pairItems}</ul>
+                        </details>
+                    `;
+                }
+
                 return `
                     <div class="field-row">
-                        <div>
-                            <span class="field-label">${escapeHtml(f.field_label)}</span>
-                            <div class="field-supporters">${escapeHtml(supporters)}</div>
+                        <div class="field-row-head">
+                            <div>
+                                <span class="field-label">${escapeHtml(f.field_label)}</span>
+                                <div class="field-supporters">${escapeHtml(supporters)}</div>
+                            </div>
+                            <div class="consensus-pick">
+                                <span>${escapeHtml(f.consensus_value)}</span>
+                                <span class="agree">${f.agree_count}人</span>
+                            </div>
                         </div>
-                        <div class="consensus-pick">
-                            <span>${escapeHtml(f.consensus_value)}</span>
-                            <span class="agree">${f.agree_count}人</span>
-                            <span class="rate ${rateClass}">${fmtRate(f.historical_rate)}</span>
+                        <div class="field-rate-row">
+                            <span class="rate-label" title="同样数量的任意方案在该字段一致预测同值的历史平均命中率">桶率</span>
+                            ${coarseHtml}
                         </div>
+                        ${pairHtml}
                     </div>
                 `;
             }).join('');
