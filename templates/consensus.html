@@ -10,17 +10,22 @@
     <link rel="stylesheet" href="/static/pc28.css?v={{ app_version }}">
     <link rel="stylesheet" href="/static/consensus.css?v={{ app_version }}">
 </head>
-<body class="pc28-theme" data-page="consensus" data-scope="{{ scope }}">
+<body class="pc28-theme" data-page="consensus" data-scope="{{ scope }}" data-lottery-type="{{ lottery_type or 'jingcai_football' }}">
     <div class="pc28-shell">
         <header class="pc28-header">
             <div>
-                <div class="eyebrow">Consensus Analyzer{% if scope == 'all' %} · Admin{% endif %}</div>
-                <h1>方案共识分析</h1>
+                <div class="eyebrow">Consensus Analyzer · {{ lottery_label or '竞彩足球' }}{% if scope == 'all' %} · Admin{% endif %}</div>
+                <h1>方案共识分析（{{ lottery_label or '竞彩足球' }}）</h1>
                 <p>
-                    {% if scope == 'all' %}
-                    平台所有方案的共识规律 + 今日比赛推荐 — 基于历史命中率纯统计计算，无需 AI 即可使用。
+                    {% if lottery_type == 'pc28' %}
+                        分析 PC28 各方案在<strong>「组合投注」</strong>上的共识规律。
+                        <br>注：实测发现 PC28 的"大/小""单/双""单点"区分度极小，本页面仅展示 combo 字段。
                     {% else %}
-                    分析你自己的所有方案，发现哪些组合搭档时命中率最高，并给出今日的共识推荐。
+                        {% if scope == 'all' %}
+                        平台所有方案的共识规律 + 今日比赛推荐 — 基于历史命中率纯统计计算，无需 AI 即可使用。
+                        {% else %}
+                        分析你自己的所有方案，发现哪些组合搭档时命中率最高，并给出今日的共识推荐。
+                        {% endif %}
                     {% endif %}
                 </p>
             </div>
@@ -137,11 +142,18 @@
                         <p class="panel-subtitle">参与本次共识分析的方案。新增/禁用方案后刷新即可自动重算。</p>
                     </div>
                     <div class="panel-actions">
-                        <select id="windowSelect" class="home-select" title="历史样本时间窗口（最长不超过保留窗口，超出部分已归档为日聚合，无法用于共识分析）">
-                            <option value="7">最近 7 天</option>
-                            <option value="30" selected>最近 30 天</option>
-                            <option value="90">最近 90 天</option>
-                            <option value="all">保留窗口内全部</option>
+                        <select id="windowSelect" class="home-select" title="历史样本时间窗口（PC28 用期数，竞彩用天数）">
+                            {% if lottery_type == 'pc28' %}
+                                <option value="500">最近 500 期</option>
+                                <option value="1000" selected>最近 1000 期</option>
+                                <option value="3000">最近 3000 期</option>
+                                <option value="all">保留窗口内全部</option>
+                            {% else %}
+                                <option value="7">最近 7 天</option>
+                                <option value="30" selected>最近 30 天</option>
+                                <option value="90">最近 90 天</option>
+                                <option value="all">保留窗口内全部</option>
+                            {% endif %}
                         </select>
                     </div>
                 </div>

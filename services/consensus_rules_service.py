@@ -265,9 +265,10 @@ def _build_prompt(*, consensus_summary: dict, user_message: str) -> str:
     consensus_by_count = consensus_summary.get('consensus_by_count') or {}
     pair_combinations = consensus_summary.get('pair_combinations') or {}
     fields = consensus_summary.get('fields') or []
+    lottery_type = consensus_summary.get('lottery_type') or 'jingcai_football'
 
-    # 计算方案质量分级（复用 consensus_analysis_service 的权重函数）
-    quality_block = _build_quality_signals_block(per_predictor, fields)
+    # 计算方案质量分级（复用 consensus_analysis_service 的权重函数 + 彩种特定基准）
+    quality_block = _build_quality_signals_block(per_predictor, fields, lottery_type)
 
     stats_block = json.dumps({
         'window_days': consensus_summary.get('window_days'),
@@ -287,7 +288,7 @@ def _build_prompt(*, consensus_summary: dict, user_message: str) -> str:
 === 当前方案池 ===
 {pool_block}
 
-=== 方案质量分级（基于历史命中率减随机基准 33.33%） ===
+=== 方案质量分级（命中率减各字段随机基准；每条记录里 baseline_pct 是该字段的基准） ===
 {quality_block}
 
 === 共识分析数据 ===
@@ -303,7 +304,11 @@ def _build_prompt(*, consensus_summary: dict, user_message: str) -> str:
 """
 
 
-def _build_quality_signals_block(per_predictor: list[dict], fields: list[dict]) -> str:
+def _build_quality_signals_block(
+    per_predictor: list[dict],
+    fields: list[dict],
+    lottery_type: str = 'jingcai_football'
+) -> str:
     """
     把每个方案在每个字段上的"质量分级"渲染成 prompt 块。
 
@@ -312,11 +317,17 @@ def _build_quality_signals_block(per_predictor: list[dict], fields: list[dict]) 
       - "neutral": -0.05 <= 权重 <= 0.10
       - "anti"   : 权重 < -0.05 （反指标，命中率明显低于随机）
       - "n/a"    : 样本不足或缺失（视为中性，不参与判断）
+
+    随机基准和最小样本量阈值都按彩种查表（PC28 用 25%/200，竞彩用 33.33%/30）。
     """
     if not per_predictor or not fields:
         return '（无方案数据）'
 
-    weights = _compute_predictor_weights(per_predictor, fields)
+    from lotteries.registry import get_lottery_definition
+    definition = get_lottery_definition(lottery_type)
+    min_sample = int(definition.consensus_min_sample_for_weight or MIN_SAMPLE_FOR_WEIGHT)
+
+    weights = _compute_predictor_weights(per_predictor, fields, lottery_type)
 
     lines: list[dict] = []
     for entry in per_predictor:
@@ -328,7 +339,8 @@ def _build_quality_signals_block(per_predictor: list[dict], fields: list[dict]) 
             rate = metric.get('rate')
             total = int(metric.get('total') or 0)
             w = (weights.get(pid) or {}).get(fkey, 0.0)
-            if rate is None or total < MIN_SAMPLE_FOR_WEIGHT:
+            baseline = definition.baseline_for(fkey)
+            if rate is None or total < min_sample:
                 quality = 'n/a'
             elif w > 0.10:
                 quality = 'high'
@@ -342,6 +354,7 @@ def _build_quality_signals_block(per_predictor: list[dict], fields: list[dict]) 
                 'field': fkey,
                 'field_label': field['label'],
                 'rate_pct': rate,
+                'baseline_pct': baseline,
                 'sample': total,
                 'weight': w,
                 'quality': quality

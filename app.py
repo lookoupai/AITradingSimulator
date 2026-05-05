@@ -2970,17 +2970,48 @@ def admin_page():
     return render_template('admin.html')
 
 
+_CONSENSUS_LOTTERY_SLUGS = {
+    'jingcai-football': 'jingcai_football',
+    'pc28': 'pc28',
+}
+_CONSENSUS_LOTTERY_LABELS = {
+    'jingcai_football': '竞彩足球',
+    'pc28': 'PC28',
+}
+
+
+def _slug_to_lottery_type(slug: str) -> str | None:
+    return _CONSENSUS_LOTTERY_SLUGS.get((slug or '').strip().lower())
+
+
 @app.route('/consensus')
-def consensus_page():
-    """竞彩足球方案共识分析页面（用户视角，只看自己方案）"""
+def consensus_root():
+    """共识分析根路径，重定向到默认彩种（竞彩足球）"""
     if not get_current_user_id():
         return redirect('/login')
-    return render_template('consensus.html', scope='user')
+    return redirect('/consensus/jingcai-football')
+
+
+@app.route('/consensus/<slug>')
+def consensus_page(slug: str):
+    """方案共识分析页面（用户视角，只看自己方案）"""
+    if not get_current_user_id():
+        return redirect('/login')
+    lottery_type = _slug_to_lottery_type(slug)
+    if not lottery_type:
+        return redirect('/consensus/jingcai-football')
+    return render_template(
+        'consensus.html',
+        scope='user',
+        lottery_type=lottery_type,
+        lottery_slug=slug.lower(),
+        lottery_label=_CONSENSUS_LOTTERY_LABELS.get(lottery_type, lottery_type)
+    )
 
 
 @app.route('/admin/consensus')
-def admin_consensus_page():
-    """竞彩足球方案共识分析页面（管理员视角，看全部方案）"""
+def admin_consensus_root():
+    """管理员共识分析根路径"""
     user_id = get_current_user_id()
     if not user_id:
         return redirect('/login')
@@ -2989,8 +3020,32 @@ def admin_consensus_page():
         if user and user.get('is_admin'):
             set_current_user_with_role(user['id'], user['username'], True)
         else:
-            return redirect('/consensus')
-    return render_template('consensus.html', scope='all')
+            return redirect('/consensus/jingcai-football')
+    return redirect('/admin/consensus/jingcai-football')
+
+
+@app.route('/admin/consensus/<slug>')
+def admin_consensus_page(slug: str):
+    """方案共识分析页面（管理员视角，看全部方案）"""
+    user_id = get_current_user_id()
+    if not user_id:
+        return redirect('/login')
+    if not get_current_user_is_admin():
+        user = db.get_user_by_id(user_id)
+        if user and user.get('is_admin'):
+            set_current_user_with_role(user['id'], user['username'], True)
+        else:
+            return redirect(f'/consensus/{slug}')
+    lottery_type = _slug_to_lottery_type(slug)
+    if not lottery_type:
+        return redirect('/admin/consensus/jingcai-football')
+    return render_template(
+        'consensus.html',
+        scope='all',
+        lottery_type=lottery_type,
+        lottery_slug=slug.lower(),
+        lottery_label=_CONSENSUS_LOTTERY_LABELS.get(lottery_type, lottery_type)
+    )
 
 
 @app.route('/api/health', methods=['GET'])
@@ -5166,8 +5221,8 @@ def api_consensus_analysis():
         return jsonify({'error': str(exc)}), 403
 
     lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
-    if lottery_type != 'jingcai_football':
-        return jsonify({'error': '当前只支持竞彩足球的共识分析'}), 400
+    if lottery_type not in ('jingcai_football', 'pc28'):
+        return jsonify({'error': '当前只支持竞彩足球和 PC28 的共识分析'}), 400
 
     window = _resolve_consensus_window(request.args.get('window'))
     try:
@@ -5195,8 +5250,8 @@ def api_consensus_today_detail():
         return jsonify({'error': str(exc)}), 403
 
     lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
-    if lottery_type != 'jingcai_football':
-        return jsonify({'error': '当前只支持竞彩足球'}), 400
+    if lottery_type not in ('jingcai_football', 'pc28'):
+        return jsonify({'error': '当前只支持竞彩足球和 PC28'}), 400
 
     history_limit = max(20, min(int(request.args.get('history_limit') or 100), 300))
 
@@ -5205,26 +5260,50 @@ def api_consensus_today_detail():
     from services.consensus_analysis_service import (
         _select_predictor_pool,
         _fetch_prediction_items,
+        _fetch_pc28_predictions_as_items,
         _group_by_match
     )
+    from lotteries.registry import get_lottery_definition
+    definition = get_lottery_definition(lottery_type)
+
     pool = _select_predictor_pool(db, user_id=user_id, lottery_type=lottery_type)
     pids = [p['id'] for p in pool]
-    today_items = _fetch_prediction_items(
-        db,
-        predictor_ids=pids,
-        lottery_type=lottery_type,
-        only_settled=False,
-        only_pending=True,
-        time_window_days=None
-    )
-    history_items_raw = _fetch_prediction_items(
-        db,
-        predictor_ids=pids,
-        lottery_type=lottery_type,
-        only_settled=True,
-        only_pending=False,
-        time_window_days=30
-    )
+
+    if lottery_type == 'pc28':
+        today_items = _fetch_pc28_predictions_as_items(
+            db,
+            predictor_ids=pids,
+            consensus_fields=definition.consensus_fields,
+            only_settled=False,
+            only_pending=True,
+            recent_issues_limit=None
+        )
+        # PC28 历史样本按"最近 N 期"取
+        history_items_raw = _fetch_pc28_predictions_as_items(
+            db,
+            predictor_ids=pids,
+            consensus_fields=definition.consensus_fields,
+            only_settled=True,
+            only_pending=False,
+            recent_issues_limit=max(history_limit * 7, 500)  # 给 AI 多一些上下文
+        )
+    else:
+        today_items = _fetch_prediction_items(
+            db,
+            predictor_ids=pids,
+            lottery_type=lottery_type,
+            only_settled=False,
+            only_pending=True,
+            time_window_days=None
+        )
+        history_items_raw = _fetch_prediction_items(
+            db,
+            predictor_ids=pids,
+            lottery_type=lottery_type,
+            only_settled=True,
+            only_pending=False,
+            time_window_days=30
+        )
     # 历史只截取 history_limit 个 item（不是 match）作为给 AI 的样本
     history_items = history_items_raw[:history_limit]
 
@@ -5354,8 +5433,8 @@ def export_consensus(lottery_type: str):
         return jsonify({'error': str(exc)}), 403
 
     normalized_lottery = normalize_lottery_type(lottery_type)
-    if normalized_lottery != 'jingcai_football':
-        return jsonify({'error': '当前只支持竞彩足球的共识导出'}), 400
+    if normalized_lottery not in ('jingcai_football', 'pc28'):
+        return jsonify({'error': '当前只支持竞彩足球和 PC28 的共识导出'}), 400
 
     window = _resolve_consensus_window(request.args.get('window'))
     try:
@@ -5382,8 +5461,8 @@ def api_get_consensus_rules():
 
     user_id = get_current_user_id()
     lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
-    if lottery_type != 'jingcai_football':
-        return jsonify({'error': '当前只支持竞彩足球的规则功能'}), 400
+    if lottery_type not in ('jingcai_football', 'pc28'):
+        return jsonify({'error': '当前只支持竞彩足球和 PC28 的规则功能'}), 400
 
     rules_row = db.get_user_consensus_rules(user_id, lottery_type)
     if not rules_row:
@@ -5419,8 +5498,8 @@ def api_generate_consensus_rules():
 
     data = request.get_json() or {}
     lottery_type = normalize_lottery_type(data.get('lottery_type') or 'jingcai_football')
-    if lottery_type != 'jingcai_football':
-        return jsonify({'error': '当前只支持竞彩足球的规则功能'}), 400
+    if lottery_type not in ('jingcai_football', 'pc28'):
+        return jsonify({'error': '当前只支持竞彩足球和 PC28 的规则功能'}), 400
 
     try:
         api_key, api_url, model_name, api_mode = _resolve_ai_config_for_user(data)
@@ -5517,13 +5596,15 @@ def api_score_consensus_rules():
     """对今日比赛跑一遍规则评分（不调 AI，纯静态）。"""
     from services.consensus_rules_service import score_today_against_rules
     from services.consensus_analysis_service import (
-        _select_predictor_pool, _fetch_prediction_items, _group_by_match
+        _select_predictor_pool, _fetch_prediction_items,
+        _fetch_pc28_predictions_as_items, _group_by_match
     )
+    from lotteries.registry import get_lottery_definition
 
     user_id = get_current_user_id()
     lottery_type = normalize_lottery_type(request.args.get('lottery_type') or 'jingcai_football')
-    if lottery_type != 'jingcai_football':
-        return jsonify({'error': '当前只支持竞彩足球'}), 400
+    if lottery_type not in ('jingcai_football', 'pc28'):
+        return jsonify({'error': '当前只支持竞彩足球和 PC28'}), 400
 
     rules_row = db.get_user_consensus_rules(user_id, lottery_type)
     if not rules_row:
@@ -5539,16 +5620,26 @@ def api_score_consensus_rules():
         runtime_logger.exception('规则评分构建分析失败: %s', exc)
         return jsonify({'error': f'分析失败: {exc}'}), 500
 
-    # 拿 today 明细（pair_agree 类规则需要）
+    # 拿 today 明细（pair_agree 类规则需要），按彩种路由 fetcher
     pool = _select_predictor_pool(db, user_id=user_id, lottery_type=lottery_type)
     pids = [p['id'] for p in pool]
-    today_items = _fetch_prediction_items(
-        db,
-        predictor_ids=pids,
-        lottery_type=lottery_type,
-        only_settled=False, only_pending=True,
-        time_window_days=None
-    )
+    if lottery_type == 'pc28':
+        definition = get_lottery_definition(lottery_type)
+        today_items = _fetch_pc28_predictions_as_items(
+            db,
+            predictor_ids=pids,
+            consensus_fields=definition.consensus_fields,
+            only_settled=False, only_pending=True,
+            recent_issues_limit=None
+        )
+    else:
+        today_items = _fetch_prediction_items(
+            db,
+            predictor_ids=pids,
+            lottery_type=lottery_type,
+            only_settled=False, only_pending=True,
+            time_window_days=None
+        )
     today_grouped = _group_by_match(today_items)
     today_matches_detail = []
     for (run_key, event_key), items in today_grouped.items():

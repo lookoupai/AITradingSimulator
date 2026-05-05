@@ -48,56 +48,79 @@ def build_consensus_analysis(
     参数：
         db: Database 实例
         user_id: 限定方案池为该用户；None 表示分析平台所有方案（仅管理员调用）
-        lottery_type: 当前仅有 jingcai_football 实际可用
-        time_window_days: 历史窗口（天），None 表示全部历史
+        lottery_type: 'jingcai_football' 或 'pc28'
+        time_window_days: 历史窗口。
+            - lottery_type='jingcai_football' 时为天数（按 created_at 过滤）
+            - lottery_type='pc28' 时为期数（最近 N 期，按 issue_no 倒序 LIMIT）
+            - None 表示不限
 
     返回：见 plan 文件。所有率以百分比 float 形式给出，未达成时为 None。
     """
     normalized = normalize_lottery_type(lottery_type)
     definition = get_lottery_definition(normalized)
+
+    # 字段：只取该彩种声明做共识分析的字段
+    target_label_map = {key: label for key, label in definition.target_options}
     fields = [
-        {'key': key, 'label': label}
-        for key, label in definition.target_options
+        {'key': key, 'label': target_label_map.get(key, key)}
+        for key in (definition.consensus_fields or ())
     ]
 
     # 1. 方案池
     predictors_pool = _select_predictor_pool(db, user_id=user_id, lottery_type=normalized)
     predictor_ids = [p['id'] for p in predictors_pool]
 
-    if not predictor_ids:
+    if not predictor_ids or not fields:
         return _empty_analysis(normalized, fields, time_window_days)
 
-    # 2. 拉取已结算的历史预测项（用于历史规律）
-    settled_items = _fetch_prediction_items(
-        db,
-        predictor_ids=predictor_ids,
-        lottery_type=normalized,
-        only_settled=True,
-        time_window_days=time_window_days
-    )
-
-    # 3. 拉取最近 / 未结算的预测项（用于今日推荐）
-    pending_items = _fetch_prediction_items(
-        db,
-        predictor_ids=predictor_ids,
-        lottery_type=normalized,
-        only_settled=False,
-        only_pending=True,
-        time_window_days=None  # 未结算的不卡时间窗
-    )
+    # 2 + 3. 拉取已结算 + 待结算预测，按彩种路由到不同 fetcher
+    if normalized == 'pc28':
+        settled_items = _fetch_pc28_predictions_as_items(
+            db,
+            predictor_ids=predictor_ids,
+            consensus_fields=definition.consensus_fields,
+            only_settled=True,
+            recent_issues_limit=time_window_days  # PC28 把窗口解释为期数
+        )
+        pending_items = _fetch_pc28_predictions_as_items(
+            db,
+            predictor_ids=predictor_ids,
+            consensus_fields=definition.consensus_fields,
+            only_settled=False,
+            only_pending=True,
+            recent_issues_limit=None
+        )
+    else:
+        settled_items = _fetch_prediction_items(
+            db,
+            predictor_ids=predictor_ids,
+            lottery_type=normalized,
+            only_settled=True,
+            time_window_days=time_window_days
+        )
+        pending_items = _fetch_prediction_items(
+            db,
+            predictor_ids=predictor_ids,
+            lottery_type=normalized,
+            only_settled=False,
+            only_pending=True,
+            time_window_days=None
+        )
 
     # 4. 各方案自身命中率
     per_predictor = _build_per_predictor_stats(settled_items, predictors_pool, fields)
 
-    # 4a. 从 jingcai_prediction_daily_summary 补充已归档的历史命中率（仅单方案级，
-    #     因为 daily_summary 是日聚合，无法重建明细级共识/组合指标）
-    archive_per_predictor = _load_archived_per_predictor(
-        db,
-        predictor_ids=predictor_ids,
-        time_window_days=time_window_days,
-        fields=fields
-    )
-    per_predictor = _merge_per_predictor_with_archive(per_predictor, archive_per_predictor, fields)
+    # 4a. 从归档表补充历史（仅竞彩足球有归档；PC28 暂不归档）
+    if normalized == 'jingcai_football':
+        archive_per_predictor = _load_archived_per_predictor(
+            db,
+            predictor_ids=predictor_ids,
+            time_window_days=time_window_days,
+            fields=fields
+        )
+        per_predictor = _merge_per_predictor_with_archive(per_predictor, archive_per_predictor, fields)
+    else:
+        archive_per_predictor = {}
 
     # 5. 按比赛重新组织：{(run_key, event_key): [item, item, ...]}
     matches = _group_by_match(settled_items)
@@ -109,7 +132,7 @@ def build_consensus_analysis(
     pair_combinations = _build_pair_combinations(matches, predictor_ids, fields)
 
     # 7a. 计算每个方案的"质量权重"（命中率 - 随机基准），供今日推荐排序使用
-    predictor_weights = _compute_predictor_weights(per_predictor, fields)
+    predictor_weights = _compute_predictor_weights(per_predictor, fields, normalized)
 
     # 8. 今日推荐（基于 pending_items + 历史规律 + 加权信号）
     today_recommendations = _build_today_recommendations(
@@ -263,6 +286,108 @@ def _fetch_prediction_items(
     return items
 
 
+def _fetch_pc28_predictions_as_items(
+    db,
+    *,
+    predictor_ids: list[int],
+    consensus_fields: tuple[str, ...],
+    only_settled: bool = True,
+    only_pending: bool = False,
+    recent_issues_limit: int | None = None
+) -> list[dict]:
+    """
+    PC28 数据适配层：把 predictions 表的行"伪装"成跟竞彩 prediction_items 同形的字典，
+    让下游的 _group_by_match / _build_consensus_by_count / _build_pair_combinations
+    等函数可以零修改地处理 PC28 数据。
+
+    伪装规则：
+        - run_key   = ''                     （PC28 不需要批次概念）
+        - event_key = issue_no               （每期作为一场"比赛"）
+        - title     = f'第 {issue_no} 期'
+        - prediction = {field_key: prediction_<field>}  仅含 consensus_fields 中的字段
+        - hit        = {field_key: hit_<field>}         同上
+        - actual     = {field_key: actual_<field>}      同上
+
+    `recent_issues_limit` 解释为"最近 N 期"——按 issue_no 倒序取，N = None 表示全部。
+    """
+    if not predictor_ids:
+        return []
+    fields = tuple(f for f in (consensus_fields or ()) if f in {'big_small', 'odd_even', 'combo', 'number'})
+    if not fields:
+        return []
+
+    # 选要查询的列
+    pred_cols = ', '.join(f'prediction_{f}' for f in fields)
+    hit_cols = ', '.join(f'hit_{f}' for f in fields)
+    actual_cols = ', '.join(f'actual_{f}' for f in fields)
+
+    placeholders = ','.join('?' for _ in predictor_ids)
+    sql = f"""
+        SELECT id, predictor_id, issue_no, status, created_at, settled_at,
+               {pred_cols}, {hit_cols}, {actual_cols}
+        FROM predictions
+        WHERE lottery_type = 'pc28' AND predictor_id IN ({placeholders})
+    """
+    params: list[Any] = list(predictor_ids)
+
+    if only_settled:
+        sql += " AND status = 'settled'"
+    elif only_pending:
+        sql += " AND status != 'settled'"
+
+    if recent_issues_limit is not None:
+        # PC28 issue_no 是数字字符串，按 INTEGER 排序
+        sql += " ORDER BY CAST(issue_no AS INTEGER) DESC"
+        try:
+            limit_n = max(1, int(recent_issues_limit))
+        except (TypeError, ValueError):
+            limit_n = HISTORICAL_QUERY_LIMIT
+        sql += f" LIMIT {min(limit_n, HISTORICAL_QUERY_LIMIT)}"
+    else:
+        sql += f" ORDER BY CAST(issue_no AS INTEGER) DESC LIMIT {HISTORICAL_QUERY_LIMIT}"
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    items: list[dict] = []
+    for row in rows:
+        prediction = {}
+        hit = {}
+        actual = {}
+        for f in fields:
+            pv = row[f'prediction_{f}']
+            if pv not in (None, ''):
+                prediction[f] = pv
+            hv = row[f'hit_{f}']
+            if hv is not None:
+                hit[f] = int(hv)
+            av = row[f'actual_{f}']
+            if av not in (None, ''):
+                actual[f] = av
+
+        items.append({
+            'id': row['id'],
+            'predictor_id': row['predictor_id'],
+            'lottery_type': 'pc28',
+            'run_key': '',
+            'event_key': str(row['issue_no']),
+            'issue_no': str(row['issue_no']),
+            'title': f"第 {row['issue_no']} 期",
+            'status': row['status'],
+            'created_at': row['created_at'],
+            'settled_at': row['settled_at'],
+            'prediction': prediction,
+            'hit': hit,
+            'actual': actual
+        })
+    return items
+
+
 def _group_by_match(items: list[dict]) -> dict[tuple, list[dict]]:
     grouped: dict[tuple, list[dict]] = defaultdict(list)
     for item in items:
@@ -325,20 +450,25 @@ def _build_per_predictor_stats(
 
 def _compute_predictor_weights(
     per_predictor: list[dict],
-    fields: list[dict]
+    fields: list[dict],
+    lottery_type: str = 'jingcai_football'
 ) -> dict[int, dict[str, float]]:
     """
     给每个方案在每个字段上算一个"质量权重"。
 
-    定义：weight = (历史命中率 - 随机基准 33.33) / 100
-    - 强方案（rate=64%）→ weight ≈ +0.31
-    - 中性方案（rate=37%）→ weight ≈ +0.04
-    - 反指标方案（rate=16%）→ weight ≈ -0.17
+    定义：weight = (历史命中率 - 随机基准) / 100
+    随机基准按彩种和字段查表：
+      - 竞彩足球 spf/rqspf → 33.33（三选一）
+      - PC28 combo → 25（四选一）
 
-    样本不足（total < MIN_SAMPLE_FOR_WEIGHT）或 rate 缺失时 weight = 0（中性）。
+    每个彩种的最小样本量阈值不同（PC28 方案区分度小，需更多样本）。
+    样本不足或 rate 缺失时 weight = 0（中性）。
 
     返回 {predictor_id: {field_key: float}}。
     """
+    definition = get_lottery_definition(lottery_type)
+    min_sample = int(definition.consensus_min_sample_for_weight or MIN_SAMPLE_FOR_WEIGHT)
+
     out: dict[int, dict[str, float]] = {}
     for entry in per_predictor or []:
         pid = entry.get('predictor_id')
@@ -348,13 +478,14 @@ def _compute_predictor_weights(
         metrics = entry.get('metrics') or {}
         for field in fields:
             fkey = field['key']
+            baseline = definition.baseline_for(fkey)
             metric = metrics.get(fkey) or {}
             rate = metric.get('rate')
             total = int(metric.get('total') or 0)
-            if rate is None or total < MIN_SAMPLE_FOR_WEIGHT:
+            if rate is None or total < min_sample:
                 per_field[fkey] = 0.0
             else:
-                per_field[fkey] = round((float(rate) - RANDOM_BASELINE_RATE) / 100.0, 4)
+                per_field[fkey] = round((float(rate) - baseline) / 100.0, 4)
         out[int(pid)] = per_field
     return out
 

@@ -3,7 +3,8 @@
     'use strict';
 
     const SCOPE = window.CONSENSUS_PAGE_SCOPE || 'user';
-    const LOTTERY_TYPE = 'jingcai_football';
+    const LOTTERY_TYPE = document.body.dataset.lotteryType || 'jingcai_football';
+    const LOTTERY_SLUG = LOTTERY_TYPE.replace(/_/g, '-');
     const LS_AI_CONFIG_KEY = 'consensus_ai_config';
     const LS_INTRO_DISMISSED_KEY = 'consensus_intro_dismissed_v1';
 

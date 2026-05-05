@@ -3,7 +3,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from utils import jingcai_football as football_utils
 from utils import pc28 as pc28_utils
@@ -19,6 +19,12 @@ class LotteryDefinition:
     supports_public_pages: bool
     supports_prompt_assistant: bool
     overview_mode: str
+    # 共识分析能力配置：哪些字段做共识、各字段的随机基准、最小样本量阈值、窗口语义
+    consensus_fields: tuple[str, ...] = ()
+    consensus_baselines: tuple[tuple[str, float], ...] = ()
+    consensus_min_sample_for_weight: int = 30
+    # 'days' 表示 window 参数为天数（按 created_at 过滤），'issues' 表示按期数（LIMIT N）
+    consensus_window_unit: str = 'days'
 
     def to_catalog_item(self) -> dict:
         return {
@@ -36,9 +42,18 @@ class LotteryDefinition:
                 'supports_profit_simulation': self.supports_profit_simulation,
                 'supports_public_pages': self.supports_public_pages,
                 'supports_prompt_assistant': self.supports_prompt_assistant,
-                'overview_mode': self.overview_mode
+                'overview_mode': self.overview_mode,
+                'consensus_fields': list(self.consensus_fields),
+                'consensus_window_unit': self.consensus_window_unit
             }
         }
+
+    def baseline_for(self, field_key: str) -> float:
+        """该字段的随机基准命中率（百分比，0-100）。未声明则回退到 33.33（三选一）。"""
+        for k, v in self.consensus_baselines:
+            if k == field_key:
+                return float(v)
+        return 33.33
 
 
 LOTTERY_DEFINITIONS = {
@@ -62,7 +77,13 @@ LOTTERY_DEFINITIONS = {
         supports_profit_simulation=True,
         supports_public_pages=True,
         supports_prompt_assistant=True,
-        overview_mode='pc28'
+        overview_mode='pc28',
+        # 共识分析仅做 combo（实测大小单双区分度极低、单点共识极少）
+        consensus_fields=('combo',),
+        consensus_baselines=(('combo', 25.0),),
+        # PC28 方案区分度小，需要大样本压噪声
+        consensus_min_sample_for_weight=200,
+        consensus_window_unit='issues'
     ),
     'jingcai_football': LotteryDefinition(
         lottery_type='jingcai_football',
@@ -78,7 +99,11 @@ LOTTERY_DEFINITIONS = {
         supports_profit_simulation=True,
         supports_public_pages=True,
         supports_prompt_assistant=True,
-        overview_mode='jingcai_football'
+        overview_mode='jingcai_football',
+        consensus_fields=('spf', 'rqspf'),
+        consensus_baselines=(('spf', 33.33), ('rqspf', 33.33)),
+        consensus_min_sample_for_weight=30,
+        consensus_window_unit='days'
     )
 }
 
