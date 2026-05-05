@@ -475,7 +475,41 @@
             if (saved.api_url) aiUrlInput.value = saved.api_url;
             if (saved.model_name) aiModelInput.value = saved.model_name;
             if (saved.api_mode) aiModeSelect.value = saved.api_mode;
+            // 如果有保存的自定义配置，自动切到"自定义 API"单选项，
+            // 让用户刷新后能直接看到自己填过的内容
+            if (saved.api_key || saved.api_url || saved.model_name) {
+                const manualRadio = document.querySelector('input[name="aiSource"][value="manual"]');
+                if (manualRadio) {
+                    manualRadio.checked = true;
+                    aiPredictorPicker.hidden = true;
+                    aiManualForm.hidden = false;
+                }
+            }
         } catch (e) { /* ignore */ }
+
+        // 实时保存自定义 API 配置：用户输入或勾选/取消"保存到本地"时立即同步 localStorage，
+        // 不必等到点击"发送"或"生成规则"才保存
+        function persistManualConfigIfNeeded() {
+            if (!aiRememberInput.checked) {
+                localStorage.removeItem(LS_AI_CONFIG_KEY);
+                return;
+            }
+            const cfg = {
+                api_key: aiKeyInput.value.trim(),
+                api_url: aiUrlInput.value.trim(),
+                model_name: aiModelInput.value.trim(),
+                api_mode: aiModeSelect.value
+            };
+            // 至少有一个字段非空才写入，避免覆盖成全空
+            if (cfg.api_key || cfg.api_url || cfg.model_name) {
+                localStorage.setItem(LS_AI_CONFIG_KEY, JSON.stringify(cfg));
+            }
+        }
+        [aiKeyInput, aiUrlInput, aiModelInput].forEach(el => {
+            el.addEventListener('input', persistManualConfigIfNeeded);
+        });
+        aiModeSelect.addEventListener('change', persistManualConfigIfNeeded);
+        aiRememberInput.addEventListener('change', persistManualConfigIfNeeded);
 
         document.querySelectorAll('.chip-btn.suggest').forEach(btn => {
             btn.addEventListener('click', () => {
