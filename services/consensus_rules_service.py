@@ -17,6 +17,11 @@ import json
 from typing import Any
 
 from ai_trader import AIPredictor
+from services.consensus_analysis_service import (
+    _compute_predictor_weights,
+    RANDOM_BASELINE_RATE,
+    MIN_SAMPLE_FOR_WEIGHT
+)
 
 
 # AI 提示词
@@ -259,6 +264,10 @@ def _build_prompt(*, consensus_summary: dict, user_message: str) -> str:
     per_predictor = consensus_summary.get('per_predictor') or []
     consensus_by_count = consensus_summary.get('consensus_by_count') or {}
     pair_combinations = consensus_summary.get('pair_combinations') or {}
+    fields = consensus_summary.get('fields') or []
+
+    # 计算方案质量分级（复用 consensus_analysis_service 的权重函数）
+    quality_block = _build_quality_signals_block(per_predictor, fields)
 
     stats_block = json.dumps({
         'window_days': consensus_summary.get('window_days'),
@@ -278,6 +287,9 @@ def _build_prompt(*, consensus_summary: dict, user_message: str) -> str:
 === 当前方案池 ===
 {pool_block}
 
+=== 方案质量分级（基于历史命中率减随机基准 33.33%） ===
+{quality_block}
+
 === 共识分析数据 ===
 {stats_block}
 {extra_section}
@@ -285,9 +297,57 @@ def _build_prompt(*, consensus_summary: dict, user_message: str) -> str:
 - 引用真实数字（pair_combinations / consensus_by_count 中的 rate/total/hit）。
 - 规则中的 predictor id 必须来自当前方案池，不要编造。
 - 至少给出一条 confidence: "high" 的规则；如有反向规律（例如全员一致反而错），也用一条规则提示。
+- **优先考虑"强方案"组合（quality=high），警惕含"反指标"方案（quality=anti）的共识** — 反指标方案历史命中率低于随机，参与共识反而是危险信号。
 - summary 用一句中文概括最重要的 1-2 个发现。
 - 严格输出 JSON：{{"summary":"...","rules":[...]}}
 """
+
+
+def _build_quality_signals_block(per_predictor: list[dict], fields: list[dict]) -> str:
+    """
+    把每个方案在每个字段上的"质量分级"渲染成 prompt 块。
+
+    quality 标签：
+      - "high"   : 权重 > 0.10 （命中率超过随机基准 10 个百分点以上）
+      - "neutral": -0.05 <= 权重 <= 0.10
+      - "anti"   : 权重 < -0.05 （反指标，命中率明显低于随机）
+      - "n/a"    : 样本不足或缺失（视为中性，不参与判断）
+    """
+    if not per_predictor or not fields:
+        return '（无方案数据）'
+
+    weights = _compute_predictor_weights(per_predictor, fields)
+
+    lines: list[dict] = []
+    for entry in per_predictor:
+        pid = int(entry.get('predictor_id') or 0)
+        name = entry.get('predictor_name') or f'方案#{pid}'
+        for field in fields:
+            fkey = field['key']
+            metric = (entry.get('metrics') or {}).get(fkey) or {}
+            rate = metric.get('rate')
+            total = int(metric.get('total') or 0)
+            w = (weights.get(pid) or {}).get(fkey, 0.0)
+            if rate is None or total < MIN_SAMPLE_FOR_WEIGHT:
+                quality = 'n/a'
+            elif w > 0.10:
+                quality = 'high'
+            elif w < -0.05:
+                quality = 'anti'
+            else:
+                quality = 'neutral'
+            lines.append({
+                'predictor_id': pid,
+                'predictor_name': name,
+                'field': fkey,
+                'field_label': field['label'],
+                'rate_pct': rate,
+                'sample': total,
+                'weight': w,
+                'quality': quality
+            })
+
+    return json.dumps(lines, ensure_ascii=False, indent=2)
 
 
 def _normalize_rule(item: dict, *, default_id: str) -> dict | None:

@@ -29,6 +29,11 @@ HISTORICAL_QUERY_LIMIT = 20000
 # 低于此值时今日推荐里的命中率仅作参考，不参与排序加权。
 MIN_RELIABLE_SAMPLE = 20
 
+# 用于"加权共识"特征：当方案样本量低于此阈值时不计权重（视为中性 0）
+MIN_SAMPLE_FOR_WEIGHT = 30
+# 三选一随机命中率基准（spf / rqspf 都是胜平负三分类）
+RANDOM_BASELINE_RATE = 33.33
+
 
 def build_consensus_analysis(
     db,
@@ -103,13 +108,17 @@ def build_consensus_analysis(
     # 7. 两两方案一致时的命中率
     pair_combinations = _build_pair_combinations(matches, predictor_ids, fields)
 
-    # 8. 今日推荐（基于 pending_items + 历史规律）
+    # 7a. 计算每个方案的"质量权重"（命中率 - 随机基准），供今日推荐排序使用
+    predictor_weights = _compute_predictor_weights(per_predictor, fields)
+
+    # 8. 今日推荐（基于 pending_items + 历史规律 + 加权信号）
     today_recommendations = _build_today_recommendations(
         pending_items=pending_items,
         consensus_by_count=consensus_by_count,
         pair_combinations=pair_combinations,
         predictors_pool=predictors_pool,
-        fields=fields
+        fields=fields,
+        predictor_weights=predictor_weights
     )
 
     return {
@@ -314,6 +323,42 @@ def _build_per_predictor_stats(
     return result
 
 
+def _compute_predictor_weights(
+    per_predictor: list[dict],
+    fields: list[dict]
+) -> dict[int, dict[str, float]]:
+    """
+    给每个方案在每个字段上算一个"质量权重"。
+
+    定义：weight = (历史命中率 - 随机基准 33.33) / 100
+    - 强方案（rate=64%）→ weight ≈ +0.31
+    - 中性方案（rate=37%）→ weight ≈ +0.04
+    - 反指标方案（rate=16%）→ weight ≈ -0.17
+
+    样本不足（total < MIN_SAMPLE_FOR_WEIGHT）或 rate 缺失时 weight = 0（中性）。
+
+    返回 {predictor_id: {field_key: float}}。
+    """
+    out: dict[int, dict[str, float]] = {}
+    for entry in per_predictor or []:
+        pid = entry.get('predictor_id')
+        if pid is None:
+            continue
+        per_field: dict[str, float] = {}
+        metrics = entry.get('metrics') or {}
+        for field in fields:
+            fkey = field['key']
+            metric = metrics.get(fkey) or {}
+            rate = metric.get('rate')
+            total = int(metric.get('total') or 0)
+            if rate is None or total < MIN_SAMPLE_FOR_WEIGHT:
+                per_field[fkey] = 0.0
+            else:
+                per_field[fkey] = round((float(rate) - RANDOM_BASELINE_RATE) / 100.0, 4)
+        out[int(pid)] = per_field
+    return out
+
+
 def _build_consensus_by_count(
     matches: dict[tuple, list[dict]],
     fields: list[dict]
@@ -409,7 +454,8 @@ def _build_today_recommendations(
     consensus_by_count: dict[str, list[dict]],
     pair_combinations: dict[str, list[dict]],
     predictors_pool: list[dict],
-    fields: list[dict]
+    fields: list[dict],
+    predictor_weights: dict[int, dict[str, float]] | None = None
 ) -> list[dict]:
     """
     对每场未结算比赛：
@@ -418,11 +464,14 @@ def _build_today_recommendations(
       - 当共识方案数 >= 2 时，额外查"实际这几个方案两两组合"在历史中的命中率
         （细粒度），让强方案集合的真实表现可以独立判断
       - 标记 is_reliable：粗粒度桶样本 >= MIN_RELIABLE_SAMPLE
+      - 计算 weighted_strength：本场该字段所有支持方案的"质量权重"加和。
+        仅用于后台排序，前端不展示，让"强方案集合一致"排在"含烂方案的群体共识"之前。
     """
     if not pending_items:
         return []
     name_lookup = {p['id']: p.get('name') or f"方案#{p['id']}" for p in predictors_pool}
     matches = _group_by_match(pending_items)
+    weights_lookup = predictor_weights or {}
 
     # 把 consensus_by_count 转成 dict 便于查询
     rate_lookup = {
@@ -476,6 +525,14 @@ def _build_today_recommendations(
                 name_lookup=name_lookup
             )
 
+            # 加权共识强度：本场该字段所有支持方案的权重加和。
+            # 强方案权重 +0.10~+0.30、烂方案权重 -0.20~-0.05、新/中性方案 0。
+            # 用于排序时给"强方案集合"加分、给"含烂方案的群体共识"减分。
+            weighted_strength = round(sum(
+                (weights_lookup.get(int(pid), {}) or {}).get(fkey, 0.0)
+                for pid in supporters
+            ), 4)
+
             per_field_rec.append({
                 'field': fkey,
                 'field_label': field['label'],
@@ -496,7 +553,9 @@ def _build_today_recommendations(
                 'is_reliable': is_reliable,
                 'reliability_threshold': MIN_RELIABLE_SAMPLE,
                 # 细粒度：实际方案两两组合
-                'pair_breakdown': pair_breakdown
+                'pair_breakdown': pair_breakdown,
+                # 加权信号（仅用于后台排序，前端不展示）
+                'weighted_strength': weighted_strength
             })
         if per_field_rec:
             recommendations.append({
@@ -506,22 +565,34 @@ def _build_today_recommendations(
                 'fields': per_field_rec
             })
 
-    # 排序：贝叶斯收缩 — 小样本不会因为偶然 100% 排到前面
-    # score = agree_count * historical_rate * min(1, sample / threshold)
-    # pair_breakdown 的 avg_rate 也参与（取 max 作为更乐观的"实际组合"信号）
+    # 排序：贝叶斯收缩 — 小样本不会因为偶然 100% 排到前面；
+    # 同时叠加 weighted_strength：让"强方案一致"高于"含烂方案的群体共识"。
+    # weighted_strength 本身就是该字段所有支持方案的权重之和，
+    # 已经反映了"多少强方案 + 多少烂方案"的净效益，不需要再乘 agree_count。
+    # 我们把它放大到与 rate 同量级（× 100），并乘上一个可调系数 W_BOOST 来强化加权奖励。
+    # W_BOOST = 2.5 让烂方案带来的负权重足以"压过 1 个共识方案的 agree×rate 增量"，
+    # 实战意义：含 1 个烂方案的 N+1 人共识不应该排在干净的 N 人共识前面。
+    W_BOOST = 2.5
     def score(rec):
         best = 0.0
         for f in rec['fields']:
             agree = f.get('agree_count') or 0
             sample = f.get('historical_sample') or 0
             shrinkage = min(1.0, sample / float(MIN_RELIABLE_SAMPLE)) if MIN_RELIABLE_SAMPLE > 0 else 1.0
-            rate = (f.get('historical_rate') or 0) * shrinkage
-            # pair_breakdown 提供"该实际组合"的额外可信度
+            coarse_rate = (f.get('historical_rate') or 0) * shrinkage
+            coarse_score = agree * coarse_rate
             pair_avg = (f.get('pair_breakdown') or {}).get('avg_rate') or 0
             pair_n = (f.get('pair_breakdown') or {}).get('total_sample') or 0
             pair_shrinkage = min(1.0, pair_n / float(MIN_RELIABLE_SAMPLE)) if MIN_RELIABLE_SAMPLE > 0 else 1.0
             pair_score = pair_avg * pair_shrinkage * agree
-            best = max(best, agree * rate, pair_score)
+            # weighted_strength 是支持方案"质量加和"，正值代表强方案多，负值代表烂方案多。
+            # 放大到 [-50, +100] 范围（× 100 × W_BOOST）；含烂方案时 weighted 为负或较低。
+            weighted_bonus = (f.get('weighted_strength') or 0) * 100 * W_BOOST
+            best = max(
+                best,
+                coarse_score + weighted_bonus,
+                pair_score + weighted_bonus
+            )
         return best
     recommendations.sort(key=score, reverse=True)
     return recommendations
