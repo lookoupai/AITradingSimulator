@@ -236,8 +236,7 @@
 
                 <div class="tab-panel" data-tab-panel="pair">
                     <div class="consensus-field-tabs">
-                        <button class="chip-btn active" data-field="rqspf">让球胜平负</button>
-                        <button class="chip-btn" data-field="spf">胜平负</button>
+                        <!-- 字段切换 chip 由 JS 根据 currentAnalysis.fields 动态注入 -->
                     </div>
                     <div class="table-wrap">
                         <table class="data-table">
@@ -258,8 +257,7 @@
 
                 <div class="tab-panel" data-tab-panel="byCount" hidden>
                     <div class="consensus-field-tabs">
-                        <button class="chip-btn active" data-field-bycount="rqspf">让球胜平负</button>
-                        <button class="chip-btn" data-field-bycount="spf">胜平负</button>
+                        <!-- 字段切换 chip 由 JS 根据 currentAnalysis.fields 动态注入 -->
                     </div>
                     <div class="table-wrap">
                         <table class="data-table">
@@ -284,16 +282,13 @@
                         <table class="data-table">
                             <thead>
                                 <tr>
+                                    <!-- 表头由 JS 根据 currentAnalysis.fields 动态注入 -->
                                     <th>方案</th>
                                     <th>引擎</th>
-                                    <th>胜平负命中率</th>
-                                    <th>胜平负样本</th>
-                                    <th>让球命中率</th>
-                                    <th>让球样本</th>
                                 </tr>
                             </thead>
                             <tbody id="perPredictorTableBody">
-                                <tr><td colspan="6" class="empty-cell">加载中...</td></tr>
+                                <tr><td colspan="2" class="empty-cell">加载中...</td></tr>
                             </tbody>
                         </table>
                     </div>

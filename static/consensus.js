@@ -60,6 +60,16 @@
         return p ? p.name : '#' + pid;
     }
 
+    // 字段 key 转可读标签：优先查 currentAnalysis.fields，回退到 fallback
+    function fieldLabelByKey(key) {
+        const fields = (currentAnalysis && currentAnalysis.fields) || [];
+        const f = fields.find(x => x.key === key);
+        if (f) return f.label;
+        // 内置回退（兼容历史规则数据可能引用其它字段）
+        const fallback = { spf: '胜平负', rqspf: '让球胜平负', combo: '组合投注', big_small: '大/小', odd_even: '单/双', number: '单点' };
+        return fallback[key] || key;
+    }
+
     // ---------- 加载分析数据 ----------
     async function loadAnalysis() {
         const window_ = windowSelect.value;
@@ -93,6 +103,7 @@
         if (!currentAnalysis) return;
         renderPoolMeta();
         renderPoolChips();
+        renderFieldChips();   // 必须在 renderPair / renderByCount 之前
         renderToday();
         renderPair();
         renderByCount();
@@ -120,19 +131,23 @@
 
     function renderPoolChips() {
         if (!currentAnalysis.predictors.length) {
-            poolChips.innerHTML = '<div class="empty-panel">该范围内没有可分析的方案。请先创建竞彩足球方案并启用。</div>';
+            poolChips.innerHTML = '<div class="empty-panel">该范围内没有可分析的方案。请先创建该彩种的方案并启用。</div>';
             return;
         }
+        const fields = currentAnalysis.fields || [];
         const parts = currentAnalysis.predictors.map(p => {
             const stat = currentAnalysis.per_predictor.find(x => x.predictor_id === p.id);
-            const sampleSpf = stat ? stat.metrics.spf.total : 0;
-            const sampleRq = stat ? stat.metrics.rqspf.total : 0;
+            // 按当前彩种的字段动态生成"字段:样本数"
+            const sampleParts = fields.map(f => {
+                const m = stat && stat.metrics ? (stat.metrics[f.key] || {}) : {};
+                return `${f.key}:${m.total || 0}`;
+            });
             const engineClass = p.engine_type === 'machine' ? 'machine' : 'ai';
             return `
                 <span class="consensus-chip">
                     <strong>${escapeHtml(p.name)}</strong>
                     <span class="badge ${engineClass}">${p.engine_type === 'machine' ? '机器' : 'AI'}</span>
-                    <span class="sample">spf:${sampleSpf} / rqspf:${sampleRq}</span>
+                    <span class="sample">${escapeHtml(sampleParts.join(' / '))}</span>
                 </span>
             `;
         });
@@ -228,8 +243,9 @@
 
     // ---------- 历史规律：tab 切换 ----------
     let activeTab = 'pair';
-    let pairField = 'rqspf';
-    let byCountField = 'rqspf';
+    // 字段切换的当前选中项；默认在 loadAnalysis 后根据 fields[0]/fields[1] 设
+    let pairField = null;
+    let byCountField = null;
 
     function setupTabs() {
         document.querySelectorAll('.consensus-tabs .tab-btn').forEach(btn => {
@@ -241,20 +257,55 @@
                 });
             });
         });
-        document.querySelectorAll('[data-field]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                pairField = btn.dataset.field;
-                document.querySelectorAll('[data-field]').forEach(b => b.classList.toggle('active', b === btn));
-                renderPair();
+        // 字段切换 chip 在 renderFieldChips 里动态生成（按 currentAnalysis.fields 来）
+    }
+
+    // 根据当前彩种的字段动态生成 chip 按钮（pair tab 和 byCount tab 各一组）
+    function renderFieldChips() {
+        const fields = currentAnalysis.fields || [];
+        if (!fields.length) return;
+        // 默认选中：竞彩有 rqspf 时优先 rqspf，否则用 fields[0]；PC28 只有 combo
+        const findDefault = () => {
+            if (fields.find(f => f.key === 'rqspf')) return 'rqspf';
+            return fields[0].key;
+        };
+        if (!pairField || !fields.find(f => f.key === pairField)) pairField = findDefault();
+        if (!byCountField || !fields.find(f => f.key === byCountField)) byCountField = findDefault();
+
+        // pair tab chip
+        const pairChips = document.querySelector('[data-tab-panel="pair"] .consensus-field-tabs');
+        if (pairChips) {
+            pairChips.innerHTML = fields.map(f =>
+                `<button class="chip-btn ${f.key === pairField ? 'active' : ''}" data-field="${escapeHtml(f.key)}">${escapeHtml(f.label)}</button>`
+            ).join('');
+            pairChips.querySelectorAll('[data-field]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    pairField = btn.dataset.field;
+                    pairChips.querySelectorAll('[data-field]').forEach(b => b.classList.toggle('active', b === btn));
+                    renderPair();
+                });
             });
-        });
-        document.querySelectorAll('[data-field-bycount]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                byCountField = btn.dataset.fieldBycount;
-                document.querySelectorAll('[data-field-bycount]').forEach(b => b.classList.toggle('active', b === btn));
-                renderByCount();
+        }
+
+        // byCount tab chip
+        const byCountChips = document.querySelector('[data-tab-panel="byCount"] .consensus-field-tabs');
+        if (byCountChips) {
+            byCountChips.innerHTML = fields.map(f =>
+                `<button class="chip-btn ${f.key === byCountField ? 'active' : ''}" data-field-bycount="${escapeHtml(f.key)}">${escapeHtml(f.label)}</button>`
+            ).join('');
+            byCountChips.querySelectorAll('[data-field-bycount]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    byCountField = btn.dataset.fieldBycount;
+                    byCountChips.querySelectorAll('[data-field-bycount]').forEach(b => b.classList.toggle('active', b === btn));
+                    renderByCount();
+                });
             });
-        });
+        }
+
+        // 单字段时彩种把 chip 行隐藏（PC28 只有 combo，没必要给个孤零零的 chip）
+        const singleField = fields.length <= 1;
+        if (pairChips) pairChips.style.display = singleField ? 'none' : '';
+        if (byCountChips) byCountChips.style.display = singleField ? 'none' : '';
     }
 
     function renderPair() {
@@ -288,7 +339,6 @@
             byCountTableBody.innerHTML = `<tr><td colspan="5" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
             return;
         }
-        // 排序：先按共识数升序，再按命中率降序
         const sorted = rows.slice().sort((a, b) => a.agree_count - b.agree_count || (b.rate || 0) - (a.rate || 0));
         byCountTableBody.innerHTML = sorted.map(r => `
             <tr>
@@ -301,22 +351,37 @@
         `).join('');
     }
 
+    // 单方案命中率表：按 currentAnalysis.fields 动态生成"<字段>命中率 / <字段>样本"两列
     function renderPerPredictor() {
         const rows = currentAnalysis.per_predictor || [];
+        const fields = currentAnalysis.fields || [];
+        // 表头
+        const perPredictorTableHead = document.querySelector('[data-tab-panel="perPredictor"] thead tr');
+        if (perPredictorTableHead) {
+            const fieldHeaders = fields.flatMap(f => [
+                `<th>${escapeHtml(f.label)}命中率</th>`,
+                `<th>${escapeHtml(f.label)}样本</th>`
+            ]).join('');
+            perPredictorTableHead.innerHTML = `<th>方案</th><th>引擎</th>${fieldHeaders}`;
+        }
+        const colspan = 2 + fields.length * 2;
         if (!rows.length) {
-            perPredictorTableBody.innerHTML = '<tr><td colspan="6" class="empty-cell">没有数据</td></tr>';
+            perPredictorTableBody.innerHTML = `<tr><td colspan="${colspan}" class="empty-cell">没有数据</td></tr>`;
             return;
         }
-        perPredictorTableBody.innerHTML = rows.map(p => `
-            <tr>
-                <td>${escapeHtml(p.predictor_name)}</td>
-                <td>${p.engine_type === 'machine' ? '机器' : 'AI'}</td>
-                <td>${fmtRate(p.metrics.spf.rate)}</td>
-                <td>${p.metrics.spf.hit}/${p.metrics.spf.total}</td>
-                <td>${fmtRate(p.metrics.rqspf.rate)}</td>
-                <td>${p.metrics.rqspf.hit}/${p.metrics.rqspf.total}</td>
-            </tr>
-        `).join('');
+        perPredictorTableBody.innerHTML = rows.map(p => {
+            const fieldCells = fields.map(f => {
+                const m = (p.metrics && p.metrics[f.key]) || { rate: null, hit: 0, total: 0 };
+                return `<td>${fmtRate(m.rate)}</td><td>${m.hit || 0}/${m.total || 0}</td>`;
+            }).join('');
+            return `
+                <tr>
+                    <td>${escapeHtml(p.predictor_name)}</td>
+                    <td>${p.engine_type === 'machine' ? '机器' : 'AI'}</td>
+                    ${fieldCells}
+                </tr>
+            `;
+        }).join('');
     }
 
     // ---------- 导出 JSON ----------
@@ -650,7 +715,7 @@
             const actionClass =
                 /反向|警惕|降低|忽略/.test(action) ? 'warn' :
                 /禁止|拒绝|危险/.test(action) ? 'danger' : '';
-            const fieldLabel = rule.field === 'spf' ? '胜平负' : (rule.field === 'rqspf' ? '让球胜平负' : rule.field);
+            const fieldLabel = fieldLabelByKey(rule.field);
             const scorableBadge = rule.auto_scorable
                 ? '<span class="rule-badge scorable" title="可对今日自动评分">可评分</span>'
                 : '<span class="rule-badge not-scorable" title="自定义类型，不参与自动评分">仅展示</span>';
@@ -697,7 +762,7 @@
         rulesTodayMatchesCount.textContent = `${matches.length} / ${total} 场`;
         rulesTodayMatches.innerHTML = matches.map(m => {
             const ruleLines = m.matched_rules.map(r => {
-                const fieldLabel = r.field === 'spf' ? '胜平负' : (r.field === 'rqspf' ? '让球胜平负' : r.field);
+                const fieldLabel = fieldLabelByKey(r.field);
                 const valueChip = r.consensus_value
                     ? `<span class="small-chip">${escapeHtml(r.consensus_value)}</span>`
                     : '';
