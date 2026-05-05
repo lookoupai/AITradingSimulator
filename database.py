@@ -926,6 +926,7 @@ class Database:
         cursor.execute('DELETE FROM notification_deliveries WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM notification_subscriptions WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM predictor_runtime_state WHERE predictor_id = ?', (predictor_id,))
+        cursor.execute('DELETE FROM user_algorithm_execution_logs WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM prediction_items WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM prediction_runs WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM predictions WHERE predictor_id = ?', (predictor_id,))
