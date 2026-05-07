@@ -1,8 +1,7 @@
-version: '3.8'
-
 services:
   web:
-    build: .
+    image: lookoupai/aitradingsimulator:latest
+    pull_policy: always
     container_name: ai-pc28-predictor
     ports:
       - "35008:35008"
