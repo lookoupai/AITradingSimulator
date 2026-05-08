@@ -74,6 +74,7 @@
     async function loadAnalysis() {
         const window_ = windowSelect.value;
         poolMeta.textContent = '加载中...';
+        resetChatHistory();
         try {
             const res = await fetch(`/api/consensus/analysis?scope=${SCOPE}&lottery_type=${LOTTERY_TYPE}&window=${window_}`);
             if (!res.ok) {
@@ -546,6 +547,11 @@
         aiChatBox.scrollTop = aiChatBox.scrollHeight;
     }
 
+    function resetChatHistory() {
+        chatHistory = [];
+        aiChatBox.innerHTML = '<div class="empty-panel">向 AI 提问，例如：「今天哪场最稳？」「为什么 6 个方案一致时反而错？」</div>';
+    }
+
     // 公共：从 AI 配置表单读取设置；返回 {api_key,...} 或 {predictor_id}，失败返回 null（已 alert）
     function readAIConfigFromForm() {
         const useManual = document.querySelector('input[name="aiSource"][value="manual"]').checked;
@@ -596,9 +602,9 @@
         const payload = {
             message: message,
             chat_history: chatHistory,
-            consensus_summary: currentAnalysis,
-            today_matches: (currentTodayDetail && currentTodayDetail.today_matches) || [],
-            history_sample: (currentTodayDetail && currentTodayDetail.history_sample) || [],
+            scope: SCOPE,
+            lottery_type: LOTTERY_TYPE,
+            window: windowSelect.value,
             ...config
         };
 
@@ -621,6 +627,9 @@
             thinking.remove();
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
+                if (chatHistory.length && chatHistory[chatHistory.length - 1].role === 'user') {
+                    chatHistory.pop();
+                }
                 appendChatMessage('error', '调用失败：' + (err.error || res.status));
                 return;
             }
@@ -630,6 +639,9 @@
             appendChatMessage('assistant', reply, meta);
             chatHistory.push({ role: 'assistant', content: reply });
         } catch (e) {
+            if (chatHistory.length && chatHistory[chatHistory.length - 1].role === 'user') {
+                chatHistory.pop();
+            }
             thinking.remove();
             appendChatMessage('error', '请求失败：' + e.message);
         } finally {

@@ -225,6 +225,27 @@ class AIPredictor:
             'payload': payload
         }
 
+    def run_text_task(
+        self,
+        prompt: str,
+        system_prompt: str,
+        max_output_tokens: int = 1800
+    ) -> dict:
+        """执行一个通用文本生成任务，不强制 JSON 输出。"""
+        result = self._call_llm_with_metadata(
+            prompt,
+            system_prompt=system_prompt,
+            max_output_tokens=max_output_tokens,
+            json_output=False
+        )
+        return {
+            'api_mode': result['api_mode'],
+            'response_model': result['response_model'],
+            'finish_reason': result['finish_reason'],
+            'latency_ms': result['latency_ms'],
+            'raw_response': result['raw_response']
+        }
+
     def _prediction_max_output_tokens(self) -> int:
         if self._is_minimax_reasoning_model():
             return 3200

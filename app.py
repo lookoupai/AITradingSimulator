@@ -47,7 +47,7 @@ from services.notification_service import NotificationService
 from services.pc28_service import PC28Service
 from services.profit_simulator import DEFAULT_ODDS_PROFILE, ProfitSimulator
 from services.prediction_engine import PredictionEngine
-from services.prediction_guard import PredictionGuardService
+from services.prediction_guard import AIPredictionError, PredictionGuardService
 from utils import jingcai_football as football_utils
 from utils.prompt_assistant import analyze_prompt, build_external_prompt_template, build_optimizer_prompt, get_prompt_placeholder_catalog
 from utils.auth import (
@@ -5199,7 +5199,7 @@ def _resolve_consensus_window(window_arg: str | None) -> int | None:
     解析时间窗口参数。
     支持 7 / 30 / 90 / all（或空 -> 默认 30）。
     """
-    text = (window_arg or '30').strip().lower()
+    text = str(window_arg or '30').strip().lower()
     if text in {'all', 'full', '0'}:
         return None
     try:
@@ -5209,6 +5209,140 @@ def _resolve_consensus_window(window_arg: str | None) -> int | None:
     if days <= 0:
         return None
     return min(days, 3650)
+
+
+def _build_consensus_today_detail_payload(
+    *,
+    scope: str,
+    user_id: int | None,
+    lottery_type: str,
+    history_limit: int
+) -> dict:
+    """
+    构建 AI 聊天所需的今日明细与历史样本。
+    仅保留服务端重建的数据，避免依赖前端旧状态。
+    """
+    from services.consensus_analysis_service import (
+        _select_predictor_pool,
+        _fetch_prediction_items,
+        _fetch_pc28_predictions_as_items,
+        _group_by_match
+    )
+    from lotteries.registry import get_lottery_definition
+
+    definition = get_lottery_definition(lottery_type)
+    pool = _select_predictor_pool(db, user_id=user_id, lottery_type=lottery_type)
+    pids = [p['id'] for p in pool]
+
+    if lottery_type == 'pc28':
+        today_items = _fetch_pc28_predictions_as_items(
+            db,
+            predictor_ids=pids,
+            consensus_fields=definition.consensus_fields,
+            only_settled=False,
+            only_pending=True,
+            recent_issues_limit=None
+        )
+        history_items_raw = _fetch_pc28_predictions_as_items(
+            db,
+            predictor_ids=pids,
+            consensus_fields=definition.consensus_fields,
+            only_settled=True,
+            only_pending=False,
+            recent_issues_limit=max(history_limit * 7, 500)
+        )
+    else:
+        today_items = _fetch_prediction_items(
+            db,
+            predictor_ids=pids,
+            lottery_type=lottery_type,
+            only_settled=False,
+            only_pending=True,
+            time_window_days=None
+        )
+        history_items_raw = _fetch_prediction_items(
+            db,
+            predictor_ids=pids,
+            lottery_type=lottery_type,
+            only_settled=True,
+            only_pending=False,
+            time_window_days=30
+        )
+
+    history_items = history_items_raw[:history_limit]
+    name_lookup = {p['id']: p.get('name') or f"方案#{p['id']}" for p in pool}
+
+    def _slim(item):
+        return {
+            'predictor_id': item['predictor_id'],
+            'predictor_name': name_lookup.get(item['predictor_id'], str(item['predictor_id'])),
+            'run_key': item['run_key'],
+            'event_key': item['event_key'],
+            'title': item['title'],
+            'prediction': item['prediction'],
+            'hit': item['hit'],
+            'actual': item['actual'],
+            'status': item['status']
+        }
+
+    today_grouped = _group_by_match(today_items)
+    today_payload = []
+    for (run_key, event_key), items in today_grouped.items():
+        today_payload.append({
+            'run_key': run_key,
+            'event_key': event_key,
+            'title': next((it.get('title') or '' for it in items), ''),
+            'predictions': [_slim(it) for it in items]
+        })
+
+    return {
+        'scope': scope,
+        'lottery_type': lottery_type,
+        'predictor_pool': [
+            {'id': p['id'], 'name': name_lookup[p['id']], 'engine_type': p.get('engine_type')}
+            for p in pool
+        ],
+        'today_matches': today_payload,
+        'history_sample': [_slim(it) for it in history_items]
+    }
+
+
+def _consensus_chat_needs_today_context(user_message: str) -> bool:
+    text = (user_message or '').strip().lower()
+    if not text:
+        return False
+    keywords = (
+        '今天', '今日', '当前', '本场', '这场', '哪场', '推荐',
+        '最稳', '最强', '最值得', '风险排序', '下单', '跟单', '实盘'
+    )
+    return any(keyword in text for keyword in keywords)
+
+
+def _trim_consensus_analysis_for_chat(analysis: dict, include_today: bool) -> dict:
+    return dict(analysis or {})
+
+
+def _format_consensus_chat_error(error: Exception) -> str:
+    if not isinstance(error, AIPredictionError):
+        return f'AI 调用失败: {error}'
+
+    category = getattr(error, 'category', 'ai_error')
+    message_map = {
+        'auth': 'AI 鉴权失败：API Key 或模型权限无效',
+        'quota': 'AI 额度不足：请检查余额、配额或计费状态',
+        'rate_limit': 'AI 请求过快：请稍后重试',
+        'transport': 'AI 连接失败：模型网关或网络超时',
+        'deadline': 'AI 请求超时：当前响应时间过长',
+        'parse': 'AI 输出格式异常：模型没有按预期返回可解析内容',
+        'ai_error': 'AI 调用失败：模型服务返回异常'
+    }
+    prefix = message_map.get(category, message_map['ai_error'])
+    detail = str(error).strip()
+    if not detail:
+        return prefix
+    if detail.startswith(prefix):
+        return detail
+    return f'{prefix}：{detail}'
 
 
 @app.route('/api/consensus/analysis', methods=['GET'])
@@ -5254,94 +5388,12 @@ def api_consensus_today_detail():
         return jsonify({'error': '当前只支持竞彩足球和 PC28'}), 400
 
     history_limit = max(20, min(int(request.args.get('history_limit') or 100), 300))
-
-    # 复用 analysis_service 的内部函数：用 build_consensus_analysis 生成的 today_recommendations 已经够用，
-    # 这里再补充原始 prediction_payload 明细
-    from services.consensus_analysis_service import (
-        _select_predictor_pool,
-        _fetch_prediction_items,
-        _fetch_pc28_predictions_as_items,
-        _group_by_match
-    )
-    from lotteries.registry import get_lottery_definition
-    definition = get_lottery_definition(lottery_type)
-
-    pool = _select_predictor_pool(db, user_id=user_id, lottery_type=lottery_type)
-    pids = [p['id'] for p in pool]
-
-    if lottery_type == 'pc28':
-        today_items = _fetch_pc28_predictions_as_items(
-            db,
-            predictor_ids=pids,
-            consensus_fields=definition.consensus_fields,
-            only_settled=False,
-            only_pending=True,
-            recent_issues_limit=None
-        )
-        # PC28 历史样本按"最近 N 期"取
-        history_items_raw = _fetch_pc28_predictions_as_items(
-            db,
-            predictor_ids=pids,
-            consensus_fields=definition.consensus_fields,
-            only_settled=True,
-            only_pending=False,
-            recent_issues_limit=max(history_limit * 7, 500)  # 给 AI 多一些上下文
-        )
-    else:
-        today_items = _fetch_prediction_items(
-            db,
-            predictor_ids=pids,
-            lottery_type=lottery_type,
-            only_settled=False,
-            only_pending=True,
-            time_window_days=None
-        )
-        history_items_raw = _fetch_prediction_items(
-            db,
-            predictor_ids=pids,
-            lottery_type=lottery_type,
-            only_settled=True,
-            only_pending=False,
-            time_window_days=30
-        )
-    # 历史只截取 history_limit 个 item（不是 match）作为给 AI 的样本
-    history_items = history_items_raw[:history_limit]
-
-    name_lookup = {p['id']: p.get('name') or f"方案#{p['id']}" for p in pool}
-
-    def _slim(item):
-        return {
-            'predictor_id': item['predictor_id'],
-            'predictor_name': name_lookup.get(item['predictor_id'], str(item['predictor_id'])),
-            'run_key': item['run_key'],
-            'event_key': item['event_key'],
-            'title': item['title'],
-            'prediction': item['prediction'],
-            'hit': item['hit'],
-            'actual': item['actual'],
-            'status': item['status']
-        }
-
-    today_grouped = _group_by_match(today_items)
-    today_payload = []
-    for (run_key, event_key), items in today_grouped.items():
-        today_payload.append({
-            'run_key': run_key,
-            'event_key': event_key,
-            'title': next((it.get('title') or '' for it in items), ''),
-            'predictions': [_slim(it) for it in items]
-        })
-
-    return jsonify({
-        'scope': scope,
-        'lottery_type': lottery_type,
-        'predictor_pool': [
-            {'id': p['id'], 'name': name_lookup[p['id']], 'engine_type': p.get('engine_type')}
-            for p in pool
-        ],
-        'today_matches': today_payload,
-        'history_sample': [_slim(it) for it in history_items]
-    })
+    return jsonify(_build_consensus_today_detail_payload(
+        scope=scope,
+        user_id=user_id,
+        lottery_type=lottery_type,
+        history_limit=history_limit
+    ))
 
 
 @app.route('/api/consensus/chat', methods=['POST'])
@@ -5362,11 +5414,32 @@ def api_consensus_chat():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
-    consensus_summary = data.get('consensus_summary') if isinstance(data.get('consensus_summary'), dict) else None
-    today_matches = data.get('today_matches') if isinstance(data.get('today_matches'), list) else []
-    history_sample = data.get('history_sample') if isinstance(data.get('history_sample'), list) else []
+    scope_arg = str(data.get('scope') or request.args.get('scope') or 'user')
+    lottery_type = normalize_lottery_type(data.get('lottery_type') or 'jingcai_football')
+    if lottery_type not in ('jingcai_football', 'pc28'):
+        return jsonify({'error': '当前只支持竞彩足球和 PC28'}), 400
 
     try:
+        scope, user_id = _resolve_consensus_scope(scope_arg)
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+
+    window = _resolve_consensus_window(data.get('window') or request.args.get('window'))
+    include_today_context = _consensus_chat_needs_today_context(user_message)
+
+    try:
+        analysis = build_consensus_analysis(
+            db,
+            user_id=user_id,
+            lottery_type=lottery_type,
+            time_window_days=window
+        )
+        today_context = _build_consensus_today_detail_payload(
+            scope=scope,
+            user_id=user_id,
+            lottery_type=lottery_type,
+            history_limit=60
+        )
         result = chat_consensus_analysis(
             api_key=api_key,
             api_url=api_url,
@@ -5374,11 +5447,14 @@ def api_consensus_chat():
             api_mode=api_mode,
             user_message=user_message,
             chat_history=chat_history,
-            consensus_summary=consensus_summary,
-            today_matches_detail=today_matches,
-            historical_sample=history_sample,
+            consensus_summary=_trim_consensus_analysis_for_chat(analysis, include_today_context),
+            today_matches_detail=today_context['today_matches'] if include_today_context else [],
+            historical_sample=today_context['history_sample'],
             temperature=0.4
         )
+    except AIPredictionError as exc:
+        runtime_logger.exception('共识聊天调用失败: %s', exc)
+        return jsonify({'error': _format_consensus_chat_error(exc)}), 502
     except Exception as exc:
         runtime_logger.exception('共识聊天调用失败: %s', exc)
         return jsonify({'error': f'AI 调用失败: {exc}'}), 500

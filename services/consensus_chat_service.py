@@ -1,11 +1,8 @@
 """
 共识分析 AI 助手
 
-复用 ai_trader.AIPredictor.run_json_task：让 AI 基于已经统计好的共识数据
-+ 今日比赛明细做自然语言分析。
-
-输出约定为 JSON，但只有一个 `reply` 字段保存自然语言文字，方便前端直接渲染，
-也避免 AI 走偏到 Markdown / 代码块。
+让 AI 基于已经统计好的多方案共识数据做自然语言分析。
+聊天输出由后端包装成 JSON，模型本身只需要返回中文文本。
 """
 from __future__ import annotations
 
@@ -16,10 +13,10 @@ from ai_trader import AIPredictor
 
 
 SYSTEM_PROMPT = (
-    '你是 AITradingSimulator 平台的竞彩足球方案共识分析师。'
-    '你只能基于用户提供的统计数据和今日比赛明细回答问题，不要编造未给出的数据。'
-    '禁止输出 Markdown、代码块、或任何 JSON 外的字符。'
-    '你必须只输出一个 JSON 对象，且仅包含一个键 reply，值为面向用户的中文自然语言回答。'
+    '你是 AITradingSimulator 平台的方案共识分析师。'
+    '你的任务是解释多个预测方案之间的历史共识规律、强弱组合、共识陷阱和可执行决策规则。'
+    '只能基于用户提供的统计数据回答，不要编造未给出的数据。'
+    '请直接输出面向用户的中文自然语言回答，不要输出 JSON、Markdown 或代码块。'
 )
 
 
@@ -65,18 +62,13 @@ def chat_consensus_analysis(
         api_mode=api_mode,
         temperature=temperature
     )
-    result = client.run_json_task(
+    result = client.run_text_task(
         prompt=prompt,
         system_prompt=SYSTEM_PROMPT,
-        max_output_tokens=2200
+        max_output_tokens=2400
     )
-    payload = result.get('payload') or {}
-    reply = ''
-    if isinstance(payload, dict):
-        reply = str(payload.get('reply') or '').strip()
-    if not reply:
-        # 兜底：把 raw_response 截断作为回复
-        reply = (result.get('raw_response') or '')[:1200]
+    raw_response = result.get('raw_response') or ''
+    reply = _normalize_reply_text(raw_response)
 
     return {
         'reply': reply,
@@ -84,7 +76,7 @@ def chat_consensus_analysis(
         'response_model': result.get('response_model'),
         'finish_reason': result.get('finish_reason'),
         'latency_ms': result.get('latency_ms'),
-        'raw_response': (result.get('raw_response') or '')[:1500]
+        'raw_response': raw_response[:1500]
     }
 
 
@@ -104,6 +96,7 @@ def _build_prompt(
     chat_block = _format_chat_history(chat_history)
 
     return f"""你将基于下面提供的"共识统计摘要"、"今日比赛明细"和"历史样本"回答用户的问题。
+这个页面的核心目标是分析多个方案之间的历史共识规律，用这些规律辅助提高后续胜率；它不是单场比赛预测器。
 
 === 共识统计摘要 ===
 {summary_block}
@@ -122,44 +115,161 @@ def _build_prompt(
 
 回答规范：
 - 用中文自然语言。
+- 优先围绕历史统计规律回答：单方案命中率、按共识数分布、两两方案组合、样本量可靠性、反指标和共识陷阱。
+- 如果用户问今天/当前/哪场/推荐，再把今日推荐和今日明细作为这些历史规律的落地应用。
 - 数据要引用上面给出的真实数字，不要编造。
 - 如果数据不足以回答，明确说不足。
-- 把回答写在 JSON 的 reply 字段里，不输出其它任何字符。
-- 输出格式严格如下：
-{{"reply": "你的回答内容"}}
+- 样本数不足时必须明确提示不可靠，不要把小样本高命中率说成稳定规律。
+- 不要输出 JSON、Markdown、代码块或额外说明。
 """
 
 
 def _format_summary(summary: dict) -> str:
     if not summary:
         return '（无）'
-    keep_keys = ('lottery_label', 'window_days', 'sample_count',
-                 'settled_item_count', 'pending_item_count', 'fields',
-                 'predictors', 'per_predictor',
-                 'consensus_by_count', 'pair_combinations')
-    compact = {k: summary.get(k) for k in keep_keys if k in summary}
+    fields = summary.get('fields') or []
+    compact = {
+        'lottery_label': summary.get('lottery_label'),
+        'window_days': summary.get('window_days'),
+        'sample_count': summary.get('sample_count'),
+        'settled_item_count': summary.get('settled_item_count'),
+        'pending_item_count': summary.get('pending_item_count'),
+        'fields': fields[:4],
+        'predictors': _compact_predictors(summary.get('predictors') or []),
+        'per_predictor': _compact_per_predictor(summary.get('per_predictor') or [], fields),
+        'today_recommendations': _compact_today_recommendations(summary.get('today_recommendations') or []),
+        'consensus_by_count': _compact_rows_by_field(summary.get('consensus_by_count') or {}, limit=6),
+        'pair_combinations': _compact_rows_by_field(summary.get('pair_combinations') or {}, limit=6)
+    }
     return json.dumps(compact, ensure_ascii=False, indent=2)
 
 
 def _format_today_detail(detail: list[dict]) -> str:
     if not detail:
-        return '（今天没有可分析的比赛）'
+        return '（未提供今日比赛明细）'
     # 限制长度防止 token 爆炸
-    return json.dumps(detail[:80], ensure_ascii=False, indent=2)
+    return json.dumps(detail[:24], ensure_ascii=False, indent=2)
 
 
 def _format_history_sample(sample: list[dict]) -> str:
     if not sample:
         return '（未提供历史样本）'
-    return json.dumps(sample[:120], ensure_ascii=False, indent=2)
+    return json.dumps(sample[:30], ensure_ascii=False, indent=2)
 
 
 def _format_chat_history(chat_history: list[dict]) -> str:
     if not chat_history:
         return '（无）'
     lines = []
-    for entry in chat_history[-10:]:
+    for entry in chat_history[-6:]:
         role = entry.get('role') or 'user'
-        content = entry.get('content') or ''
+        content = str(entry.get('content') or '').strip()
+        if len(content) > 240:
+            content = content[:240] + '…'
         lines.append(f'- {role}: {content}')
     return '\n'.join(lines)
+
+
+def _compact_predictors(predictors: list[dict]) -> list[dict]:
+    return [
+        {
+            'id': item.get('id'),
+            'name': item.get('name'),
+            'engine_type': item.get('engine_type')
+        }
+        for item in predictors[:12]
+    ]
+
+
+def _compact_per_predictor(per_predictor: list[dict], fields: list[dict]) -> list[dict]:
+    field_keys = [field.get('key') for field in fields if field.get('key')]
+    compacted = []
+    for item in per_predictor[:12]:
+        metrics = item.get('metrics') or {}
+        compacted.append({
+            'predictor_id': item.get('predictor_id'),
+            'predictor_name': item.get('predictor_name'),
+            'engine_type': item.get('engine_type'),
+            'metrics': {
+                key: {
+                    'total': (metrics.get(key) or {}).get('total'),
+                    'hit': (metrics.get(key) or {}).get('hit'),
+                    'rate': (metrics.get(key) or {}).get('rate')
+                }
+                for key in field_keys
+            }
+        })
+    return compacted
+
+
+def _compact_today_recommendations(recommendations: list[dict]) -> list[dict]:
+    compacted = []
+    for item in recommendations[:10]:
+        fields = []
+        for field in (item.get('fields') or [])[:3]:
+            fields.append({
+                'field': field.get('field'),
+                'field_label': field.get('field_label'),
+                'consensus_value': field.get('consensus_value'),
+                'agree_count': field.get('agree_count'),
+                'historical_rate': field.get('historical_rate'),
+                'historical_sample': field.get('historical_sample'),
+                'weighted_strength': field.get('weighted_strength'),
+                'is_reliable': field.get('is_reliable')
+            })
+        compacted.append({
+            'run_key': item.get('run_key'),
+            'event_key': item.get('event_key'),
+            'title': item.get('title'),
+            'fields': fields
+        })
+    return compacted
+
+
+def _compact_rows_by_field(rows_by_field: dict, limit: int = 6) -> dict:
+    compacted: dict[str, list[dict]] = {}
+    for field_key, rows in (rows_by_field or {}).items():
+        if not isinstance(rows, list):
+            continue
+        sorted_rows = sorted(
+            rows,
+            key=lambda row: (
+                row.get('rate') or 0,
+                row.get('total') or 0,
+                row.get('agree_count') or 0
+            ),
+            reverse=True
+        )
+        compacted[field_key] = [
+            {
+                'agree_count': row.get('agree_count'),
+                'value': row.get('value'),
+                'pair': row.get('pair'),
+                'total': row.get('total'),
+                'hit': row.get('hit'),
+                'rate': row.get('rate')
+            }
+            for row in sorted_rows[:limit]
+        ]
+    return compacted
+
+
+def _normalize_reply_text(raw_response: str) -> str:
+    text = (raw_response or '').strip()
+    if not text:
+        return '（无回复）'
+
+    if text.startswith('```') and text.endswith('```'):
+        lines = text.splitlines()
+        text = '\n'.join(lines[1:-1]).strip()
+
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return text[:2000]
+
+    if isinstance(payload, dict):
+        reply = str(payload.get('reply') or '').strip()
+        if reply:
+            return reply[:2000]
+    return text[:2000]
