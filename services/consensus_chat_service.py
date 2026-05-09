@@ -12,6 +12,15 @@ from typing import Any
 from ai_trader import AIPredictor
 
 
+MAX_PREDICTORS_IN_CHAT_CONTEXT = 8
+MAX_TODAY_RECOMMENDATIONS_IN_CHAT_CONTEXT = 6
+MAX_TODAY_MATCHES_IN_CHAT_CONTEXT = 8
+MAX_PREDICTIONS_PER_MATCH_IN_CHAT_CONTEXT = 8
+MAX_HISTORY_SAMPLES_IN_CHAT_CONTEXT = 12
+MAX_ROWS_PER_FIELD_IN_CHAT_CONTEXT = 4
+MAX_CHAT_REPLY_CHARS = 2000
+
+
 SYSTEM_PROMPT = (
     '你是 AITradingSimulator 平台的方案共识分析师。'
     '你的任务是解释多个预测方案之间的历史共识规律、强弱组合、共识陷阱和可执行决策规则。'
@@ -138,23 +147,34 @@ def _format_summary(summary: dict) -> str:
         'predictors': _compact_predictors(summary.get('predictors') or []),
         'per_predictor': _compact_per_predictor(summary.get('per_predictor') or [], fields),
         'today_recommendations': _compact_today_recommendations(summary.get('today_recommendations') or []),
-        'consensus_by_count': _compact_rows_by_field(summary.get('consensus_by_count') or {}, limit=6),
-        'pair_combinations': _compact_rows_by_field(summary.get('pair_combinations') or {}, limit=6)
+        'consensus_by_count': _compact_rows_by_field(
+            summary.get('consensus_by_count') or {},
+            limit=MAX_ROWS_PER_FIELD_IN_CHAT_CONTEXT
+        ),
+        'pair_combinations': _compact_rows_by_field(
+            summary.get('pair_combinations') or {},
+            limit=MAX_ROWS_PER_FIELD_IN_CHAT_CONTEXT
+        )
     }
-    return json.dumps(compact, ensure_ascii=False, indent=2)
+    return _dump_compact_json(compact)
 
 
 def _format_today_detail(detail: list[dict]) -> str:
     if not detail:
         return '（未提供今日比赛明细）'
-    # 限制长度防止 token 爆炸
-    return json.dumps(detail[:24], ensure_ascii=False, indent=2)
+    return _dump_compact_json([
+        _compact_today_match_detail(item)
+        for item in detail[:MAX_TODAY_MATCHES_IN_CHAT_CONTEXT]
+    ])
 
 
 def _format_history_sample(sample: list[dict]) -> str:
     if not sample:
         return '（未提供历史样本）'
-    return json.dumps(sample[:30], ensure_ascii=False, indent=2)
+    return _dump_compact_json([
+        _compact_history_sample_item(item)
+        for item in sample[:MAX_HISTORY_SAMPLES_IN_CHAT_CONTEXT]
+    ])
 
 
 def _format_chat_history(chat_history: list[dict]) -> str:
@@ -177,14 +197,14 @@ def _compact_predictors(predictors: list[dict]) -> list[dict]:
             'name': item.get('name'),
             'engine_type': item.get('engine_type')
         }
-        for item in predictors[:12]
+        for item in predictors[:MAX_PREDICTORS_IN_CHAT_CONTEXT]
     ]
 
 
 def _compact_per_predictor(per_predictor: list[dict], fields: list[dict]) -> list[dict]:
     field_keys = [field.get('key') for field in fields if field.get('key')]
     compacted = []
-    for item in per_predictor[:12]:
+    for item in per_predictor[:MAX_PREDICTORS_IN_CHAT_CONTEXT]:
         metrics = item.get('metrics') or {}
         compacted.append({
             'predictor_id': item.get('predictor_id'),
@@ -204,9 +224,9 @@ def _compact_per_predictor(per_predictor: list[dict], fields: list[dict]) -> lis
 
 def _compact_today_recommendations(recommendations: list[dict]) -> list[dict]:
     compacted = []
-    for item in recommendations[:10]:
+    for item in recommendations[:MAX_TODAY_RECOMMENDATIONS_IN_CHAT_CONTEXT]:
         fields = []
-        for field in (item.get('fields') or [])[:3]:
+        for field in (item.get('fields') or [])[:2]:
             fields.append({
                 'field': field.get('field'),
                 'field_label': field.get('field_label'),
@@ -224,6 +244,87 @@ def _compact_today_recommendations(recommendations: list[dict]) -> list[dict]:
             'fields': fields
         })
     return compacted
+
+
+def _compact_today_match_detail(item: dict) -> dict:
+    predictions = [
+        _compact_match_prediction(prediction_item)
+        for prediction_item in (item.get('predictions') or [])[:MAX_PREDICTIONS_PER_MATCH_IN_CHAT_CONTEXT]
+    ]
+    predictions = [prediction_item for prediction_item in predictions if prediction_item.get('prediction')]
+    return {
+        'run_key': item.get('run_key'),
+        'event_key': item.get('event_key'),
+        'title': item.get('title'),
+        'consensus': _build_prediction_consensus(predictions),
+        'predictions': predictions
+    }
+
+
+def _compact_match_prediction(item: dict) -> dict:
+    return {
+        'predictor_name': item.get('predictor_name'),
+        'prediction': _compact_prediction_map(item.get('prediction') or {})
+    }
+
+
+def _compact_history_sample_item(item: dict) -> dict:
+    return {
+        'title': item.get('title'),
+        'predictor_name': item.get('predictor_name'),
+        'prediction': _compact_prediction_map(item.get('prediction') or {}),
+        'actual': _compact_actual_map(item.get('actual') or {}),
+        'hit': _compact_hit_map(item.get('hit') or {})
+    }
+
+
+def _compact_prediction_map(values: dict) -> dict:
+    return {
+        key: value
+        for key, value in (values or {}).items()
+        if value not in (None, '', 'null')
+    }
+
+
+def _compact_hit_map(values: dict) -> dict:
+    return {
+        key: value
+        for key, value in (values or {}).items()
+        if value is not None
+    }
+
+
+def _compact_actual_map(values: dict) -> dict:
+    allowed_keys = {'spf', 'rqspf', 'score_text'}
+    return {
+        key: value
+        for key, value in (values or {}).items()
+        if key in allowed_keys and value not in (None, '', 'null')
+    }
+
+
+def _build_prediction_consensus(predictions: list[dict]) -> dict:
+    counters: dict[str, dict[str, int]] = {}
+    for prediction_item in predictions:
+        prediction = prediction_item.get('prediction') or {}
+        for field_key, value in prediction.items():
+            if value in (None, '', 'null'):
+                continue
+            field_counter = counters.setdefault(field_key, {})
+            field_counter[str(value)] = field_counter.get(str(value), 0) + 1
+
+    consensus = {}
+    for field_key, distribution in counters.items():
+        consensus_value, agree_count = max(
+            distribution.items(),
+            key=lambda row: (row[1], row[0])
+        )
+        consensus[field_key] = {
+            'value': consensus_value,
+            'agree_count': agree_count,
+            'distribution': distribution
+        }
+    return consensus
 
 
 def _compact_rows_by_field(rows_by_field: dict, limit: int = 6) -> dict:
@@ -254,6 +355,10 @@ def _compact_rows_by_field(rows_by_field: dict, limit: int = 6) -> dict:
     return compacted
 
 
+def _dump_compact_json(payload) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+
+
 def _normalize_reply_text(raw_response: str) -> str:
     text = (raw_response or '').strip()
     if not text:
@@ -266,10 +371,10 @@ def _normalize_reply_text(raw_response: str) -> str:
     try:
         payload = json.loads(text)
     except (TypeError, ValueError):
-        return text[:2000]
+        return text[:MAX_CHAT_REPLY_CHARS]
 
     if isinstance(payload, dict):
         reply = str(payload.get('reply') or '').strip()
         if reply:
-            return reply[:2000]
-    return text[:2000]
+            return reply[:MAX_CHAT_REPLY_CHARS]
+    return text[:MAX_CHAT_REPLY_CHARS]

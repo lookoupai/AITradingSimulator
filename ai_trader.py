@@ -1374,7 +1374,9 @@ class AIPredictor:
             category = 'rate_limit'
         elif any(keyword in lowered_message for keyword in ['无法解析', 'json', '格式', 'schema', 'parse', '字段缺失']):
             category = 'parse'
-        elif any(keyword in lowered_message for keyword in ['timed out', 'timeout', '连接', 'connect', 'connection', 'network', 'dns']):
+        elif any(keyword in lowered_message for keyword in ['timed out', 'timeout', 'read timeout']):
+            category = 'deadline'
+        elif any(keyword in lowered_message for keyword in ['连接', 'connect', 'connection', 'network', 'dns']):
             category = 'transport'
 
         return AIPredictionError(message, category=category)
