@@ -223,82 +223,87 @@
 
             <!-- 第四块：历史规律 -->
             <section class="panel">
-                <div class="panel-header">
+                <div class="panel-header consensus-collapsible-header" id="historyPanelToggle" role="button" tabindex="0">
                     <div>
                         <h3>历史规律</h3>
                         <p class="panel-subtitle">基于已结算的预测样本统计的共识规律，用于辅助判断今日推荐的可信度。</p>
                     </div>
+                    <span class="icon-btn">
+                        <i class="bi bi-chevron-down" id="historyPanelToggleIcon"></i>
+                    </span>
                 </div>
-                <div class="tabs consensus-tabs">
-                    <button class="tab-btn active" data-tab="pair">两两方案组合</button>
-                    <button class="tab-btn" data-tab="byCount">按共识数分布</button>
-                    <button class="tab-btn" data-tab="perPredictor">单方案命中率</button>
-                </div>
+                <div id="historyPanelBody" hidden>
+                    <div class="tabs consensus-tabs">
+                        <button class="tab-btn active" data-tab="pair">两两方案组合</button>
+                        <button class="tab-btn" data-tab="byCount">按共识数分布</button>
+                        <button class="tab-btn" data-tab="perPredictor">单方案命中率</button>
+                    </div>
 
-                <div class="tab-panel" data-tab-panel="pair">
-                    <div class="consensus-field-tabs">
-                        <!-- 字段切换 chip 由 JS 根据 currentAnalysis.fields 动态注入 -->
+                    <div class="tab-panel" data-tab-panel="pair">
+                        <div class="consensus-field-tabs">
+                            <!-- 字段切换 chip 由 JS 根据 currentAnalysis.fields 动态注入 -->
+                        </div>
+                        <div class="table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>方案组合</th>
+                                        <th>一致样本数</th>
+                                        <th>命中数</th>
+                                        <th>命中率</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="pairTableBody">
+                                    <tr><td colspan="4" class="empty-cell">加载中...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
-                    <div class="table-wrap">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>方案组合</th>
-                                    <th>一致样本数</th>
-                                    <th>命中数</th>
-                                    <th>命中率</th>
-                                </tr>
-                            </thead>
-                            <tbody id="pairTableBody">
-                                <tr><td colspan="4" class="empty-cell">加载中...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
 
-                <div class="tab-panel" data-tab-panel="byCount" hidden>
-                    <div class="consensus-field-tabs">
-                        <!-- 字段切换 chip 由 JS 根据 currentAnalysis.fields 动态注入 -->
+                    <div class="tab-panel" data-tab-panel="byCount" hidden>
+                        <div class="consensus-field-tabs">
+                            <!-- 字段切换 chip 由 JS 根据 currentAnalysis.fields 动态注入 -->
+                        </div>
+                        <div class="table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>共识方案数</th>
+                                        <th>预测值</th>
+                                        <th>样本数</th>
+                                        <th>命中数</th>
+                                        <th>命中率</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="byCountTableBody">
+                                    <tr><td colspan="5" class="empty-cell">加载中...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
-                    <div class="table-wrap">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>共识方案数</th>
-                                    <th>预测值</th>
-                                    <th>样本数</th>
-                                    <th>命中数</th>
-                                    <th>命中率</th>
-                                </tr>
-                            </thead>
-                            <tbody id="byCountTableBody">
-                                <tr><td colspan="5" class="empty-cell">加载中...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
 
-                <div class="tab-panel" data-tab-panel="perPredictor" hidden>
-                    <div class="table-wrap">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <!-- 表头由 JS 根据 currentAnalysis.fields 动态注入 -->
-                                    <th>方案</th>
-                                    <th>引擎</th>
-                                </tr>
-                            </thead>
-                            <tbody id="perPredictorTableBody">
-                                <tr><td colspan="2" class="empty-cell">加载中...</td></tr>
-                            </tbody>
-                        </table>
+                    <div class="tab-panel" data-tab-panel="perPredictor" hidden>
+                        <div class="table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <!-- 表头由 JS 根据 currentAnalysis.fields 动态注入 -->
+                                        <th>方案</th>
+                                        <th>引擎</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="perPredictorTableBody">
+                                    <tr><td colspan="2" class="empty-cell">加载中...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </section>
 
             <!-- 第四块：AI 深度分析（折叠） -->
             <section class="panel">
-                <div class="panel-header consensus-ai-header" id="aiPanelToggle" role="button" tabindex="0">
+                <div class="panel-header consensus-collapsible-header" id="aiPanelToggle" role="button" tabindex="0">
                     <div>
                         <h3>
                             <i class="bi bi-stars"></i>

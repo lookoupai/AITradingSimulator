@@ -421,8 +421,16 @@
     color: #66c090;
 }
 
+/* 折叠面板 */
+.consensus-collapsible-header { cursor: pointer; }
+.consensus-collapsible-header .icon-btn {
+    flex: 0 0 auto;
+}
+.consensus-collapsible-header .icon-btn i {
+    transition: transform 0.15s;
+}
+
 /* AI 聊天 */
-.consensus-ai-header { cursor: pointer; }
 .consensus-ai-config {
     background: rgba(255, 255, 255, 0.025);
     border: 1px solid rgba(255, 255, 255, 0.06);

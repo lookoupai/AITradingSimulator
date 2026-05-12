@@ -28,6 +28,9 @@
     const pairTableBody = $('pairTableBody');
     const byCountTableBody = $('byCountTableBody');
     const perPredictorTableBody = $('perPredictorTableBody');
+    const historyPanelToggle = $('historyPanelToggle');
+    const historyPanelBody = $('historyPanelBody');
+    const historyPanelToggleIcon = $('historyPanelToggleIcon');
 
     const aiPanelToggle = $('aiPanelToggle');
     const aiPanelBody = $('aiPanelBody');
@@ -478,6 +481,29 @@
     }
 
     // ---------- AI 聊天 ----------
+    function setupCollapsiblePanel(toggleEl, bodyEl, iconEl, onOpen) {
+        if (!toggleEl || !bodyEl || !iconEl) return;
+        function toggle() {
+            const opening = bodyEl.hidden;
+            bodyEl.hidden = !opening;
+            iconEl.className = opening ? 'bi bi-chevron-up' : 'bi bi-chevron-down';
+            if (opening && typeof onOpen === 'function') {
+                onOpen(opening);
+            }
+        }
+        toggleEl.addEventListener('click', toggle);
+        toggleEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggle();
+            }
+        });
+    }
+
+    function setupHistoryToggle() {
+        setupCollapsiblePanel(historyPanelToggle, historyPanelBody, historyPanelToggleIcon);
+    }
+
     function renderAIPredictorOptions() {
         if (!currentAnalysis) return;
         const aiCandidates = (currentAnalysis.predictors || []).filter(p => p.engine_type === 'ai');
@@ -498,17 +524,10 @@
     }
 
     function setupAIToggle() {
-        function toggle() {
-            const opening = aiPanelBody.hidden;
-            aiPanelBody.hidden = !opening;
-            aiPanelToggleIcon.className = opening ? 'bi bi-chevron-up' : 'bi bi-chevron-down';
+        setupCollapsiblePanel(aiPanelToggle, aiPanelBody, aiPanelToggleIcon, (opening) => {
             if (opening && !currentTodayDetail) {
                 loadTodayDetail();
             }
-        }
-        aiPanelToggle.addEventListener('click', toggle);
-        aiPanelToggle.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
         });
 
         document.querySelectorAll('input[name="aiSource"]').forEach(r => {
@@ -961,6 +980,7 @@
         setupIntroGuide();
         setupTabs();
         setupEvents();
+        setupHistoryToggle();
         setupAIToggle();
         setupRulesEvents();
         loadAnalysis();
