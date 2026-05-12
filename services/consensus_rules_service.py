@@ -49,7 +49,7 @@ SYSTEM_PROMPT = (
     '- "pair_agree": {"type":"pair_agree","predictors":[id1,id2],"field":"rqspf","value":"胜"}  '
     '  含义：这两个 predictor 在该字段上预测同值时触发；如果 value 给定则要求 = 该值，未给则任意一致都触发\n'
     '- "n_agree": {"type":"n_agree","n":3,"field":"rqspf","value":"胜"}  '
-    '  含义：当 N 个方案在该字段上预测同一值时触发；value 可省略\n'
+    '  含义：当且仅当恰好 N 个方案在该字段上预测同一值时触发；value 可省略。注意：这不是“至少 N 个”，全员一致必须使用 all_agree\n'
     '- "all_agree": {"type":"all_agree","field":"spf","value":"胜"}  '
     '  含义：方案池全部方案预测同值时触发\n'
     '- "majority_agree": {"type":"majority_agree","threshold":0.6,"field":"rqspf"}  '
@@ -299,6 +299,8 @@ def _build_prompt(*, consensus_summary: dict, user_message: str) -> str:
 - 规则中的 predictor id 必须来自当前方案池，不要编造。
 - 至少给出一条 confidence: "high" 的规则；如有反向规律（例如全员一致反而错），也用一条规则提示。
 - **优先考虑"强方案"组合（quality=high），警惕含"反指标"方案（quality=anti）的共识** — 反指标方案历史命中率低于随机，参与共识反而是危险信号。
+- condition_match.type="n_agree" 表示**恰好 N 个方案一致**，不是至少 N 个；全员一致只能用 all_agree。不要让"三方案共识"类规则覆盖全员一致场景。
+- 如果同时发现"三方案共识可参考"和"全员一致是陷阱"，两条规则必须保持互斥：前者用 n_agree 且 n=3，后者用 all_agree。
 - summary 用一句中文概括最重要的 1-2 个发现。
 - 严格输出 JSON：{{"summary":"...","rules":[...]}}
 """
@@ -449,7 +451,7 @@ def _check_rule_triggered(
         all_preds = field_info.get('all_predictions') or {}
         for value, info in all_preds.items():
             count = int(info.get('count') or 0)
-            if count >= n and (target_value is None or value == target_value):
+            if count == n and (target_value is None or value == target_value):
                 return True, value
         return False, None
 
