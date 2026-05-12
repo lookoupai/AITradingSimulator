@@ -34,6 +34,14 @@ MIN_SAMPLE_FOR_WEIGHT = 30
 # 三选一随机命中率基准（spf / rqspf 都是胜平负三分类）
 RANDOM_BASELINE_RATE = 33.33
 
+# 低命中排除信号阈值。这里使用“比赛场次”而不是方案命中样本数。
+LOW_HIT_MIN_SAMPLE = 10
+LOW_HIT_MEDIUM_SAMPLE = 20
+LOW_HIT_HIGH_SAMPLE = 30
+LOW_HIT_STRONG_RATE = 20.0
+LOW_HIT_WEAK_RATE = 25.0
+LOW_HIT_MAX_COMBO_SIZE = 3
+
 
 def build_consensus_analysis(
     db,
@@ -131,14 +139,23 @@ def build_consensus_analysis(
     # 7. 两两方案一致时的命中率
     pair_combinations = _build_pair_combinations(matches, predictor_ids, fields)
 
-    # 7a. 计算每个方案的"质量权重"（命中率 - 随机基准），供今日推荐排序使用
+    # 7a. 低命中排除信号：按预测值拆分共识数桶、两方案组合、三方案组合。
+    low_hit_signals = _build_low_hit_signals(
+        matches=matches,
+        predictor_ids=predictor_ids,
+        predictors_pool=predictors_pool,
+        fields=fields
+    )
+
+    # 7b. 计算每个方案的"质量权重"（命中率 - 随机基准），供今日推荐排序使用
     predictor_weights = _compute_predictor_weights(per_predictor, fields, normalized)
 
-    # 8. 今日推荐（基于 pending_items + 历史规律 + 加权信号）
+    # 8. 今日推荐（基于 pending_items + 历史规律 + 加权信号 + 低命中排除）
     today_recommendations = _build_today_recommendations(
         pending_items=pending_items,
         consensus_by_count=consensus_by_count,
         pair_combinations=pair_combinations,
+        low_hit_signals=low_hit_signals,
         predictors_pool=predictors_pool,
         fields=fields,
         predictor_weights=predictor_weights
@@ -167,6 +184,7 @@ def build_consensus_analysis(
         'per_predictor': per_predictor,
         'consensus_by_count': consensus_by_count,
         'pair_combinations': pair_combinations,
+        'low_hit_signals': low_hit_signals,
         'today_recommendations': today_recommendations
     }
 
@@ -187,6 +205,7 @@ def _empty_analysis(lottery_type: str, fields: list[dict], window: int | None) -
         'per_predictor': [],
         'consensus_by_count': {f['key']: [] for f in fields},
         'pair_combinations': {f['key']: [] for f in fields},
+        'low_hit_signals': {f['key']: [] for f in fields},
         'today_recommendations': []
     }
 
@@ -503,7 +522,9 @@ def _build_consensus_by_count(
     output: dict[str, list[dict]] = {}
     for field in fields:
         fkey = field['key']
-        bucket: dict[tuple, dict] = defaultdict(lambda: {'total': 0, 'hit': 0})
+        bucket: dict[tuple, dict] = defaultdict(
+            lambda: {'total': 0, 'hit': 0, 'match_total': 0, 'match_hit': 0}
+        )
         for items in matches.values():
             value_supporters: dict[str, list[dict]] = defaultdict(list)
             for item in items:
@@ -516,6 +537,9 @@ def _build_consensus_by_count(
                 n_agree = len(supporters)
                 if n_agree < 1:
                     continue
+                match_hit = int(bool((supporters[0].get('hit') or {}).get(fkey)))
+                bucket[(n_agree, pred_val)]['match_total'] += 1
+                bucket[(n_agree, pred_val)]['match_hit'] += match_hit
                 for sup in supporters:
                     hit_val = (sup.get('hit') or {}).get(fkey)
                     bucket[(n_agree, pred_val)]['total'] += 1
@@ -528,7 +552,10 @@ def _build_consensus_by_count(
                 'value': pred_val,
                 'total': stat['total'],
                 'hit': stat['hit'],
-                'rate': _safe_rate(stat['hit'], stat['total'])
+                'rate': _safe_rate(stat['hit'], stat['total']),
+                'match_total': stat['match_total'],
+                'match_hit': stat['match_hit'],
+                'match_rate': _safe_rate(stat['match_hit'], stat['match_total'])
             })
         rows.sort(key=lambda x: (x['agree_count'], x['value']))
         output[fkey] = rows
@@ -579,11 +606,208 @@ def _build_pair_combinations(
     return output
 
 
+def _build_low_hit_signals(
+    *,
+    matches: dict[tuple, list[dict]],
+    predictor_ids: list[int],
+    predictors_pool: list[dict],
+    fields: list[dict]
+) -> dict[str, list[dict]]:
+    """
+    统计“低命中排除”信号。
+
+    与 pair_combinations 不同，这里必须按预测值拆分，并且统一使用比赛场次作为样本数：
+    - consensus_count：N 个方案同场支持同一值时，该值的历史命中率
+    - combo_2 / combo_3：具体 2/3 个方案同场支持同一值时，该值的历史命中率
+    """
+    name_lookup = {int(p['id']): p.get('name') or f"方案#{p['id']}" for p in predictors_pool}
+    output: dict[str, list[dict]] = {}
+
+    for field in fields:
+        fkey = field['key']
+        rows: list[dict] = []
+
+        consensus_stats = _collect_consensus_count_match_stats(matches, fkey)
+        for (agree_count, value), stat in consensus_stats.items():
+            signal = _make_low_hit_signal(
+                field_key=fkey,
+                signal_type='consensus_count',
+                value=value,
+                sample_matches=stat['total'],
+                hit_matches=stat['hit'],
+                predictor_ids=[],
+                predictor_names=[],
+                agree_count=agree_count
+            )
+            if signal:
+                rows.append(signal)
+
+        for combo_size in range(2, LOW_HIT_MAX_COMBO_SIZE + 1):
+            combo_stats = _collect_value_combo_match_stats(
+                matches=matches,
+                predictor_ids=predictor_ids,
+                field_key=fkey,
+                combo_size=combo_size
+            )
+            for (combo_ids, value), stat in combo_stats.items():
+                ids = list(combo_ids)
+                signal = _make_low_hit_signal(
+                    field_key=fkey,
+                    signal_type=f'combo_{combo_size}',
+                    value=value,
+                    sample_matches=stat['total'],
+                    hit_matches=stat['hit'],
+                    predictor_ids=ids,
+                    predictor_names=[name_lookup.get(pid, str(pid)) for pid in ids],
+                    agree_count=combo_size
+                )
+                if signal:
+                    rows.append(signal)
+
+        rows.sort(key=lambda row: (
+            -int(row.get('severity') or 0),
+            float(row.get('rate') if row.get('rate') is not None else 100.0),
+            -int(row.get('sample_matches') or 0),
+            row.get('type') or '',
+            row.get('value') or ''
+        ))
+        output[fkey] = rows
+
+    return output
+
+
+def _collect_consensus_count_match_stats(
+    matches: dict[tuple, list[dict]],
+    field_key: str
+) -> dict[tuple, dict]:
+    stats: dict[tuple, dict] = defaultdict(lambda: {'total': 0, 'hit': 0})
+    for items in matches.values():
+        value_supporters: dict[str, list[dict]] = defaultdict(list)
+        for item in items:
+            pred_val = (item.get('prediction') or {}).get(field_key)
+            hit_val = (item.get('hit') or {}).get(field_key)
+            if pred_val in (None, '', 'null') or hit_val is None:
+                continue
+            value_supporters[pred_val].append(item)
+
+        for value, supporters in value_supporters.items():
+            if not supporters:
+                continue
+            key = (len(supporters), value)
+            stats[key]['total'] += 1
+            stats[key]['hit'] += int(bool((supporters[0].get('hit') or {}).get(field_key)))
+    return stats
+
+
+def _collect_value_combo_match_stats(
+    *,
+    matches: dict[tuple, list[dict]],
+    predictor_ids: list[int],
+    field_key: str,
+    combo_size: int
+) -> dict[tuple, dict]:
+    stats: dict[tuple, dict] = defaultdict(lambda: {'total': 0, 'hit': 0})
+    predictor_id_set = set(int(pid) for pid in predictor_ids)
+
+    for items in matches.values():
+        value_supporters: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        for item in items:
+            pid = int(item['predictor_id'])
+            if pid not in predictor_id_set:
+                continue
+            pred_val = (item.get('prediction') or {}).get(field_key)
+            hit_val = (item.get('hit') or {}).get(field_key)
+            if pred_val in (None, '', 'null') or hit_val is None:
+                continue
+            value_supporters[pred_val].append((pid, int(bool(hit_val))))
+
+        for value, supporters in value_supporters.items():
+            if len(supporters) < combo_size:
+                continue
+            for combo in combinations(sorted(supporters), combo_size):
+                combo_ids = tuple(pid for pid, _ in combo)
+                key = (combo_ids, value)
+                stats[key]['total'] += 1
+                stats[key]['hit'] += combo[0][1]
+    return stats
+
+
+def _make_low_hit_signal(
+    *,
+    field_key: str,
+    signal_type: str,
+    value: str,
+    sample_matches: int,
+    hit_matches: int,
+    predictor_ids: list[int],
+    predictor_names: list[str],
+    agree_count: int
+) -> dict | None:
+    rate = _safe_rate(hit_matches, sample_matches)
+    if rate is None:
+        return None
+    level = _classify_low_hit_level(sample_matches, rate)
+    if not level:
+        return None
+
+    level_label = {
+        'strong': '强排除',
+        'weak': '排除候选',
+        'watch': '观察信号'
+    }[level]
+    severity = {'strong': 3, 'weak': 2, 'watch': 1}[level]
+
+    return {
+        'field': field_key,
+        'type': signal_type,
+        'value': value,
+        'predictor_ids': predictor_ids,
+        'predictor_names': predictor_names,
+        'agree_count': agree_count,
+        'sample_matches': sample_matches,
+        'hit_matches': hit_matches,
+        'rate': rate,
+        'level': level,
+        'level_label': level_label,
+        'severity': severity,
+        'reason': _format_low_hit_reason(sample_matches, rate, level)
+    }
+
+
+def _classify_low_hit_level(sample_matches: int, rate: float) -> str | None:
+    if sample_matches < LOW_HIT_MIN_SAMPLE:
+        return None
+    if sample_matches >= LOW_HIT_HIGH_SAMPLE:
+        if rate < LOW_HIT_STRONG_RATE:
+            return 'strong'
+        if rate < LOW_HIT_WEAK_RATE:
+            return 'weak'
+        return None
+    if sample_matches >= LOW_HIT_MEDIUM_SAMPLE:
+        if rate <= LOW_HIT_STRONG_RATE:
+            return 'strong'
+        if rate < LOW_HIT_WEAK_RATE:
+            return 'weak'
+        return None
+    if rate < LOW_HIT_STRONG_RATE:
+        return 'watch'
+    return None
+
+
+def _format_low_hit_reason(sample_matches: int, rate: float, level: str) -> str:
+    if level == 'strong':
+        return f"历史 {sample_matches} 场，命中率 {rate:.2f}%，达到强排除阈值"
+    if level == 'weak':
+        return f"历史 {sample_matches} 场，命中率 {rate:.2f}%，低于 25% 排除候选阈值"
+    return f"历史 {sample_matches} 场，命中率 {rate:.2f}%，样本偏少，仅作观察"
+
+
 def _build_today_recommendations(
     *,
     pending_items: list[dict],
     consensus_by_count: dict[str, list[dict]],
     pair_combinations: dict[str, list[dict]],
+    low_hit_signals: dict[str, list[dict]],
     predictors_pool: list[dict],
     fields: list[dict],
     predictor_weights: dict[int, dict[str, float]] | None = None
@@ -621,6 +845,8 @@ def _build_today_recommendations(
             key = tuple(sorted(int(x) for x in pair))
             sub[key] = row
         pair_lookup[fkey] = sub
+
+    low_hit_lookup = _build_low_hit_lookup(low_hit_signals)
 
     recommendations = []
     for (run_key, event_key), items in matches.items():
@@ -663,6 +889,11 @@ def _build_today_recommendations(
                 (weights_lookup.get(int(pid), {}) or {}).get(fkey, 0.0)
                 for pid in supporters
             ), 4)
+            low_hit_by_value = _build_low_hit_matches_for_field(
+                value_supporters=value_supporters,
+                field_key=fkey,
+                low_hit_lookup=low_hit_lookup.get(fkey) or {}
+            )
 
             per_field_rec.append({
                 'field': fkey,
@@ -686,7 +917,9 @@ def _build_today_recommendations(
                 # 细粒度：实际方案两两组合
                 'pair_breakdown': pair_breakdown,
                 # 加权信号（仅用于后台排序，前端不展示）
-                'weighted_strength': weighted_strength
+                'weighted_strength': weighted_strength,
+                # 低命中排除：按本场各预测值分别匹配历史低命中规则。
+                'low_hit_by_value': low_hit_by_value
             })
         if per_field_rec:
             recommendations.append({
@@ -727,6 +960,79 @@ def _build_today_recommendations(
         return best
     recommendations.sort(key=score, reverse=True)
     return recommendations
+
+
+def _build_low_hit_lookup(low_hit_signals: dict[str, list[dict]]) -> dict[str, dict[str, list[dict]]]:
+    lookup: dict[str, dict[str, list[dict]]] = {}
+    for field_key, rows in (low_hit_signals or {}).items():
+        by_value: dict[str, list[dict]] = defaultdict(list)
+        for row in rows or []:
+            value = row.get('value')
+            if value in (None, '', 'null'):
+                continue
+            by_value[str(value)].append(row)
+        lookup[field_key] = dict(by_value)
+    return lookup
+
+
+def _build_low_hit_matches_for_field(
+    *,
+    value_supporters: dict[str, list[int]],
+    field_key: str,
+    low_hit_lookup: dict[str, list[dict]]
+) -> dict[str, dict]:
+    matched: dict[str, dict] = {}
+    for value, supporters in value_supporters.items():
+        supporters_set = set(int(pid) for pid in supporters)
+        signals = []
+        for signal in low_hit_lookup.get(str(value), []):
+            signal_type = signal.get('type')
+            if signal_type == 'consensus_count':
+                if int(signal.get('agree_count') or 0) != len(supporters_set):
+                    continue
+            else:
+                predictor_ids = set(int(pid) for pid in (signal.get('predictor_ids') or []))
+                if not predictor_ids or not predictor_ids.issubset(supporters_set):
+                    continue
+            signals.append(signal)
+
+        if not signals:
+            continue
+
+        strongest = max(signals, key=lambda row: int(row.get('severity') or 0))
+        lowest = min(signals, key=lambda row: (
+            float(row.get('rate') if row.get('rate') is not None else 100.0),
+            -int(row.get('sample_matches') or 0)
+        ))
+        level = strongest.get('level') or 'watch'
+        severity = int(strongest.get('severity') or 1)
+        if severity == 1 and len(signals) >= 2:
+            level = 'weak'
+            severity = 2
+
+        level_label = {
+            'strong': '强排除',
+            'weak': '排除候选',
+            'watch': '观察信号'
+        }.get(level, '观察信号')
+
+        matched[str(value)] = {
+            'field': field_key,
+            'value': value,
+            'level': level,
+            'level_label': level_label,
+            'severity': severity,
+            'signal_count': len(signals),
+            'best_rate': lowest.get('rate'),
+            'best_sample_matches': lowest.get('sample_matches'),
+            'best_hit_matches': lowest.get('hit_matches'),
+            'signals': sorted(signals, key=lambda row: (
+                float(row.get('rate') if row.get('rate') is not None else 100.0),
+                -int(row.get('severity') or 0),
+                -int(row.get('sample_matches') or 0)
+            ))[:5]
+        }
+    return matched
 
 
 def _build_pair_breakdown_for_supporters(

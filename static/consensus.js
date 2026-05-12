@@ -54,6 +54,20 @@
         if (rate == null) return '-';
         return rate.toFixed(1) + '%';
     }
+    function rateSortValue(rate) {
+        return rate == null ? 100 : rate;
+    }
+    function lowHitClass(level) {
+        if (level === 'strong') return 'strong';
+        if (level === 'weak') return 'weak';
+        return 'watch';
+    }
+    function lowHitTypeLabel(type) {
+        if (type === 'consensus_count') return '共识数桶';
+        if (type === 'combo_2') return '两方案组合';
+        if (type === 'combo_3') return '三方案组合';
+        return type || '低命中信号';
+    }
     function predictorNameById(pid) {
         if (!currentAnalysis) return '#' + pid;
         const p = currentAnalysis.predictors.find(x => x.id === pid);
@@ -212,6 +226,37 @@
                     `;
                 }
 
+                // 低命中排除展示：按本场各预测值分别显示，不只看多数共识值。
+                let lowHitHtml = '';
+                const lowHitItems = Object.values(f.low_hit_by_value || {})
+                    .sort((a, b) => (b.severity || 0) - (a.severity || 0) || rateSortValue(a.best_rate) - rateSortValue(b.best_rate));
+                if (lowHitItems.length) {
+                    const rows = lowHitItems.map(item => {
+                        const signals = (item.signals || []).map(signal => {
+                            const names = (signal.predictor_names || []).join(' + ');
+                            const nameText = names ? ` · ${escapeHtml(names)}` : '';
+                            return `
+                                <li>
+                                    <span>${escapeHtml(lowHitTypeLabel(signal.type))}${nameText}</span>
+                                    <span>${fmtRate(signal.rate)} <small>${signal.hit_matches || 0}/${signal.sample_matches || 0}场</small></span>
+                                </li>
+                            `;
+                        }).join('');
+                        const cls = lowHitClass(item.level);
+                        return `
+                            <details class="low-hit-item ${cls}">
+                                <summary>
+                                    <span class="low-hit-value">${escapeHtml(item.value)}</span>
+                                    <strong>${escapeHtml(item.level_label || '观察信号')}</strong>
+                                    <small>最低 ${fmtRate(item.best_rate)} · ${item.signal_count || 0} 条信号</small>
+                                </summary>
+                                <ul>${signals}</ul>
+                            </details>
+                        `;
+                    }).join('');
+                    lowHitHtml = `<div class="low-hit-panel">${rows}</div>`;
+                }
+
                 return `
                     <div class="field-row">
                         <div class="field-row-head">
@@ -229,6 +274,7 @@
                             ${coarseHtml}
                         </div>
                         ${pairHtml}
+                        ${lowHitHtml}
                     </div>
                 `;
             }).join('');

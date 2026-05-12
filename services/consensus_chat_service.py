@@ -192,6 +192,10 @@ def _format_summary(summary: dict) -> str:
         'pair_combinations': _compact_rows_by_field(
             summary.get('pair_combinations') or {},
             limit=MAX_ROWS_PER_FIELD_IN_CHAT_CONTEXT
+        ),
+        'low_hit_signals': _compact_rows_by_field(
+            summary.get('low_hit_signals') or {},
+            limit=MAX_ROWS_PER_FIELD_IN_CHAT_CONTEXT
         )
     }
     return _dump_compact_json(compact)
@@ -242,7 +246,8 @@ def _build_fallback_summary(summary: dict) -> dict:
         'per_predictor': (summary.get('per_predictor') or [])[:4],
         'today_recommendations': (summary.get('today_recommendations') or [])[:3],
         'consensus_by_count': _limit_rows_by_field(summary.get('consensus_by_count') or {}, limit=2),
-        'pair_combinations': _limit_rows_by_field(summary.get('pair_combinations') or {}, limit=2)
+        'pair_combinations': _limit_rows_by_field(summary.get('pair_combinations') or {}, limit=2),
+        'low_hit_signals': _limit_rows_by_field(summary.get('low_hit_signals') or {}, limit=2)
     }
 
 
@@ -299,6 +304,7 @@ def _compact_today_recommendations(recommendations: list[dict]) -> list[dict]:
                 'historical_rate': field.get('historical_rate'),
                 'historical_sample': field.get('historical_sample'),
                 'weighted_strength': field.get('weighted_strength'),
+                'low_hit_by_value': _compact_low_hit_by_value(field.get('low_hit_by_value') or {}),
                 'is_reliable': field.get('is_reliable')
             })
         compacted.append({
@@ -307,6 +313,19 @@ def _compact_today_recommendations(recommendations: list[dict]) -> list[dict]:
             'title': item.get('title'),
             'fields': fields
         })
+    return compacted
+
+
+def _compact_low_hit_by_value(low_hit_by_value: dict) -> dict:
+    compacted = {}
+    for value, item in (low_hit_by_value or {}).items():
+        compacted[value] = {
+            'level': item.get('level'),
+            'level_label': item.get('level_label'),
+            'signal_count': item.get('signal_count'),
+            'best_rate': item.get('best_rate'),
+            'best_sample_matches': item.get('best_sample_matches')
+        }
     return compacted
 
 
