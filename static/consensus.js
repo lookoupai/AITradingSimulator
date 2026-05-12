@@ -249,15 +249,21 @@
     let byCountField = null;
 
     function setupTabs() {
+        const syncTabPanels = () => {
+            document.querySelectorAll('[data-tab-panel]').forEach(panel => {
+                const isActive = panel.dataset.tabPanel === activeTab;
+                panel.hidden = !isActive;
+                panel.classList.toggle('active', isActive);
+            });
+        };
         document.querySelectorAll('.consensus-tabs .tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 activeTab = btn.dataset.tab;
                 document.querySelectorAll('.consensus-tabs .tab-btn').forEach(b => b.classList.toggle('active', b === btn));
-                document.querySelectorAll('[data-tab-panel]').forEach(p => {
-                    p.hidden = p.dataset.tabPanel !== activeTab;
-                });
+                syncTabPanels();
             });
         });
+        syncTabPanels();
         // 字段切换 chip 在 renderFieldChips 里动态生成（按 currentAnalysis.fields 来）
     }
 

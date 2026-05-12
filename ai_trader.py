@@ -60,6 +60,11 @@ class AIPredictor:
         self.temperature = temperature
         self.connect_timeout_seconds = max(1.0, float(getattr(config, 'AI_GATEWAY_CONNECT_TIMEOUT', 10)))
         self.read_timeout_seconds = max(5.0, float(getattr(config, 'AI_GATEWAY_READ_TIMEOUT', 35)))
+        if self._is_slow_reasoning_model():
+            self.read_timeout_seconds = max(
+                self.read_timeout_seconds,
+                float(getattr(config, 'AI_GATEWAY_REASONING_READ_TIMEOUT', 90))
+            )
         self.transport_attempts = max(1, int(getattr(config, 'AI_GATEWAY_TRANSPORT_ATTEMPTS', 2)))
         self._preferred_base_url_cache_ttl_seconds = max(
             300,
@@ -229,14 +234,16 @@ class AIPredictor:
         self,
         prompt: str,
         system_prompt: str,
-        max_output_tokens: int = 1800
+        max_output_tokens: int = 1800,
+        request_time_budget_seconds: Optional[float] = None
     ) -> dict:
         """执行一个通用文本生成任务，不强制 JSON 输出。"""
         result = self._call_llm_with_metadata(
             prompt,
             system_prompt=system_prompt,
             max_output_tokens=max_output_tokens,
-            json_output=False
+            json_output=False,
+            request_time_budget_seconds=request_time_budget_seconds
         )
         return {
             'api_mode': result['api_mode'],
@@ -1067,6 +1074,15 @@ class AIPredictor:
         model_name = str(self.model_name or '').strip().lower()
         return model_name.startswith('minimax-m2')
 
+    def _is_slow_reasoning_model(self) -> bool:
+        model_name = str(self.model_name or '').strip().lower()
+        return (
+            self._is_minimax_reasoning_model()
+            or 'thinking' in model_name
+            or 'reasoning' in model_name
+            or model_name.startswith(('o1', 'o3', 'o4'))
+        )
+
     def _extract_unsupported_parameter_from_response(self, response) -> Optional[str]:
         status_code = getattr(response, 'status_code', 200)
         if not isinstance(status_code, int) or status_code < 400:
@@ -1368,9 +1384,23 @@ class AIPredictor:
 
         if any(keyword in lowered_message for keyword in ['quota', 'insufficient_quota', 'billing', '余额', '额度']):
             category = 'quota'
-        elif any(keyword in lowered_message for keyword in ['invalid api key', 'incorrect api key', 'unauthorized', 'authentication', '401', 'key失效', '鉴权']):
+        elif any(keyword in lowered_message for keyword in [
+            'invalid api key',
+            'incorrect api key',
+            'unauthorized',
+            'authentication',
+            '401',
+            'key失效',
+            '鉴权',
+            'no active api keys',
+            'no available channel',
+            'model does not exist',
+            'do not have access'
+        ]):
             category = 'auth'
         elif any(keyword in lowered_message for keyword in ['rate limit', '429', 'too many requests']):
+            category = 'rate_limit'
+        elif any(keyword in lowered_message for keyword in ['容量超过限制', 'capacity', 'over capacity', 'available capacity']):
             category = 'rate_limit'
         elif any(keyword in lowered_message for keyword in ['无法解析', 'json', '格式', 'schema', 'parse', '字段缺失']):
             category = 'parse'

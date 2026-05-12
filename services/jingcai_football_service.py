@@ -32,6 +32,7 @@ HISTORY_RESULT_REFRESH_GRACE_MINUTES = max(
     30,
     int(getattr(config, 'JINGCAI_HISTORY_RESULT_REFRESH_GRACE_MINUTES', 90))
 )
+UNSETTLED_EXPIRE_HOURS = max(1, int(getattr(config, 'JINGCAI_UNSETTLED_EXPIRE_HOURS', 72)))
 PREDICTION_BATCH_MAX_MATCHES = max(1, int(getattr(config, 'JINGCAI_PREDICTION_BATCH_MAX_MATCHES', 10)))
 PREDICTION_PROMPT_SOFT_LIMIT = max(4000, int(getattr(config, 'JINGCAI_PREDICTION_PROMPT_SOFT_LIMIT', 20000)))
 PREDICTION_MAX_OUTPUT_TOKENS = max(800, int(getattr(config, 'JINGCAI_PREDICTION_MAX_OUTPUT_TOKENS', 3200)))
@@ -459,6 +460,7 @@ class JingcaiFootballService:
                 'predictor_id': predictor_id,
                 'run_keys': [],
                 'settled_items_count': 0,
+                'expired_items_count': 0,
                 'settled_runs_count': 0,
                 'pending_runs_count': len(pending_runs),
                 'runs': [],
@@ -468,31 +470,36 @@ class JingcaiFootballService:
         processed_runs = []
         settled_items_count = 0
         settled_runs_count = 0
+        expired_items_count = 0
         for run in target_runs:
             payload, used_is_prized = self._sync_matches_best_effort(db, run.get('run_key') or '')
             result = self._settle_run_with_payload(db, run, payload)
+            expired_result = self._expire_run_overdue_items(db, result.get('run') or run, payload)
             settled_items_count += result['settled_item_count']
             settled_runs_count += 1 if result['settled_item_count'] > 0 else 0
+            expired_items_count += expired_result['expired_item_count']
             processed_runs.append({
                 'run_key': run.get('run_key'),
                 'used_is_prized': used_is_prized,
                 'settled_item_count': result['settled_item_count'],
-                'status': (result.get('run') or {}).get('status') or run.get('status'),
-                'run': self.build_run_view_model(db, result.get('run')) if result.get('run') else self.build_run_view_model(db, run)
+                'expired_item_count': expired_result['expired_item_count'],
+                'status': (expired_result.get('run') or result.get('run') or {}).get('status') or run.get('status'),
+                'run': self.build_run_view_model(db, expired_result.get('run') or result.get('run') or run)
             })
 
         pending_after = [
             item for item in db.get_recent_prediction_runs(predictor_id, lottery_type=self.lottery_type, limit=100)
             if item.get('status') == 'pending'
         ]
-        if settled_items_count:
-            message = f'已结算 {settled_items_count} 场预测，涉及 {settled_runs_count} 个批次'
+        if settled_items_count or expired_items_count:
+            message = f'已结算 {settled_items_count} 场预测，自动关闭 {expired_items_count} 场超时预测，涉及 {settled_runs_count} 个批次'
         else:
             message = '当前没有新增可结算赛果'
         return {
             'predictor_id': predictor_id,
             'run_keys': [item.get('run_key') for item in target_runs if item.get('run_key')],
             'settled_items_count': settled_items_count,
+            'expired_items_count': expired_items_count,
             'settled_runs_count': settled_runs_count,
             'pending_runs_count': len(pending_after),
             'runs': processed_runs,
@@ -516,7 +523,7 @@ class JingcaiFootballService:
         open_events = []
         for event in recent_events:
             meta_payload = event.get('meta_payload') or {}
-            if meta_payload.get('settled'):
+            if meta_payload.get('settled') or meta_payload.get('expired'):
                 continue
             event_time = parse_beijing_time(event.get('event_time') or '')
             if event_time is None:
@@ -776,6 +783,7 @@ class JingcaiFootballService:
                 continue
 
             result = self._settle_run_with_payload(db, run, payload)
+            self._expire_run_overdue_items(db, result.get('run') or run, payload)
             if result['settled_item_count']:
                 settled_items.extend(result['items'])
 
@@ -901,7 +909,7 @@ class JingcaiFootballService:
             'settled_predictions': len(settled_items),
             'pending_predictions': len([item for item in items if item['status'] == 'pending']),
             'failed_predictions': len([item for item in items if item['status'] == 'failed']),
-            'expired_predictions': 0,
+            'expired_predictions': len([item for item in items if item['status'] == 'expired']),
             'latest_settled_issue': latest_settled['issue_no'] if latest_settled else None,
             'primary_metric': primary,
             'primary_metric_label': football_utils.TARGET_LABELS.get(primary, primary),
@@ -1718,6 +1726,7 @@ class JingcaiFootballService:
 
         spf_sell_status_snapshot = merge_sell_status_snapshot('spf', spf_sell_status)
         rqspf_sell_status_snapshot = merge_sell_status_snapshot('rqspf', rqspf_sell_status)
+        is_settled = bool(match.get('settled'))
 
         result_payload = {
             'score1': match.get('score1'),
@@ -1737,7 +1746,10 @@ class JingcaiFootballService:
             'spf_odds': match.get('spf_odds'),
             'rqspf': match.get('rqspf'),
             'score_text': match.get('score_text'),
-            'settled': match.get('settled')
+            'settled': match.get('settled'),
+            'expired': False if is_settled else bool(existing_meta.get('expired')),
+            'expired_at': None if is_settled else existing_meta.get('expired_at'),
+            'expire_reason': None if is_settled else existing_meta.get('expire_reason')
         }
         return {
             'lottery_type': self.lottery_type,
@@ -2234,6 +2246,9 @@ class JingcaiFootballService:
         items = db.get_prediction_run_items(run_id)
         total_items = len(items)
         settled_items = [item for item in items if item['status'] == 'settled']
+        pending_items = [item for item in items if item['status'] == 'pending']
+        expired_items = [item for item in items if item['status'] == 'expired']
+        failed_items = [item for item in items if item['status'] == 'failed']
         attempted_hits = []
         for item in settled_items:
             hit_payload = item.get('hit_payload') or {}
@@ -2244,6 +2259,12 @@ class JingcaiFootballService:
         if total_items and len(settled_items) == total_items:
             run_status = 'settled'
             settled_at = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        elif total_items and not pending_items:
+            if failed_items and not settled_items and not expired_items:
+                run_status = 'failed'
+            else:
+                run_status = 'expired'
+            settled_at = settled_at or datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         elif run_status != 'failed':
             run_status = 'pending'
 
@@ -2442,8 +2463,9 @@ class JingcaiFootballService:
 
     def _build_overview_from_events(self, events: list[dict], batch_key: str | None, limit: int = 20, warning: str | None = None) -> dict:
         sorted_events = sorted(events, key=lambda item: item.get('event_time') or '')
-        sale_open_events = [item for item in sorted_events if football_utils.is_match_sale_open(item)]
-        awaiting_result_events = [item for item in sorted_events if football_utils.is_match_awaiting_result(item)]
+        active_events = [item for item in sorted_events if not (item.get('meta_payload') or {}).get('expired')]
+        sale_open_events = [item for item in active_events if football_utils.is_match_sale_open(item)]
+        awaiting_result_events = [item for item in active_events if football_utils.is_match_awaiting_result(item)]
         settled_events = [
             item for item in sorted_events
             if football_utils.is_match_prized(item) or (item.get('meta_payload') or {}).get('settled')
@@ -2560,6 +2582,101 @@ class JingcaiFootballService:
             'items': refreshed_items,
             'settled_item_count': settled_item_count
         }
+
+    def _expire_run_overdue_items(self, db, run: dict, payload: dict) -> dict:
+        items = db.get_prediction_run_items(run['id'])
+        pending_items = [item for item in items if item.get('status') == 'pending']
+        if not pending_items:
+            return {
+                'run': db.get_prediction_run(run['id']),
+                'items': items,
+                'expired_item_count': 0
+            }
+
+        match_map = {
+            item['event_key']: item
+            for item in (payload.get('matches') or [])
+            if item.get('event_key')
+        }
+        event_keys = [item['event_key'] for item in pending_items if item.get('event_key')]
+        event_map = db.get_lottery_event_map(self.lottery_type, event_keys, source_provider='sina')
+        now_beijing = get_current_beijing_time()
+        expire_before = now_beijing - timedelta(hours=UNSETTLED_EXPIRE_HOURS)
+        settled_at = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        reason = f'超过 {UNSETTLED_EXPIRE_HOURS} 小时未获取到官方赛果，自动过期关闭'
+        expired_event_keys = []
+        expired_count = 0
+
+        for item in pending_items:
+            event_key = item.get('event_key')
+            match = match_map.get(event_key)
+            if match and match.get('settled'):
+                continue
+
+            event = event_map.get(event_key) or {}
+            kickoff_time = parse_beijing_time((match or {}).get('match_time') or event.get('event_time') or '')
+            if kickoff_time is None or kickoff_time > expire_before:
+                continue
+
+            db.upsert_prediction_items([{
+                **item,
+                'actual_payload': {},
+                'hit_payload': {},
+                'status': 'expired',
+                'error_message': reason,
+                'settled_at': settled_at
+            }])
+            expired_count += 1
+            if event_key:
+                expired_event_keys.append(event_key)
+
+        if expired_count:
+            self._mark_lottery_events_expired(db, expired_event_keys, settled_at, reason)
+            self._refresh_run_summary(db, run['id'])
+
+        refreshed_run = db.get_prediction_run(run['id'])
+        refreshed_items = db.get_prediction_run_items(run['id'])
+        return {
+            'run': refreshed_run,
+            'items': refreshed_items,
+            'expired_item_count': expired_count
+        }
+
+    def _mark_lottery_events_expired(self, db, event_keys: list[str], expired_at: str, reason: str):
+        unique_event_keys = [key for key in dict.fromkeys(event_keys) if key]
+        if not unique_event_keys:
+            return
+
+        event_map = db.get_lottery_event_map(self.lottery_type, unique_event_keys, source_provider='sina')
+        records = []
+        for event in event_map.values():
+            meta_payload = dict(event.get('meta_payload') or {})
+            if meta_payload.get('settled'):
+                continue
+            meta_payload.update({
+                'expired': True,
+                'expired_at': expired_at,
+                'expire_reason': reason
+            })
+            records.append({
+                'lottery_type': self.lottery_type,
+                'event_key': event.get('event_key'),
+                'batch_key': event.get('batch_key') or '',
+                'event_date': event.get('event_date') or '',
+                'event_time': event.get('event_time') or '',
+                'event_name': event.get('event_name') or '',
+                'league': event.get('league') or '',
+                'home_team': event.get('home_team') or '',
+                'away_team': event.get('away_team') or '',
+                'status': event.get('status') or '',
+                'status_label': event.get('status_label') or '',
+                'source_provider': event.get('source_provider') or 'sina',
+                'result_payload': football_utils.dump_json(event.get('result_payload') or {}),
+                'meta_payload': football_utils.dump_json(meta_payload),
+                'source_payload': football_utils.dump_json(event.get('source_payload') or {})
+            })
+
+        db.upsert_lottery_events(records)
 
     def _build_match_from_cached_event(self, event: dict) -> dict:
         meta_payload = event.get('meta_payload') or {}

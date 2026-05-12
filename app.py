@@ -5345,6 +5345,22 @@ def _format_consensus_chat_error(error: Exception) -> str:
     return f'{prefix}：{detail}'
 
 
+def _consensus_chat_error_status(error: Exception) -> int:
+    if not isinstance(error, AIPredictionError):
+        return 500
+
+    category = getattr(error, 'category', 'ai_error')
+    if category == 'auth':
+        return 401
+    if category in {'quota', 'rate_limit'}:
+        return 429
+    if category in {'deadline', 'transport'}:
+        return 504
+    if category == 'parse':
+        return 502
+    return 502
+
+
 @app.route('/api/consensus/analysis', methods=['GET'])
 @login_required
 def api_consensus_analysis():
@@ -5454,7 +5470,7 @@ def api_consensus_chat():
         )
     except AIPredictionError as exc:
         runtime_logger.exception('共识聊天调用失败: %s', exc)
-        return jsonify({'error': _format_consensus_chat_error(exc)}), 502
+        return jsonify({'error': _format_consensus_chat_error(exc)}), _consensus_chat_error_status(exc)
     except Exception as exc:
         runtime_logger.exception('共识聊天调用失败: %s', exc)
         return jsonify({'error': f'AI 调用失败: {exc}'}), 500

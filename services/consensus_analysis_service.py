@@ -239,7 +239,7 @@ def _fetch_prediction_items(
         if only_settled:
             sql += " AND status = 'settled'"
         elif only_pending:
-            sql += " AND status != 'settled'"
+            sql += " AND status = 'pending'"
 
         if time_window_days is not None:
             cutoff = (datetime.utcnow() - timedelta(days=int(time_window_days))).strftime('%Y-%m-%d %H:%M:%S')
@@ -333,7 +333,7 @@ def _fetch_pc28_predictions_as_items(
     if only_settled:
         sql += " AND status = 'settled'"
     elif only_pending:
-        sql += " AND status != 'settled'"
+        sql += " AND status = 'pending'"
 
     if recent_issues_limit is not None:
         # PC28 issue_no 是数字字符串，按 INTEGER 排序
