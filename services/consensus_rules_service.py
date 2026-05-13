@@ -449,6 +449,9 @@ def _check_rule_triggered(
         if n <= 0:
             return False, None
         all_preds = field_info.get('all_predictions') or {}
+        total = sum(int(info.get('count') or 0) for info in all_preds.values())
+        if len(all_preds) == 1 and n >= total:
+            return False, None
         for value, info in all_preds.items():
             count = int(info.get('count') or 0)
             if count == n and (target_value is None or value == target_value):
