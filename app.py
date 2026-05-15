@@ -132,6 +132,7 @@ profit_simulator = ProfitSimulator(db)
 _init_lock = threading.Lock()
 _app_initialized = False
 _scheduler_started = False
+_jingcai_backfill_worker_started = False
 _notification_worker_started = False
 _scheduler_owner_id = f'{os.getpid()}-{uuid.uuid4().hex}'
 AUTO_PREDICTION_SCHEDULER = 'lottery-auto-prediction'
@@ -179,7 +180,7 @@ def after_request(response):
 
 
 def initialize_application():
-    global _app_initialized, _scheduler_started, _notification_worker_started
+    global _app_initialized, _scheduler_started, _jingcai_backfill_worker_started, _notification_worker_started
 
     with _init_lock:
         if not _app_initialized:
@@ -190,6 +191,15 @@ def initialize_application():
             scheduler_thread = threading.Thread(target=prediction_loop, daemon=True)
             scheduler_thread.start()
             _scheduler_started = True
+
+        if (
+            config.AUTO_PREDICTION
+            and bool(getattr(config, 'JINGCAI_HISTORY_BACKFILL_ENABLED', True))
+            and not _jingcai_backfill_worker_started
+        ):
+            backfill_thread = threading.Thread(target=jingcai_history_backfill_loop, daemon=True)
+            backfill_thread.start()
+            _jingcai_backfill_worker_started = True
 
         if config.NOTIFICATION_WORKER_ENABLED and not _notification_worker_started:
             notification_thread = threading.Thread(target=notification_delivery_loop, daemon=True)
@@ -250,6 +260,65 @@ def _run_scheduled_jingcai_history_backfill() -> dict | None:
     return result
 
 
+def jingcai_history_backfill_loop():
+    _log_runtime_event(
+        'info',
+        'jingcai_history_backfill_loop_started',
+        process_id=os.getpid(),
+        scheduler_name=JINGCAI_HISTORY_BACKFILL_SCHEDULER
+    )
+    last_backfill_at = 0.0
+
+    while config.AUTO_PREDICTION and bool(getattr(config, 'JINGCAI_HISTORY_BACKFILL_ENABLED', True)):
+        backfill_interval = max(3600, int(getattr(config, 'JINGCAI_HISTORY_BACKFILL_INTERVAL_SECONDS', 86400)))
+        try:
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_backfill_at >= backfill_interval:
+                backfill_started_at = time.monotonic()
+                try:
+                    backfill_result = _run_scheduled_jingcai_history_backfill()
+                    if backfill_result:
+                        result_payload = backfill_result.get('result') or {}
+                        _log_runtime_event(
+                            'info',
+                            'jingcai_history_backfill_completed',
+                            scheduler_name=JINGCAI_HISTORY_BACKFILL_SCHEDULER,
+                            owner_id=_scheduler_owner_id,
+                            skipped=bool(backfill_result.get('skipped')),
+                            match_count=int(result_payload.get('match_count') or 0),
+                            detail_count=int(result_payload.get('detail_count') or 0),
+                            duration_ms=int((time.monotonic() - backfill_started_at) * 1000)
+                        )
+                except Exception as exc:
+                    _log_runtime_event(
+                        'warning',
+                        'jingcai_history_backfill_failed',
+                        scheduler_name=JINGCAI_HISTORY_BACKFILL_SCHEDULER,
+                        owner_id=_scheduler_owner_id,
+                        error=str(exc),
+                        duration_ms=int((time.monotonic() - backfill_started_at) * 1000)
+                    )
+                finally:
+                    last_backfill_at = now_monotonic
+
+            time.sleep(min(60, max(5, backfill_interval)))
+        except Exception as exc:
+            runtime_logger.exception(
+                json.dumps(
+                    {
+                        'event': 'jingcai_history_backfill_loop_error',
+                        'time_beijing': get_current_beijing_time_str(),
+                        'scheduler_name': JINGCAI_HISTORY_BACKFILL_SCHEDULER,
+                        'owner_id': _scheduler_owner_id,
+                        'error': str(exc)
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True
+                )
+            )
+            time.sleep(60)
+
+
 def prediction_loop():
     _log_runtime_event(
         'info',
@@ -265,7 +334,6 @@ def prediction_loop():
     }
     last_retention_maintenance_at = 0.0
     last_vacuum_at = 0.0
-    last_jingcai_backfill_at = 0.0
     last_jingcai_retention_maintenance_at = 0.0
 
     while config.AUTO_PREDICTION:
@@ -405,35 +473,6 @@ def prediction_loop():
                                 deleted_run_rows=deleted_jingcai_run_rows,
                                 cutoff_date=jingcai_maintenance_result.get('cutoff_date')
                             )
-
-                backfill_interval = max(3600, int(getattr(config, 'JINGCAI_HISTORY_BACKFILL_INTERVAL_SECONDS', 86400)))
-                if now_monotonic - last_jingcai_backfill_at >= backfill_interval:
-                    backfill_started_at = time.monotonic()
-                    try:
-                        backfill_result = _run_scheduled_jingcai_history_backfill()
-                        if backfill_result:
-                            result_payload = backfill_result.get('result') or {}
-                            _log_runtime_event(
-                                'info',
-                                'jingcai_history_backfill_completed',
-                                scheduler_name=JINGCAI_HISTORY_BACKFILL_SCHEDULER,
-                                owner_id=_scheduler_owner_id,
-                                skipped=bool(backfill_result.get('skipped')),
-                                match_count=int(result_payload.get('match_count') or 0),
-                                detail_count=int(result_payload.get('detail_count') or 0),
-                                duration_ms=int((time.monotonic() - backfill_started_at) * 1000)
-                            )
-                    except Exception as exc:
-                        _log_runtime_event(
-                            'warning',
-                            'jingcai_history_backfill_failed',
-                            scheduler_name=JINGCAI_HISTORY_BACKFILL_SCHEDULER,
-                            owner_id=_scheduler_owner_id,
-                            error=str(exc),
-                            duration_ms=int((time.monotonic() - backfill_started_at) * 1000)
-                        )
-                    finally:
-                        last_jingcai_backfill_at = now_monotonic
 
                 db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
                 total_duration_ms = int((time.monotonic() - loop_started_at) * 1000)
