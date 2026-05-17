@@ -5791,7 +5791,8 @@ def api_score_consensus_rules():
     matched = score_today_against_rules(
         rules=rules_row.get('rules') or [],
         today_recommendations=analysis.get('today_recommendations') or [],
-        today_matches_detail=today_matches_detail
+        today_matches_detail=today_matches_detail,
+        pool_predictor_ids=pids
     )
     return jsonify({
         'has_rules': True,

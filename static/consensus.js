@@ -269,7 +269,7 @@
                             </div>
                             <div class="consensus-pick">
                                 <span>${escapeHtml(f.consensus_value)}</span>
-                                <span class="agree">${f.agree_count}人</span>
+                                <span class="agree">${f.agree_count}/${f.pool_size || f.agree_count}人</span>
                             </div>
                         </div>
                         <div class="field-rate-row">
@@ -833,6 +833,7 @@
                 /反向|警惕|降低|忽略/.test(action) ? 'warn' :
                 /禁止|拒绝|危险/.test(action) ? 'danger' : '';
             const fieldLabel = fieldLabelByKey(rule.field);
+            const confLabel = {high:'高', medium:'中', low:'低'}[conf] || conf;
             const scorableBadge = rule.auto_scorable
                 ? '<span class="rule-badge scorable" title="可对今日自动评分">可评分</span>'
                 : '<span class="rule-badge not-scorable" title="自定义类型，不参与自动评分">仅展示</span>';
@@ -842,7 +843,7 @@
                         <span class="rule-title">${escapeHtml(rule.title || '未命名规则')}</span>
                         <span class="rule-badges">
                             <span class="rule-badge field">${escapeHtml(fieldLabel)}</span>
-                            <span class="rule-badge confidence-${escapeHtml(conf)}">${escapeHtml(conf)}</span>
+                            <span class="rule-badge confidence-${escapeHtml(conf)}">${escapeHtml(confLabel)}</span>
                             ${scorableBadge}
                         </span>
                     </div>

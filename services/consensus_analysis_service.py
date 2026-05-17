@@ -526,14 +526,18 @@ def _build_consensus_by_count(
             lambda: {'total': 0, 'hit': 0, 'match_total': 0, 'match_hit': 0}
         )
         for items in matches.values():
-            value_supporters: dict[str, list[dict]] = defaultdict(list)
+            value_supporters: dict[str, dict[int, dict]] = defaultdict(dict)
             for item in items:
                 pred_val = (item.get('prediction') or {}).get(fkey)
                 hit_val = (item.get('hit') or {}).get(fkey)
                 if pred_val in (None, '', 'null') or hit_val is None:
                     continue
-                value_supporters[pred_val].append(item)
-            for pred_val, supporters in value_supporters.items():
+                # 按 predictor_id 去重：同一方案同一比赛只计一次
+                pid = item.get('predictor_id')
+                if pid is not None:
+                    value_supporters[pred_val][pid] = item
+            for pred_val, pid_map in value_supporters.items():
+                supporters = list(pid_map.values())
                 n_agree = len(supporters)
                 if n_agree < 1:
                     continue
@@ -569,6 +573,7 @@ def _build_pair_combinations(
 ) -> dict[str, list[dict]]:
     """对每对方案，统计他们预测一致时的命中率（合并两人的命中样本）。"""
     output: dict[str, list[dict]] = {}
+    sorted_pids = sorted(predictor_ids)
     for field in fields:
         fkey = field['key']
         pair_stats: dict[tuple, dict] = defaultdict(lambda: {'total': 0, 'hit': 0})
@@ -580,18 +585,17 @@ def _build_pair_combinations(
                 if pred_val in (None, '', 'null') or hit_val is None:
                     continue
                 preds_by_pid[item['predictor_id']] = item
-            for p1, p2 in combinations(predictor_ids, 2):
+            for p1, p2 in combinations(sorted_pids, 2):
                 if p1 not in preds_by_pid or p2 not in preds_by_pid:
                     continue
                 v1 = preds_by_pid[p1]['prediction'][fkey]
                 v2 = preds_by_pid[p2]['prediction'][fkey]
                 if v1 != v2:
                     continue
-                # 两个方案预测一致：计入两条命中样本
-                for pid in (p1, p2):
-                    h = preds_by_pid[pid]['hit'].get(fkey)
-                    pair_stats[(p1, p2)]['total'] += 1
-                    pair_stats[(p1, p2)]['hit'] += int(bool(h))
+                # 两个方案预测一致：同一比赛同一预测值，命中结果相同，只计 1 次比赛样本
+                h = preds_by_pid[p1]['hit'].get(fkey)
+                pair_stats[(p1, p2)]['total'] += 1
+                pair_stats[(p1, p2)]['hit'] += int(bool(h))
 
         rows = []
         for (p1, p2), stat in pair_stats.items():
@@ -784,7 +788,7 @@ def _classify_low_hit_level(sample_matches: int, rate: float) -> str | None:
             return 'weak'
         return None
     if sample_matches >= LOW_HIT_MEDIUM_SAMPLE:
-        if rate <= LOW_HIT_STRONG_RATE:
+        if rate < LOW_HIT_STRONG_RATE:
             return 'strong'
         if rate < LOW_HIT_WEAK_RATE:
             return 'weak'
@@ -849,6 +853,7 @@ def _build_today_recommendations(
     low_hit_lookup = _build_low_hit_lookup(low_hit_signals)
 
     recommendations = []
+    pool_size = len(predictors_pool)
     for (run_key, event_key), items in matches.items():
         # 取该场任意一项的标题
         title = next((it.get('title') or '' for it in items), '')
@@ -870,8 +875,8 @@ def _build_today_recommendations(
             )
             agree_count = len(supporters)
             historical = rate_lookup.get(fkey, {}).get((agree_count, consensus_value))
-            historical_rate = historical.get('rate') if historical else None
-            historical_sample = int(historical.get('total') if historical else 0)
+            historical_rate = historical.get('match_rate') if historical else None
+            historical_sample = int(historical.get('match_total') if historical else 0)
             is_reliable = historical_sample >= MIN_RELIABLE_SAMPLE and historical_rate is not None
 
             # 细粒度：实际共识方案两两组合的历史表现
@@ -900,6 +905,8 @@ def _build_today_recommendations(
                 'field_label': field['label'],
                 'consensus_value': consensus_value,
                 'agree_count': agree_count,
+                'pool_size': pool_size,
+                'predicting_count': sum(len(pids) for pids in value_supporters.values()),
                 'supporters': supporters,
                 'supporter_names': [name_lookup.get(pid, str(pid)) for pid in supporters],
                 'all_predictions': {
@@ -938,7 +945,7 @@ def _build_today_recommendations(
     # 实战意义：含 1 个烂方案的 N+1 人共识不应该排在干净的 N 人共识前面。
     W_BOOST = 2.5
     def score(rec):
-        best = 0.0
+        best = float('-inf')
         for f in rec['fields']:
             agree = f.get('agree_count') or 0
             sample = f.get('historical_sample') or 0

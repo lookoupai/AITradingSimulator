@@ -46,16 +46,16 @@ SYSTEM_PROMPT = (
     '  ]\n'
     '}\n'
     'condition_match.type 必须是以下之一（用平台能自动评分的）：\n'
-    '- "pair_agree": {"type":"pair_agree","predictors":[id1,id2],"field":"rqspf","value":"胜"}  '
+    '- “pair_agree”: {“type”:”pair_agree”,”predictors”:[id1,id2],”field”:”rqspf”,”value”:”胜”}  '
     '  含义：这两个 predictor 在该字段上预测同值时触发；如果 value 给定则要求 = 该值，未给则任意一致都触发\n'
-    '- "n_agree": {"type":"n_agree","n":3,"field":"rqspf","value":"胜"}  '
-    '  含义：当且仅当恰好 N 个方案在该字段上预测同一值时触发；value 可省略。注意：这不是“至少 N 个”，全员一致必须使用 all_agree\n'
-    '- "all_agree": {"type":"all_agree","field":"spf","value":"胜"}  '
-    '  含义：方案池全部方案预测同值时触发\n'
-    '- "majority_agree": {"type":"majority_agree","threshold":0.6,"field":"rqspf"}  '
-    '  含义：超过 threshold 比例方案预测同一值时触发\n'
-    '- "exclude_predictor": {"type":"exclude_predictor","predictor":13}  '
-    '  含义：仅作为"应忽略此方案"的提示，不参与今日评分\n'
+    '- “n_agree”: {“type”:”n_agree”,”n”:3,”field”:”rqspf”,”value”:”胜”}  '
+    '  含义：当且仅当恰好 N 个方案在该字段上预测同一值时触发；value 可省略。注意：这不是”至少 N 个”，全员一致必须使用 all_agree\n'
+    '- “all_agree”: {“type”:”all_agree”,”field”:”spf”,”value”:”胜”}  '
+    '  含义：方案池全部方案都出了预测且预测同值时触发（未出预测的方案不算一致）\n'
+    '- “majority_agree”: {“type”:”majority_agree”,”threshold”:0.6,”field”:”rqspf”}  '
+    '  含义：超过 threshold 比例的方案池方案预测同一值时触发；分母是方案池总数（含未出预测的方案），不是仅出预测的方案数\n'
+    '- “exclude_predictor”: {“type”:”exclude_predictor”,”predictor”:13}  '
+    '  含义：仅作为”应忽略此方案”的提示，不参与今日评分\n'
     '生成规则时务必结合用户的真实方案 ID 和命中率数据，不要编造方案。'
 )
 
@@ -140,7 +140,8 @@ def score_today_against_rules(
     *,
     rules: list[dict],
     today_recommendations: list[dict],
-    today_matches_detail: list[dict] | None = None
+    today_matches_detail: list[dict] | None = None,
+    pool_predictor_ids: list[int] | None = None
 ) -> list[dict]:
     """
     返回每场比赛的命中规则列表：
@@ -155,9 +156,13 @@ def score_today_against_rules(
       ...
     ]
     只包含至少命中一条规则的比赛。
+    pool_predictor_ids: 方案池所有方案 ID 列表，用于 all_agree / majority_agree
+                       判断时区分"全员"和"仅出预测的方案"。
     """
     if not rules or not today_recommendations:
         return []
+
+    pool_ids = set(pool_predictor_ids or [])
 
     # 把 today_matches_detail 索引到 (event_key) 方便查 predictor_id -> prediction value
     detail_by_event: dict[str, list[dict]] = {}
@@ -186,7 +191,8 @@ def score_today_against_rules(
             if ctype not in KNOWN_CONDITION_TYPES:
                 continue
             triggered, hit_value = _check_rule_triggered(
-                cm, ctype, field_distribution, pred_lookup
+                cm, ctype, field_distribution, pred_lookup,
+                pool_ids=pool_ids
             )
             if triggered:
                 matched.append({
@@ -301,6 +307,8 @@ def _build_prompt(*, consensus_summary: dict, user_message: str) -> str:
 - **优先考虑"强方案"组合（quality=high），警惕含"反指标"方案（quality=anti）的共识** — 反指标方案历史命中率低于随机，参与共识反而是危险信号。
 - condition_match.type="n_agree" 表示**恰好 N 个方案一致**，不是至少 N 个；全员一致只能用 all_agree。不要让"三方案共识"类规则覆盖全员一致场景。
 - 如果同时发现"三方案共识可参考"和"全员一致是陷阱"，两条规则必须保持互斥：前者用 n_agree 且 n=3，后者用 all_agree。
+- **让球（rqspf）规则必须锁定单一预测值**：让球胜平负只有3个选项（胜/平/负），选2个等于随机猜，胜率约66%毫无参考价值。因此 rqspf 字段的 condition_match 必须指定 value（如 "胜" 或 "负"），不得省略。只有锁定单一值才有信息量。
+- **全员一致陷阱的 all_agree 规则必须限定 value**：all_agree 不指定 value 时含义是"不管预测什么都算陷阱"，但不同值的陷阱意义不同。应该针对具体值（如全员一致预测"胜"时才是陷阱）来生成规则，避免过于宽泛。
 - summary 用一句中文概括最重要的 1-2 个发现。
 - 严格输出 JSON：{{"summary":"...","rules":[...]}}
 """
@@ -378,6 +386,12 @@ def _normalize_rule(item: dict, *, default_id: str) -> dict | None:
     ctype = str(cm.get('type') or '').strip()
     # 不识别的 type 也保留（前端展示），但 field 必须有
 
+    # rqspf 字段的 condition_match 必须指定 value，
+    # 否则 3 选 2 等于随机猜，信息量不足
+    if field == 'rqspf' and ctype in ('pair_agree', 'n_agree', 'all_agree', 'majority_agree'):
+        if not cm.get('value'):
+            cm['value'] = ''
+
     return {
         'id': rule_id,
         'title': title,
@@ -404,11 +418,15 @@ def _check_rule_triggered(
     cm: dict,
     ctype: str,
     field_distribution: dict[str, dict],
-    pred_lookup: dict[int, dict]
+    pred_lookup: dict[int, dict],
+    *,
+    pool_ids: set[int] | None = None
 ) -> tuple[bool, str | None]:
     """
     判断当前比赛是否触发该规则。
     返回 (是否触发, 命中的预测值)。
+    pool_ids: 方案池全部方案 ID 集合；用于 all_agree / majority_agree 区分
+              "全部方案池一致" vs "仅出了预测的方案一致"。
     """
     if ctype == 'exclude_predictor':
         # 这种规则本身不参与评分（它是建议而非触发器）
@@ -422,20 +440,29 @@ def _check_rule_triggered(
         return False, None
 
     target_value = cm.get('value')  # 可选
+    all_preds = field_info.get('all_predictions') or {}
+    # 有预测的方案数和预测值集合
+    predicting_count = sum(int(v.get('count') or 0) for v in all_preds.values())
 
     if ctype == 'all_agree':
-        # 当前比赛该字段所有预测都一致
-        all_preds = field_info.get('all_predictions') or {}
-        if len(all_preds) == 1:
-            sole_value = next(iter(all_preds.keys()))
-            if target_value is None or sole_value == target_value:
-                return True, sole_value
+        # 当前比赛该字段所有预测都一致 — 但必须确认是"方案池全员一致"，
+        # 而非"仅出了预测的方案一致、未出预测的方案被忽略"。
+        if len(all_preds) != 1:
+            return False, None
+        sole_value = next(iter(all_preds.keys()))
+        if pool_ids:
+            # 有方案池信息时，严格要求：出预测的方案数 = 方案池总数
+            if predicting_count != len(pool_ids):
+                return False, None
+        if target_value is None or sole_value == target_value:
+            return True, sole_value
         return False, None
 
     if ctype == 'majority_agree':
         threshold = float(cm.get('threshold') or 0.6)
-        all_preds = field_info.get('all_predictions') or {}
-        total = sum(int(v.get('count') or 0) for v in all_preds.values())
+        # 用方案池总数作为分母，而非仅出预测的方案数
+        # 这样避免"少数方案一致但占比高"的假多数
+        total = len(pool_ids) if pool_ids else predicting_count
         if total == 0:
             return False, None
         for value, info in all_preds.items():
@@ -448,9 +475,10 @@ def _check_rule_triggered(
         n = int(cm.get('n') or 0)
         if n <= 0:
             return False, None
-        all_preds = field_info.get('all_predictions') or {}
         total = sum(int(info.get('count') or 0) for info in all_preds.values())
-        if len(all_preds) == 1 and n >= total:
+        # 只有当"全员都出了预测且全部一致"时才拒绝 n_agree（交给 all_agree 处理）。
+        # 如果有方案没出预测，即使出预测的全一致，也不算"全员一致"，n_agree 应该触发。
+        if len(all_preds) == 1 and n >= total and pool_ids and total == len(pool_ids):
             return False, None
         for value, info in all_preds.items():
             count = int(info.get('count') or 0)
