@@ -281,6 +281,14 @@ class ConsensusAnalysisServiceTests(unittest.TestCase):
         )
         self.assertEqual(today_spf['market_segment'], 'spf:favorite:ultra_low')
         self.assertEqual(today_spf['market_segment_label'], '热门项/超低赔')
+        self.assertEqual(today_spf['pair_breakdown']['source'], 'segment')
+        self.assertEqual(today_spf['pair_breakdown']['market_segment'], 'spf:favorite:ultra_low')
+        self.assertEqual(today_spf['pair_breakdown']['avg_rate'], 100.0)
+        self.assertEqual(today_spf['pair_breakdown']['total_sample'], 3)
+        self.assertTrue(all(
+            pair['source'] == 'segment'
+            for pair in today_spf['pair_breakdown']['pairs']
+        ))
         self.assertEqual(today_rqspf['market_segment'], 'rqspf:home_give:cover')
         self.assertEqual(today_rqspf['market_segment_label'], '主让/打穿')
 

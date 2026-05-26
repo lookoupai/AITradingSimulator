@@ -167,6 +167,7 @@ def build_consensus_analysis(
         pending_items=pending_items,
         consensus_by_count=consensus_by_count,
         pair_combinations=pair_combinations,
+        pair_segment_combinations=pair_segment_combinations,
         low_hit_signals=low_hit_signals,
         predictors_pool=predictors_pool,
         fields=fields,
@@ -1104,6 +1105,7 @@ def _build_today_recommendations(
     pending_items: list[dict],
     consensus_by_count: dict[str, list[dict]],
     pair_combinations: dict[str, list[dict]],
+    pair_segment_combinations: dict[str, list[dict]] | None,
     low_hit_signals: dict[str, list[dict]],
     predictors_pool: list[dict],
     fields: list[dict],
@@ -1113,8 +1115,8 @@ def _build_today_recommendations(
     对每场未结算比赛：
       - 找出每个字段的共识值（票数最多的预测值）
       - 关联历史"共识=N且值=V"时的命中率作为参考（粗粒度分组）
-      - 当共识方案数 >= 2 时，额外查"实际这几个方案两两组合"在历史中的命中率
-        （细粒度），让强方案集合的真实表现可以独立判断
+      - 当共识方案数 >= 2 时，优先查"实际这几个方案 + 同盘口分层"的两两组合命中率，
+        缺失时回退全量两两组合，让强方案集合的真实表现可以独立判断
       - 标记 is_reliable：粗粒度分组样本 >= MIN_RELIABLE_SAMPLE
       - 计算 weighted_strength：本场该字段所有支持方案的"质量权重"加和。
         仅用于后台排序，前端不展示，让"强方案集合一致"排在"含烂方案的群体共识"之前。
@@ -1142,6 +1144,21 @@ def _build_today_recommendations(
             key = tuple(sorted(int(x) for x in pair))
             sub[key] = row
         pair_lookup[fkey] = sub
+
+    pair_segment_lookup: dict[str, dict[tuple, dict]] = {}
+    for fkey, rows in (pair_segment_combinations or {}).items():
+        sub: dict[tuple, dict] = {}
+        for row in rows:
+            pair = row.get('pair') or []
+            if len(pair) != 2:
+                continue
+            value = row.get('value')
+            segment_key = row.get('market_segment')
+            if value in (None, '', 'null') or not segment_key:
+                continue
+            key = (*tuple(sorted(int(x) for x in pair)), value, segment_key)
+            sub[key] = row
+        pair_segment_lookup[fkey] = sub
 
     low_hit_lookup = _build_low_hit_lookup(low_hit_signals)
 
@@ -1181,7 +1198,10 @@ def _build_today_recommendations(
             pair_breakdown = _build_pair_breakdown_for_supporters(
                 supporters=supporters,
                 field_key=fkey,
+                prediction_value=consensus_value,
+                market_segment=segment,
                 pair_lookup=pair_lookup.get(fkey) or {},
+                pair_segment_lookup=pair_segment_lookup.get(fkey) or {},
                 name_lookup=name_lookup
             )
 
@@ -1354,12 +1374,15 @@ def _build_pair_breakdown_for_supporters(
     *,
     supporters: list[int],
     field_key: str,
+    prediction_value: str,
+    market_segment: dict,
     pair_lookup: dict[tuple, dict],
+    pair_segment_lookup: dict[tuple, dict],
     name_lookup: dict[int, str]
 ) -> dict:
     """
-    给定本场实际共识的 supporters（>=2 个方案），从 pair_combinations 查出他们之间
-    所有两两组合的历史一致命中率，并计算 avg_rate / max_rate。
+    给定本场实际共识的 supporters（>=2 个方案），优先从同盘口分层组合查历史命中率，
+    缺失时回退全量组合，并计算 avg_rate / max_rate。
 
     返回结构：
         {
@@ -1376,15 +1399,29 @@ def _build_pair_breakdown_for_supporters(
     pairs_out: list[dict] = []
     if len(supporters) < 2:
         return {'pairs': [], 'avg_rate': None, 'max_rate': None,
-                'max_pair': None, 'total_sample': 0}
+                'max_pair': None, 'total_sample': 0, 'source': 'none'}
 
+    segment_key = (market_segment or {}).get('key') or 'all'
+    segment_label = (market_segment or {}).get('label') or '全部样本'
+    segment_match_count = 0
     for p1, p2 in combinations(sorted(supporters), 2):
-        row = pair_lookup.get((p1, p2))
+        row = None
+        source = 'all'
+        if segment_key != 'all':
+            row = pair_segment_lookup.get((p1, p2, prediction_value, segment_key))
+            if row:
+                source = 'segment'
+                segment_match_count += 1
+        if not row:
+            row = pair_lookup.get((p1, p2))
         if not row:
             continue
         pairs_out.append({
             'pair': [p1, p2],
             'names': [name_lookup.get(p1, str(p1)), name_lookup.get(p2, str(p2))],
+            'source': source,
+            'market_segment': row.get('market_segment') if source == 'segment' else 'all',
+            'market_segment_label': row.get('market_segment_label') if source == 'segment' else '全部样本',
             'rate': row.get('rate'),
             'total': int(row.get('total') or 0),
             'hit': int(row.get('hit') or 0)
@@ -1392,7 +1429,7 @@ def _build_pair_breakdown_for_supporters(
 
     if not pairs_out:
         return {'pairs': [], 'avg_rate': None, 'max_rate': None,
-                'max_pair': None, 'total_sample': 0}
+                'max_pair': None, 'total_sample': 0, 'source': 'none'}
 
     total_sample = sum(p['total'] for p in pairs_out)
     if total_sample <= 0:
@@ -1407,7 +1444,11 @@ def _build_pair_breakdown_for_supporters(
         'avg_rate': avg_rate,
         'max_rate': max_p.get('rate'),
         'max_pair': max_p.get('pair'),
-        'total_sample': total_sample
+        'total_sample': total_sample,
+        'source': 'segment' if segment_match_count else 'all',
+        'segment_match_count': segment_match_count,
+        'market_segment': segment_key if segment_match_count else 'all',
+        'market_segment_label': segment_label if segment_match_count else '全部样本'
     }
 
 

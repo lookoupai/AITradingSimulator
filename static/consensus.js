@@ -218,15 +218,21 @@
                 if (pb && pb.pairs && pb.pairs.length) {
                     const avgClass = (pb.avg_rate || 0) >= 50 ? 'good' : 'low';
                     const reliableTag = pbReliable ? '' : '<small class="weak-tag">样本偏少</small>';
+                    const segmentCoverage = `${pb.segment_match_count || 0}/${pb.pairs.length}`;
+                    const sourceTag = pb.source === 'segment'
+                        ? `<small class="pair-source-tag">同盘口${segmentCoverage}：${escapeHtml(pb.market_segment_label || '盘口分层')}</small>`
+                        : '<small class="weak-tag">全量回退</small>';
                     const pairItems = pb.pairs.map(p => {
                         const names = (p.names || []).join(' + ');
                         const cls = (p.rate || 0) >= 50 ? 'good' : 'low';
-                        return `<li><span class="pair-names">${escapeHtml(names)}</span><span class="pair-rate ${cls}">${fmtRate(p.rate)} <small>(n=${p.total})</small></span></li>`;
+                        const sourceText = p.source === 'segment' ? '同盘口' : '全量';
+                        return `<li><span class="pair-names">${escapeHtml(names)} <small>${sourceText}</small></span><span class="pair-rate ${cls}">${fmtRate(p.rate)} <small>(n=${p.total})</small></span></li>`;
                     }).join('');
                     pairHtml = `
-                        <details class="pair-breakdown" title="点击展开本场具体支持方案的两两组合历史命中率，比同类历史命中率更能反映这几个方案的真实质量">
+                        <details class="pair-breakdown" title="点击展开本场具体支持方案的两两组合历史命中率；优先使用同盘口分层，缺失时回退全量组合。">
                             <summary>
                                 实际组合平均 <strong class="${avgClass}">${fmtRate(pb.avg_rate)}</strong>
+                                ${sourceTag}
                                 ${reliableTag}
                                 <span class="pair-summary-meta">最高 ${fmtRate(pb.max_rate)} · ${pb.pairs.length} 对组合</span>
                             </summary>

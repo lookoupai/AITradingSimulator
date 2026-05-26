@@ -286,6 +286,14 @@
     font-size: 0.68rem;
     font-style: normal;
 }
+.pair-source-tag {
+    background: rgba(102, 192, 144, 0.14);
+    color: #66c090;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.68rem;
+    font-style: normal;
+}
 
 .pair-list {
     list-style: none;
