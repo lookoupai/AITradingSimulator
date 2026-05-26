@@ -252,6 +252,25 @@ class ConsensusAnalysisServiceTests(unittest.TestCase):
         self.assertEqual(give_row['market_segment_label'], '主让/打穿')
         self.assertEqual(receive_row['market_segment_label'], '主受让/受让方赢盘')
 
+        pair_segment_rows = analysis['pair_segment_combinations']['spf']
+        pair_favorite_row = next(
+            row for row in pair_segment_rows
+            if row['value'] == '胜'
+            and row['market_segment'] == 'spf:favorite:ultra_low'
+        )
+        self.assertEqual(pair_favorite_row['total'], 1)
+        self.assertEqual(pair_favorite_row['hit'], 1)
+
+        predictor_segment_rows = analysis['per_predictor_segments']['rqspf']
+        predictor_give_row = next(
+            row for row in predictor_segment_rows
+            if row['value'] == '胜'
+            and row['market_segment'] == 'rqspf:home_give:cover'
+        )
+        self.assertEqual(predictor_give_row['market_segment_label'], '主让/打穿')
+        self.assertEqual(predictor_give_row['total'], 1)
+        self.assertEqual(predictor_give_row['hit'], 1)
+
         today_spf = next(
             field for field in analysis['today_recommendations'][0]['fields']
             if field['field'] == 'spf'

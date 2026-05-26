@@ -28,7 +28,9 @@
     const pairTableBody = $('pairTableBody');
     const byCountTableBody = $('byCountTableBody');
     const segmentTableBody = $('segmentTableBody');
+    const pairSegmentTableBody = $('pairSegmentTableBody');
     const perPredictorTableBody = $('perPredictorTableBody');
+    const predictorSegmentTableBody = $('predictorSegmentTableBody');
     const historyPanelToggle = $('historyPanelToggle');
     const historyPanelBody = $('historyPanelBody');
     const historyPanelToggleIcon = $('historyPanelToggleIcon');
@@ -67,7 +69,7 @@
         return 'watch';
     }
     function lowHitTypeLabel(type) {
-        if (type === 'consensus_count') return '共识数桶';
+        if (type === 'consensus_count') return '共识人数分组';
         if (type === 'combo_2') return '两方案组合';
         if (type === 'combo_3') return '三方案组合';
         return type || '低命中信号';
@@ -127,7 +129,9 @@
         renderPair();
         renderByCount();
         renderSegment();
+        renderPairSegment();
         renderPerPredictor();
+        renderPredictorSegment();
         renderAIPredictorOptions();
     }
 
@@ -198,7 +202,7 @@
 
                 const supporters = (f.supporter_names || []).join('、');
 
-                // 粗粒度桶展示
+                // 粗粒度分组展示
                 let coarseHtml;
                 if (f.historical_rate == null || (f.historical_sample || 0) === 0) {
                     coarseHtml = `<span class="rate-coarse na" title="历史上没有 ${f.agree_count} 个方案在该字段共同预测「${f.consensus_value}」的样本，无法判断可信度">⚠️ 无历史样本</span>`;
@@ -220,7 +224,7 @@
                         return `<li><span class="pair-names">${escapeHtml(names)}</span><span class="pair-rate ${cls}">${fmtRate(p.rate)} <small>(n=${p.total})</small></span></li>`;
                     }).join('');
                     pairHtml = `
-                        <details class="pair-breakdown" title="点击展开本场具体支持方案的两两组合历史命中率，比桶率更能反映这几个方案的真实质量">
+                        <details class="pair-breakdown" title="点击展开本场具体支持方案的两两组合历史命中率，比同类历史命中率更能反映这几个方案的真实质量">
                             <summary>
                                 实际组合平均 <strong class="${avgClass}">${fmtRate(pb.avg_rate)}</strong>
                                 ${reliableTag}
@@ -276,7 +280,7 @@
                             </div>
                         </div>
                         <div class="field-rate-row">
-                            <span class="rate-label" title="桶率：历史上「N 方案一致预测此值」的平均命中率，不区分是哪些方案。样本足时反映群体规律，样本少时仅供参考。">桶率</span>
+                            <span class="rate-label" title="同类历史命中率：历史上「N 方案一致预测此值」的平均命中率，不区分是哪些方案。样本足时反映群体规律，样本少时仅供参考。">同类历史命中率</span>
                             ${coarseHtml}
                         </div>
                         ${pairHtml}
@@ -300,6 +304,8 @@
     let pairField = null;
     let byCountField = null;
     let segmentField = null;
+    let pairSegmentField = null;
+    let predictorSegmentField = null;
 
     function setupTabs() {
         const syncTabPanels = () => {
@@ -320,7 +326,7 @@
         // 字段切换 chip 在 renderFieldChips 里动态生成（按 currentAnalysis.fields 来）
     }
 
-    // 根据当前彩种的字段动态生成 chip 按钮（pair tab 和 byCount tab 各一组）
+    // 根据当前彩种的字段动态生成 chip 按钮
     function renderFieldChips() {
         const fields = currentAnalysis.fields || [];
         if (!fields.length) return;
@@ -332,6 +338,8 @@
         if (!pairField || !fields.find(f => f.key === pairField)) pairField = findDefault();
         if (!byCountField || !fields.find(f => f.key === byCountField)) byCountField = findDefault();
         if (!segmentField || !fields.find(f => f.key === segmentField)) segmentField = findDefault();
+        if (!pairSegmentField || !fields.find(f => f.key === pairSegmentField)) pairSegmentField = findDefault();
+        if (!predictorSegmentField || !fields.find(f => f.key === predictorSegmentField)) predictorSegmentField = findDefault();
 
         // pair tab chip
         const pairChips = document.querySelector('[data-tab-panel="pair"] .consensus-field-tabs');
@@ -378,11 +386,43 @@
             });
         }
 
+        // pair segment tab chip
+        const pairSegmentChips = document.querySelector('[data-tab-panel="pairSegment"] .consensus-field-tabs');
+        if (pairSegmentChips) {
+            pairSegmentChips.innerHTML = fields.map(f =>
+                `<button class="chip-btn ${f.key === pairSegmentField ? 'active' : ''}" data-field-pair-segment="${escapeHtml(f.key)}">${escapeHtml(f.label)}</button>`
+            ).join('');
+            pairSegmentChips.querySelectorAll('[data-field-pair-segment]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    pairSegmentField = btn.dataset.fieldPairSegment;
+                    pairSegmentChips.querySelectorAll('[data-field-pair-segment]').forEach(b => b.classList.toggle('active', b === btn));
+                    renderPairSegment();
+                });
+            });
+        }
+
+        // predictor segment tab chip
+        const predictorSegmentChips = document.querySelector('[data-tab-panel="predictorSegment"] .consensus-field-tabs');
+        if (predictorSegmentChips) {
+            predictorSegmentChips.innerHTML = fields.map(f =>
+                `<button class="chip-btn ${f.key === predictorSegmentField ? 'active' : ''}" data-field-predictor-segment="${escapeHtml(f.key)}">${escapeHtml(f.label)}</button>`
+            ).join('');
+            predictorSegmentChips.querySelectorAll('[data-field-predictor-segment]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    predictorSegmentField = btn.dataset.fieldPredictorSegment;
+                    predictorSegmentChips.querySelectorAll('[data-field-predictor-segment]').forEach(b => b.classList.toggle('active', b === btn));
+                    renderPredictorSegment();
+                });
+            });
+        }
+
         // 单字段时彩种把 chip 行隐藏（PC28 只有 combo，没必要给个孤零零的 chip）
         const singleField = fields.length <= 1;
         if (pairChips) pairChips.style.display = singleField ? 'none' : '';
         if (byCountChips) byCountChips.style.display = singleField ? 'none' : '';
         if (segmentChips) segmentChips.style.display = singleField ? 'none' : '';
+        if (pairSegmentChips) pairSegmentChips.style.display = singleField ? 'none' : '';
+        if (predictorSegmentChips) predictorSegmentChips.style.display = singleField ? 'none' : '';
     }
 
     function renderPair() {
@@ -463,6 +503,32 @@
         }).join('');
     }
 
+    function renderPairSegment() {
+        if (!pairSegmentTableBody) return;
+        const rows = ((currentAnalysis.pair_segment_combinations || {})[pairSegmentField] || []);
+        if (!rows.length) {
+            const archiveNote = currentAnalysis.archive_used
+                ? '当前窗口内没有可重建的两两分层明细。归档日聚合无法还原具体方案组合与盘口语义，需要新明细积累后再查看。'
+                : '没有两两分层样本';
+            pairSegmentTableBody.innerHTML = `<tr><td colspan="6" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
+            return;
+        }
+        pairSegmentTableBody.innerHTML = rows.map(r => {
+            const [p1, p2] = r.pair || [];
+            const rateClass = (r.total || 0) < 20 ? 'weak' : ((r.rate || 0) >= 50 ? 'good' : 'low');
+            return `
+                <tr>
+                    <td>${escapeHtml(predictorNameById(p1))} + ${escapeHtml(predictorNameById(p2))}</td>
+                    <td><span class="segment-chip">${escapeHtml(r.market_segment_label || r.market_segment || '未分层')}</span></td>
+                    <td>${escapeHtml(r.value)}</td>
+                    <td>${r.total || 0}</td>
+                    <td>${r.hit || 0}</td>
+                    <td><span class="segment-rate ${rateClass}">${fmtRate(r.rate)}</span></td>
+                </tr>
+            `;
+        }).join('');
+    }
+
     // 单方案命中率表：按 currentAnalysis.fields 动态生成"<字段>命中率 / <字段>样本"两列
     function renderPerPredictor() {
         const rows = currentAnalysis.per_predictor || [];
@@ -491,6 +557,31 @@
                     <td>${escapeHtml(p.predictor_name)}</td>
                     <td>${p.engine_type === 'machine' ? '机器' : 'AI'}</td>
                     ${fieldCells}
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function renderPredictorSegment() {
+        if (!predictorSegmentTableBody) return;
+        const rows = ((currentAnalysis.per_predictor_segments || {})[predictorSegmentField] || []);
+        if (!rows.length) {
+            const archiveNote = currentAnalysis.archive_used
+                ? '当前窗口内没有可重建的单方案分层明细。归档日聚合无法还原赔率/让球语义，需要新明细积累后再查看。'
+                : '没有单方案分层样本';
+            predictorSegmentTableBody.innerHTML = `<tr><td colspan="6" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
+            return;
+        }
+        predictorSegmentTableBody.innerHTML = rows.map(r => {
+            const rateClass = (r.total || 0) < 20 ? 'weak' : ((r.rate || 0) >= 50 ? 'good' : 'low');
+            return `
+                <tr>
+                    <td>${escapeHtml(r.predictor_name || predictorNameById(r.predictor_id))}</td>
+                    <td><span class="segment-chip">${escapeHtml(r.market_segment_label || r.market_segment || '未分层')}</span></td>
+                    <td>${escapeHtml(r.value)}</td>
+                    <td>${r.total || 0}</td>
+                    <td>${r.hit || 0}</td>
+                    <td><span class="segment-rate ${rateClass}">${fmtRate(r.rate)}</span></td>
                 </tr>
             `;
         }).join('');

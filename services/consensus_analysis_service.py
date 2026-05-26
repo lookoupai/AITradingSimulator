@@ -148,8 +148,10 @@ def build_consensus_analysis(
 
     # 7. 两两方案一致时的命中率
     pair_combinations = _build_pair_combinations(matches, predictor_ids, fields)
+    pair_segment_combinations = _build_pair_segment_combinations(matches, predictor_ids, fields)
+    per_predictor_segments = _build_per_predictor_segment_stats(settled_items, predictors_pool, fields)
 
-    # 7a. 低命中排除信号：按预测值拆分共识数桶、两方案组合、三方案组合。
+    # 7a. 低命中排除信号：按预测值拆分共识人数分组、两方案组合、三方案组合。
     low_hit_signals = _build_low_hit_signals(
         matches=matches,
         predictor_ids=predictor_ids,
@@ -192,8 +194,10 @@ def build_consensus_analysis(
         'pending_item_count': len(pending_items),
         'archive_used': bool(archive_per_predictor),
         'per_predictor': per_predictor,
+        'per_predictor_segments': per_predictor_segments,
         'consensus_by_count': consensus_by_count,
         'pair_combinations': pair_combinations,
+        'pair_segment_combinations': pair_segment_combinations,
         'low_hit_signals': low_hit_signals,
         'today_recommendations': today_recommendations
     }
@@ -213,8 +217,10 @@ def _empty_analysis(lottery_type: str, fields: list[dict], window: int | None) -
         'pending_item_count': 0,
         'archive_used': False,
         'per_predictor': [],
+        'per_predictor_segments': {f['key']: [] for f in fields},
         'consensus_by_count': {f['key']: [] for f in fields},
         'pair_combinations': {f['key']: [] for f in fields},
+        'pair_segment_combinations': {f['key']: [] for f in fields},
         'low_hit_signals': {f['key']: [] for f in fields},
         'today_recommendations': []
     }
@@ -627,6 +633,56 @@ def _build_per_predictor_stats(
     return result
 
 
+def _build_per_predictor_segment_stats(
+    items: list[dict],
+    predictors_pool: list[dict],
+    fields: list[dict]
+) -> dict[str, list[dict]]:
+    """按盘口语义分层统计单方案命中率；不把全量样本混入分层结果。"""
+    name_lookup = {int(p['id']): p.get('name') or f"方案#{p['id']}" for p in predictors_pool}
+    output: dict[str, list[dict]] = {}
+
+    for field in fields:
+        fkey = field['key']
+        stats: dict[tuple, dict] = defaultdict(lambda: {'total': 0, 'hit': 0})
+        for item in items:
+            pred_val = (item.get('prediction') or {}).get(fkey)
+            hit_val = (item.get('hit') or {}).get(fkey)
+            if pred_val in (None, '', 'null') or hit_val is None:
+                continue
+
+            segment = _build_market_segment(item, fkey, pred_val)
+            if segment['key'] == 'all':
+                continue
+
+            pid = int(item['predictor_id'])
+            key = (pid, pred_val, segment['key'], segment['label'])
+            stats[key]['total'] += 1
+            stats[key]['hit'] += int(bool(hit_val))
+
+        rows = []
+        for (pid, pred_val, segment_key, segment_label), stat in stats.items():
+            rows.append({
+                'predictor_id': pid,
+                'predictor_name': name_lookup.get(pid, f"方案#{pid}"),
+                'value': pred_val,
+                'market_segment': segment_key,
+                'market_segment_label': segment_label,
+                'total': stat['total'],
+                'hit': stat['hit'],
+                'rate': _safe_rate(stat['hit'], stat['total'])
+            })
+        rows.sort(key=lambda x: (
+            str(x.get('market_segment_label') or ''),
+            str(x.get('predictor_name') or ''),
+            str(x.get('value') or ''),
+            -int(x.get('total') or 0)
+        ))
+        output[fkey] = rows
+
+    return output
+
+
 def _compute_predictor_weights(
     per_predictor: list[dict],
     fields: list[dict],
@@ -676,7 +732,7 @@ def _build_consensus_by_count(
     """
     对每场比赛：
       - 统计每个字段下，每个预测值被多少方案支持
-      - 对该值的所有支持方案的命中数累计 (n_agree, value) 桶
+      - 对该值的所有支持方案的命中数累计到 (n_agree, value) 分组
     输出按字段分组的列表。
     """
     output: dict[str, list[dict]] = {}
@@ -774,6 +830,64 @@ def _build_pair_combinations(
             })
         rows.sort(key=lambda x: (-(x['rate'] or 0), -x['total']))
         output[fkey] = rows
+    return output
+
+
+def _build_pair_segment_combinations(
+    matches: dict[tuple, list[dict]],
+    predictor_ids: list[int],
+    fields: list[dict]
+) -> dict[str, list[dict]]:
+    """按盘口语义分层统计两两方案同值一致时的比赛命中率。"""
+    output: dict[str, list[dict]] = {}
+    sorted_pids = sorted(predictor_ids)
+
+    for field in fields:
+        fkey = field['key']
+        stats: dict[tuple, dict] = defaultdict(lambda: {'total': 0, 'hit': 0})
+        for items in matches.values():
+            preds_by_pid: dict[int, dict] = {}
+            for item in items:
+                pred_val = (item.get('prediction') or {}).get(fkey)
+                hit_val = (item.get('hit') or {}).get(fkey)
+                if pred_val in (None, '', 'null') or hit_val is None:
+                    continue
+                preds_by_pid[int(item['predictor_id'])] = item
+
+            for p1, p2 in combinations(sorted_pids, 2):
+                if p1 not in preds_by_pid or p2 not in preds_by_pid:
+                    continue
+                pred_val = (preds_by_pid[p1].get('prediction') or {}).get(fkey)
+                if pred_val != (preds_by_pid[p2].get('prediction') or {}).get(fkey):
+                    continue
+
+                segment = _build_market_segment(preds_by_pid[p1], fkey, pred_val)
+                if segment['key'] == 'all':
+                    continue
+
+                key = (p1, p2, pred_val, segment['key'], segment['label'])
+                stats[key]['total'] += 1
+                stats[key]['hit'] += int(bool((preds_by_pid[p1].get('hit') or {}).get(fkey)))
+
+        rows = []
+        for (p1, p2, pred_val, segment_key, segment_label), stat in stats.items():
+            rows.append({
+                'pair': [p1, p2],
+                'value': pred_val,
+                'market_segment': segment_key,
+                'market_segment_label': segment_label,
+                'total': stat['total'],
+                'hit': stat['hit'],
+                'rate': _safe_rate(stat['hit'], stat['total'])
+            })
+        rows.sort(key=lambda x: (
+            str(x.get('market_segment_label') or ''),
+            tuple(x.get('pair') or []),
+            str(x.get('value') or ''),
+            -int(x.get('total') or 0)
+        ))
+        output[fkey] = rows
+
     return output
 
 
@@ -998,10 +1112,10 @@ def _build_today_recommendations(
     """
     对每场未结算比赛：
       - 找出每个字段的共识值（票数最多的预测值）
-      - 关联历史"共识=N且值=V"时的命中率作为参考（粗粒度桶）
+      - 关联历史"共识=N且值=V"时的命中率作为参考（粗粒度分组）
       - 当共识方案数 >= 2 时，额外查"实际这几个方案两两组合"在历史中的命中率
         （细粒度），让强方案集合的真实表现可以独立判断
-      - 标记 is_reliable：粗粒度桶样本 >= MIN_RELIABLE_SAMPLE
+      - 标记 is_reliable：粗粒度分组样本 >= MIN_RELIABLE_SAMPLE
       - 计算 weighted_strength：本场该字段所有支持方案的"质量权重"加和。
         仅用于后台排序，前端不展示，让"强方案集合一致"排在"含烂方案的群体共识"之前。
     """
@@ -1103,7 +1217,7 @@ def _build_today_recommendations(
                     }
                     for val, pids in value_supporters.items()
                 },
-                # 粗粒度桶：所有 N 方案一致预测同值的历史平均命中率
+                # 粗粒度分组：所有 N 方案一致预测同值的历史平均命中率
                 'historical_rate': historical_rate,
                 'historical_sample': historical_sample,
                 'is_reliable': is_reliable,
