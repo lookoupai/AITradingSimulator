@@ -300,6 +300,8 @@ def _compact_today_recommendations(recommendations: list[dict]) -> list[dict]:
                 'field': field.get('field'),
                 'field_label': field.get('field_label'),
                 'consensus_value': field.get('consensus_value'),
+                'market_segment': field.get('market_segment'),
+                'market_segment_label': field.get('market_segment_label'),
                 'agree_count': field.get('agree_count'),
                 'historical_rate': field.get('historical_rate'),
                 'historical_sample': field.get('historical_sample'),
@@ -322,6 +324,8 @@ def _compact_low_hit_by_value(low_hit_by_value: dict) -> dict:
         compacted[value] = {
             'level': item.get('level'),
             'level_label': item.get('level_label'),
+            'market_segment': item.get('market_segment'),
+            'market_segment_label': item.get('market_segment_label'),
             'signal_count': item.get('signal_count'),
             'best_rate': item.get('best_rate'),
             'best_sample_matches': item.get('best_sample_matches')

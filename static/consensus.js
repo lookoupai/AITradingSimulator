@@ -27,6 +27,7 @@
     const minRateLabel = $('minRateLabel');
     const pairTableBody = $('pairTableBody');
     const byCountTableBody = $('byCountTableBody');
+    const segmentTableBody = $('segmentTableBody');
     const perPredictorTableBody = $('perPredictorTableBody');
     const historyPanelToggle = $('historyPanelToggle');
     const historyPanelBody = $('historyPanelBody');
@@ -125,6 +126,7 @@
         renderToday();
         renderPair();
         renderByCount();
+        renderSegment();
         renderPerPredictor();
         renderAIPredictorOptions();
     }
@@ -266,6 +268,7 @@
                             <div>
                                 <span class="field-label">${escapeHtml(f.field_label)}</span>
                                 <div class="field-supporters">${escapeHtml(supporters)}</div>
+                                <div class="field-supporters">${escapeHtml(f.market_segment_label || '全部样本')}</div>
                             </div>
                             <div class="consensus-pick">
                                 <span>${escapeHtml(f.consensus_value)}</span>
@@ -296,6 +299,7 @@
     // 字段切换的当前选中项；默认在 loadAnalysis 后根据 fields[0]/fields[1] 设
     let pairField = null;
     let byCountField = null;
+    let segmentField = null;
 
     function setupTabs() {
         const syncTabPanels = () => {
@@ -327,6 +331,7 @@
         };
         if (!pairField || !fields.find(f => f.key === pairField)) pairField = findDefault();
         if (!byCountField || !fields.find(f => f.key === byCountField)) byCountField = findDefault();
+        if (!segmentField || !fields.find(f => f.key === segmentField)) segmentField = findDefault();
 
         // pair tab chip
         const pairChips = document.querySelector('[data-tab-panel="pair"] .consensus-field-tabs');
@@ -358,10 +363,26 @@
             });
         }
 
+        // segment tab chip
+        const segmentChips = document.querySelector('[data-tab-panel="segment"] .consensus-field-tabs');
+        if (segmentChips) {
+            segmentChips.innerHTML = fields.map(f =>
+                `<button class="chip-btn ${f.key === segmentField ? 'active' : ''}" data-field-segment="${escapeHtml(f.key)}">${escapeHtml(f.label)}</button>`
+            ).join('');
+            segmentChips.querySelectorAll('[data-field-segment]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    segmentField = btn.dataset.fieldSegment;
+                    segmentChips.querySelectorAll('[data-field-segment]').forEach(b => b.classList.toggle('active', b === btn));
+                    renderSegment();
+                });
+            });
+        }
+
         // 单字段时彩种把 chip 行隐藏（PC28 只有 combo，没必要给个孤零零的 chip）
         const singleField = fields.length <= 1;
         if (pairChips) pairChips.style.display = singleField ? 'none' : '';
         if (byCountChips) byCountChips.style.display = singleField ? 'none' : '';
+        if (segmentChips) segmentChips.style.display = singleField ? 'none' : '';
     }
 
     function renderPair() {
@@ -387,7 +408,8 @@
     }
 
     function renderByCount() {
-        const rows = (currentAnalysis.consensus_by_count[byCountField] || []);
+        const rows = (currentAnalysis.consensus_by_count[byCountField] || [])
+            .filter(r => (r.market_segment || 'all') === 'all');
         if (!rows.length) {
             const archiveNote = currentAnalysis.archive_used
                 ? '当前窗口内没有足够的明细样本。归档机制保留的是日聚合，无法重建共识强度指标，需要新明细积累一段时间后再查看。'
@@ -405,6 +427,40 @@
                 <td>${fmtRate(r.rate)}</td>
             </tr>
         `).join('');
+    }
+
+    function renderSegment() {
+        if (!segmentTableBody) return;
+        const rows = (currentAnalysis.consensus_by_count[segmentField] || [])
+            .filter(r => (r.market_segment || 'all') !== 'all');
+        if (!rows.length) {
+            const archiveNote = currentAnalysis.archive_used
+                ? '当前窗口内没有可重建的盘口分层明细。归档日聚合无法还原赔率/让球语义，需要新明细积累后再查看。'
+                : '没有盘口分层样本';
+            segmentTableBody.innerHTML = `<tr><td colspan="6" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
+            return;
+        }
+        const sorted = rows.slice().sort((a, b) => {
+            const labelCompare = String(a.market_segment_label || '').localeCompare(String(b.market_segment_label || ''), 'zh-Hans-CN');
+            if (labelCompare !== 0) return labelCompare;
+            return a.agree_count - b.agree_count || String(a.value || '').localeCompare(String(b.value || ''), 'zh-Hans-CN');
+        });
+        segmentTableBody.innerHTML = sorted.map(r => {
+            const sample = r.match_total == null ? r.total : r.match_total;
+            const hit = r.match_hit == null ? r.hit : r.match_hit;
+            const rate = r.match_rate == null ? r.rate : r.match_rate;
+            const rateClass = sample < 20 ? 'weak' : ((rate || 0) >= 50 ? 'good' : 'low');
+            return `
+                <tr>
+                    <td><span class="segment-chip">${escapeHtml(r.market_segment_label || r.market_segment || '未分层')}</span></td>
+                    <td>${r.agree_count}</td>
+                    <td>${escapeHtml(r.value)}</td>
+                    <td>${sample || 0}</td>
+                    <td>${hit || 0}</td>
+                    <td><span class="segment-rate ${rateClass}">${fmtRate(rate)}</span></td>
+                </tr>
+            `;
+        }).join('');
     }
 
     // 单方案命中率表：按 currentAnalysis.fields 动态生成"<字段>命中率 / <字段>样本"两列

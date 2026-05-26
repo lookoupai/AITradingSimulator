@@ -20,6 +20,7 @@ from itertools import combinations
 from typing import Any, Iterable
 
 from lotteries.registry import get_lottery_definition, normalize_lottery_type
+from utils import jingcai_football as football_utils
 
 
 # 历史样本上限（避免大表全量扫描）
@@ -41,6 +42,13 @@ LOW_HIT_HIGH_SAMPLE = 30
 LOW_HIT_STRONG_RATE = 20.0
 LOW_HIT_WEAK_RATE = 25.0
 LOW_HIT_MAX_COMBO_SIZE = 3
+
+SPF_ODDS_SEGMENTS = (
+    ('ultra_low', 0.0, 1.55, '超低赔'),
+    ('low', 1.55, 2.20, '低赔'),
+    ('medium', 2.20, 3.50, '中赔'),
+    ('high', 3.50, None, '高赔')
+)
 
 
 def build_consensus_analysis(
@@ -114,6 +122,8 @@ def build_consensus_analysis(
             only_pending=True,
             time_window_days=None
         )
+        settled_items = _attach_jingcai_market_context(db, settled_items)
+        pending_items = _attach_jingcai_market_context(db, pending_items)
 
     # 4. 各方案自身命中率
     per_predictor = _build_per_predictor_stats(settled_items, predictors_pool, fields)
@@ -305,6 +315,36 @@ def _fetch_prediction_items(
     return items
 
 
+def _attach_jingcai_market_context(db, items: list[dict]) -> list[dict]:
+    """为竞彩足球样本补赛事盘口快照，供分层统计使用。"""
+    if not items:
+        return items
+
+    event_keys = [
+        str(item.get('event_key') or '').strip()
+        for item in items
+        if str(item.get('event_key') or '').strip()
+    ]
+    if not event_keys:
+        return items
+
+    event_map = db.get_lottery_event_map('jingcai_football', event_keys, source_provider='sina')
+    fallback_event_map = db.get_lottery_event_map('jingcai_football', event_keys)
+
+    for item in items:
+        event_key = str(item.get('event_key') or '').strip()
+        event = event_map.get(event_key) or fallback_event_map.get(event_key) or {}
+        meta_payload = event.get('meta_payload') or {}
+        item['market_context'] = {
+            'spf_odds': meta_payload.get('spf_odds') or {},
+            'rqspf': meta_payload.get('rqspf') or {},
+            'league': event.get('league') or '',
+            'home_team': event.get('home_team') or '',
+            'away_team': event.get('away_team') or ''
+        }
+    return items
+
+
 def _fetch_pc28_predictions_as_items(
     db,
     *,
@@ -413,6 +453,126 @@ def _group_by_match(items: list[dict]) -> dict[tuple, list[dict]]:
         key = (item.get('run_key') or '', item.get('event_key') or '')
         grouped[key].append(item)
     return grouped
+
+
+def _build_market_segment(item: dict, field_key: str, pred_val: str | None) -> dict:
+    """把竞彩足球样本映射成可统计的盘口语义分层；其它彩种返回 all。"""
+    if item.get('lottery_type') != 'jingcai_football':
+        return {'key': 'all', 'label': '全部样本'}
+
+    market_context = item.get('market_context') or {}
+    if field_key == 'spf':
+        return _build_spf_segment(market_context, pred_val)
+    if field_key == 'rqspf':
+        return _build_rqspf_segment(market_context, pred_val)
+    return {'key': 'all', 'label': '全部样本'}
+
+
+def _build_spf_segment(market_context: dict, pred_val: str | None) -> dict:
+    odds_map = market_context.get('spf_odds') or {}
+    odds_value = football_utils.parse_float(odds_map.get(pred_val)) if pred_val else None
+    if odds_value is None:
+        return {'key': 'all', 'label': '全部样本'}
+
+    sorted_odds = []
+    for outcome in ('胜', '平', '负'):
+        outcome_odds = football_utils.parse_float(odds_map.get(outcome))
+        if outcome_odds is not None:
+            sorted_odds.append((outcome, outcome_odds))
+    sorted_odds.sort(key=lambda pair: pair[1])
+
+    role = 'unknown'
+    role_label = '未知角色'
+    if sorted_odds:
+        if pred_val == sorted_odds[0][0]:
+            role = 'favorite'
+            role_label = '热门项'
+        elif len(sorted_odds) >= 2 and pred_val == sorted_odds[-1][0]:
+            role = 'underdog'
+            role_label = '冷门项'
+        else:
+            role = 'mid'
+            role_label = '中间项'
+
+    odds_band = 'unknown'
+    odds_band_label = '未知赔率'
+    for band_key, lower, upper, label in SPF_ODDS_SEGMENTS:
+        if odds_value >= lower and (upper is None or odds_value < upper):
+            odds_band = band_key
+            odds_band_label = label
+            break
+
+    return {
+        'key': f'spf:{role}:{odds_band}',
+        'label': f'{role_label}/{odds_band_label}',
+        'role': role,
+        'role_label': role_label,
+        'odds_band': odds_band,
+        'odds_band_label': odds_band_label,
+        'odds_value': odds_value
+    }
+
+
+def _build_rqspf_segment(market_context: dict, pred_val: str | None) -> dict:
+    rqspf = market_context.get('rqspf') or {}
+    handicap = football_utils.parse_int(rqspf.get('handicap'))
+    if handicap is None:
+        handicap = football_utils.parse_int(rqspf.get('handicap_text'))
+    if handicap is None:
+        return {'key': 'all', 'label': '全部样本'}
+
+    direction = 'level'
+    direction_label = '平手'
+    if handicap < 0:
+        direction = 'home_give'
+        direction_label = '主让'
+    elif handicap > 0:
+        direction = 'home_receive'
+        direction_label = '主受让'
+
+    semantic_key = _resolve_rqspf_semantic(direction, pred_val)
+    semantic_label = {
+        'cover': '打穿',
+        'push': '走盘',
+        'fail_cover': '让方不穿',
+        'protected_win': '受让方赢盘',
+        'protected_push': '受让走盘',
+        'protected_fail': '受让失守',
+        'home_win': '主胜',
+        'draw': '平局',
+        'away_win': '客胜',
+        'unknown': '未知语义'
+    }.get(semantic_key, '未知语义')
+
+    return {
+        'key': f'rqspf:{direction}:{semantic_key}',
+        'label': f'{direction_label}/{semantic_label}',
+        'direction': direction,
+        'direction_label': direction_label,
+        'semantic': semantic_key,
+        'semantic_label': semantic_label,
+        'handicap': handicap
+    }
+
+
+def _resolve_rqspf_semantic(direction: str, pred_val: str | None) -> str:
+    if direction == 'home_give':
+        return {
+            '胜': 'cover',
+            '平': 'push',
+            '负': 'fail_cover'
+        }.get(pred_val, 'unknown')
+    if direction == 'home_receive':
+        return {
+            '胜': 'protected_win',
+            '平': 'protected_push',
+            '负': 'protected_fail'
+        }.get(pred_val, 'unknown')
+    return {
+        '胜': 'home_win',
+        '平': 'draw',
+        '负': 'away_win'
+    }.get(pred_val, 'unknown')
 
 
 def _build_per_predictor_stats(
@@ -541,19 +701,26 @@ def _build_consensus_by_count(
                 n_agree = len(supporters)
                 if n_agree < 1:
                     continue
+                segment = _build_market_segment(supporters[0], fkey, pred_val)
                 match_hit = int(bool((supporters[0].get('hit') or {}).get(fkey)))
-                bucket[(n_agree, pred_val)]['match_total'] += 1
-                bucket[(n_agree, pred_val)]['match_hit'] += match_hit
+                bucket[(n_agree, pred_val, 'all', '全部样本')]['match_total'] += 1
+                bucket[(n_agree, pred_val, 'all', '全部样本')]['match_hit'] += match_hit
+                bucket[(n_agree, pred_val, segment['key'], segment['label'])]['match_total'] += 1
+                bucket[(n_agree, pred_val, segment['key'], segment['label'])]['match_hit'] += match_hit
                 for sup in supporters:
                     hit_val = (sup.get('hit') or {}).get(fkey)
-                    bucket[(n_agree, pred_val)]['total'] += 1
-                    bucket[(n_agree, pred_val)]['hit'] += int(bool(hit_val))
+                    bucket[(n_agree, pred_val, 'all', '全部样本')]['total'] += 1
+                    bucket[(n_agree, pred_val, 'all', '全部样本')]['hit'] += int(bool(hit_val))
+                    bucket[(n_agree, pred_val, segment['key'], segment['label'])]['total'] += 1
+                    bucket[(n_agree, pred_val, segment['key'], segment['label'])]['hit'] += int(bool(hit_val))
 
         rows = []
-        for (n_agree, pred_val), stat in bucket.items():
+        for (n_agree, pred_val, segment_key, segment_label), stat in bucket.items():
             rows.append({
                 'agree_count': n_agree,
                 'value': pred_val,
+                'market_segment': segment_key,
+                'market_segment_label': segment_label,
                 'total': stat['total'],
                 'hit': stat['hit'],
                 'rate': _safe_rate(stat['hit'], stat['total']),
@@ -632,7 +799,7 @@ def _build_low_hit_signals(
         rows: list[dict] = []
 
         consensus_stats = _collect_consensus_count_match_stats(matches, fkey)
-        for (agree_count, value), stat in consensus_stats.items():
+        for (agree_count, value, segment_key, segment_label), stat in consensus_stats.items():
             signal = _make_low_hit_signal(
                 field_key=fkey,
                 signal_type='consensus_count',
@@ -641,7 +808,9 @@ def _build_low_hit_signals(
                 hit_matches=stat['hit'],
                 predictor_ids=[],
                 predictor_names=[],
-                agree_count=agree_count
+                agree_count=agree_count,
+                market_segment=segment_key,
+                market_segment_label=segment_label
             )
             if signal:
                 rows.append(signal)
@@ -653,7 +822,7 @@ def _build_low_hit_signals(
                 field_key=fkey,
                 combo_size=combo_size
             )
-            for (combo_ids, value), stat in combo_stats.items():
+            for (combo_ids, value, segment_key, segment_label), stat in combo_stats.items():
                 ids = list(combo_ids)
                 signal = _make_low_hit_signal(
                     field_key=fkey,
@@ -663,7 +832,9 @@ def _build_low_hit_signals(
                     hit_matches=stat['hit'],
                     predictor_ids=ids,
                     predictor_names=[name_lookup.get(pid, str(pid)) for pid in ids],
-                    agree_count=combo_size
+                    agree_count=combo_size,
+                    market_segment=segment_key,
+                    market_segment_label=segment_label
                 )
                 if signal:
                     rows.append(signal)
@@ -697,9 +868,11 @@ def _collect_consensus_count_match_stats(
         for value, supporters in value_supporters.items():
             if not supporters:
                 continue
-            key = (len(supporters), value)
-            stats[key]['total'] += 1
-            stats[key]['hit'] += int(bool((supporters[0].get('hit') or {}).get(field_key)))
+            segment = _build_market_segment(supporters[0], field_key, value)
+            for segment_key, segment_label in (('all', '全部样本'), (segment['key'], segment['label'])):
+                key = (len(supporters), value, segment_key, segment_label)
+                stats[key]['total'] += 1
+                stats[key]['hit'] += int(bool((supporters[0].get('hit') or {}).get(field_key)))
     return stats
 
 
@@ -714,7 +887,7 @@ def _collect_value_combo_match_stats(
     predictor_id_set = set(int(pid) for pid in predictor_ids)
 
     for items in matches.values():
-        value_supporters: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        value_supporters: dict[str, list[tuple[int, int, dict]]] = defaultdict(list)
         for item in items:
             pid = int(item['predictor_id'])
             if pid not in predictor_id_set:
@@ -723,16 +896,18 @@ def _collect_value_combo_match_stats(
             hit_val = (item.get('hit') or {}).get(field_key)
             if pred_val in (None, '', 'null') or hit_val is None:
                 continue
-            value_supporters[pred_val].append((pid, int(bool(hit_val))))
+            value_supporters[pred_val].append((pid, int(bool(hit_val)), item))
 
         for value, supporters in value_supporters.items():
             if len(supporters) < combo_size:
                 continue
             for combo in combinations(sorted(supporters), combo_size):
-                combo_ids = tuple(pid for pid, _ in combo)
-                key = (combo_ids, value)
-                stats[key]['total'] += 1
-                stats[key]['hit'] += combo[0][1]
+                combo_ids = tuple(pid for pid, _, _ in combo)
+                segment = _build_market_segment(combo[0][2], field_key, value)
+                for segment_key, segment_label in (('all', '全部样本'), (segment['key'], segment['label'])):
+                    key = (combo_ids, value, segment_key, segment_label)
+                    stats[key]['total'] += 1
+                    stats[key]['hit'] += combo[0][1]
     return stats
 
 
@@ -745,7 +920,9 @@ def _make_low_hit_signal(
     hit_matches: int,
     predictor_ids: list[int],
     predictor_names: list[str],
-    agree_count: int
+    agree_count: int,
+    market_segment: str = 'all',
+    market_segment_label: str = '全部样本'
 ) -> dict | None:
     rate = _safe_rate(hit_matches, sample_matches)
     if rate is None:
@@ -768,6 +945,8 @@ def _make_low_hit_signal(
         'predictor_ids': predictor_ids,
         'predictor_names': predictor_names,
         'agree_count': agree_count,
+        'market_segment': market_segment,
+        'market_segment_label': market_segment_label,
         'sample_matches': sample_matches,
         'hit_matches': hit_matches,
         'rate': rate,
@@ -834,7 +1013,7 @@ def _build_today_recommendations(
 
     # 把 consensus_by_count 转成 dict 便于查询
     rate_lookup = {
-        fkey: {(row['agree_count'], row['value']): row for row in rows}
+        fkey: {(row['agree_count'], row['value'], row.get('market_segment') or 'all'): row for row in rows}
         for fkey, rows in consensus_by_count.items()
     }
 
@@ -860,12 +1039,14 @@ def _build_today_recommendations(
         per_field_rec = []
         for field in fields:
             fkey = field['key']
+            supporter_items_by_value: dict[str, list[dict]] = defaultdict(list)
             value_supporters: dict[str, list[int]] = defaultdict(list)
             for item in items:
                 pred_val = (item.get('prediction') or {}).get(fkey)
                 if pred_val in (None, '', 'null'):
                     continue
                 value_supporters[pred_val].append(item['predictor_id'])
+                supporter_items_by_value[pred_val].append(item)
             if not value_supporters:
                 continue
             # 共识值 = 票数最多的，若并列取首个
@@ -874,7 +1055,10 @@ def _build_today_recommendations(
                 key=lambda kv: (len(kv[1]), kv[0])
             )
             agree_count = len(supporters)
-            historical = rate_lookup.get(fkey, {}).get((agree_count, consensus_value))
+            segment = _build_market_segment((supporter_items_by_value.get(consensus_value) or [items[0]])[0], fkey, consensus_value)
+            historical = rate_lookup.get(fkey, {}).get((agree_count, consensus_value, segment['key']))
+            if not historical:
+                historical = rate_lookup.get(fkey, {}).get((agree_count, consensus_value, 'all'))
             historical_rate = historical.get('match_rate') if historical else None
             historical_sample = int(historical.get('match_total') if historical else 0)
             is_reliable = historical_sample >= MIN_RELIABLE_SAMPLE and historical_rate is not None
@@ -896,6 +1080,7 @@ def _build_today_recommendations(
             ), 4)
             low_hit_by_value = _build_low_hit_matches_for_field(
                 value_supporters=value_supporters,
+                supporter_items_by_value=supporter_items_by_value,
                 field_key=fkey,
                 low_hit_lookup=low_hit_lookup.get(fkey) or {}
             )
@@ -904,6 +1089,8 @@ def _build_today_recommendations(
                 'field': fkey,
                 'field_label': field['label'],
                 'consensus_value': consensus_value,
+                'market_segment': segment['key'],
+                'market_segment_label': segment['label'],
                 'agree_count': agree_count,
                 'pool_size': pool_size,
                 'predicting_count': sum(len(pids) for pids in value_supporters.values()),
@@ -985,14 +1172,19 @@ def _build_low_hit_lookup(low_hit_signals: dict[str, list[dict]]) -> dict[str, d
 def _build_low_hit_matches_for_field(
     *,
     value_supporters: dict[str, list[int]],
+    supporter_items_by_value: dict[str, list[dict]],
     field_key: str,
     low_hit_lookup: dict[str, list[dict]]
 ) -> dict[str, dict]:
     matched: dict[str, dict] = {}
     for value, supporters in value_supporters.items():
         supporters_set = set(int(pid) for pid in supporters)
+        segment = _build_market_segment((supporter_items_by_value.get(value) or [{}])[0], field_key, value)
         signals = []
         for signal in low_hit_lookup.get(str(value), []):
+            signal_segment = signal.get('market_segment') or 'all'
+            if signal_segment not in {'all', segment['key']}:
+                continue
             signal_type = signal.get('type')
             if signal_type == 'consensus_count':
                 if int(signal.get('agree_count') or 0) != len(supporters_set):
@@ -1026,6 +1218,8 @@ def _build_low_hit_matches_for_field(
         matched[str(value)] = {
             'field': field_key,
             'value': value,
+            'market_segment': segment['key'],
+            'market_segment_label': segment['label'],
             'level': level,
             'level_label': level_label,
             'severity': severity,

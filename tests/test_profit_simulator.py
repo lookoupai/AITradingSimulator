@@ -152,14 +152,16 @@ class ProfitSimulatorTests(unittest.TestCase):
                 profit_default_metric='spf',
                 prediction_targets=['spf', 'rqspf']
             )
+            timezone = importlib.import_module('utils.timezone')
+            match_day = (timezone.get_current_beijing_time() - timedelta(days=5)).strftime('%Y-%m-%d')
 
             harness.db.upsert_lottery_events([
                 {
                     'lottery_type': 'jingcai_football',
                     'event_key': 'e1',
-                    'batch_key': '2026-04-06',
-                    'event_date': '2026-04-06',
-                    'event_time': '2026-04-06 18:00:00',
+                    'batch_key': match_day,
+                    'event_date': match_day,
+                    'event_time': f'{match_day} 18:00:00',
                     'event_name': '[测试] 主队A vs 客队A',
                     'league': '测试联赛',
                     'home_team': '主队A',
@@ -190,9 +192,9 @@ class ProfitSimulatorTests(unittest.TestCase):
                 {
                     'lottery_type': 'jingcai_football',
                     'event_key': 'e2',
-                    'batch_key': '2026-04-06',
-                    'event_date': '2026-04-06',
-                    'event_time': '2026-04-06 20:00:00',
+                    'batch_key': match_day,
+                    'event_date': match_day,
+                    'event_time': f'{match_day} 20:00:00',
                     'event_name': '[测试] 主队B vs 客队B',
                     'league': '测试联赛',
                     'home_team': '主队B',
@@ -225,7 +227,7 @@ class ProfitSimulatorTests(unittest.TestCase):
             run_id = harness.db.upsert_prediction_run({
                 'predictor_id': predictor_id,
                 'lottery_type': 'jingcai_football',
-                'run_key': '2026-04-06',
+                'run_key': match_day,
                 'requested_targets': ['spf', 'rqspf'],
                 'status': 'settled',
                 'total_items': 2,
@@ -239,7 +241,7 @@ class ProfitSimulatorTests(unittest.TestCase):
                     'run_id': run_id,
                     'predictor_id': predictor_id,
                     'lottery_type': 'jingcai_football',
-                    'run_key': '2026-04-06',
+                    'run_key': match_day,
                     'event_key': 'e1',
                     'item_order': 0,
                     'issue_no': '周一001',
@@ -253,13 +255,13 @@ class ProfitSimulatorTests(unittest.TestCase):
                     'raw_response': '{}',
                     'status': 'settled',
                     'error_message': None,
-                    'settled_at': '2026-04-06 12:00:00'
+                    'settled_at': f'{match_day} 12:00:00'
                 },
                 {
                     'run_id': run_id,
                     'predictor_id': predictor_id,
                     'lottery_type': 'jingcai_football',
-                    'run_key': '2026-04-06',
+                    'run_key': match_day,
                     'event_key': 'e2',
                     'item_order': 1,
                     'issue_no': '周一002',
@@ -273,7 +275,7 @@ class ProfitSimulatorTests(unittest.TestCase):
                     'raw_response': '{}',
                     'status': 'settled',
                     'error_message': None,
-                    'settled_at': '2026-04-06 12:10:00'
+                    'settled_at': f'{match_day} 12:10:00'
                 }
             ])
 

@@ -421,6 +421,32 @@
     color: #66c090;
 }
 
+.segment-table td:first-child {
+    min-width: 150px;
+}
+.segment-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(108, 156, 255, 0.12);
+    border: 1px solid rgba(108, 156, 255, 0.22);
+    color: #8bb2ff;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    word-break: keep-all;
+}
+.segment-rate {
+    font-weight: 700;
+}
+.segment-rate.good { color: #66c090; }
+.segment-rate.low { color: #e57373; }
+.segment-rate.weak {
+    color: #ffa726;
+    font-style: italic;
+}
+
 /* 折叠面板 */
 .consensus-collapsible-header { cursor: pointer; }
 .consensus-collapsible-header .icon-btn {

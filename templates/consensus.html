@@ -236,6 +236,7 @@
                     <div class="tabs consensus-tabs">
                         <button class="tab-btn active" data-tab="pair">两两方案组合</button>
                         <button class="tab-btn" data-tab="byCount">按共识数分布</button>
+                        <button class="tab-btn" data-tab="segment">按盘口分层</button>
                         <button class="tab-btn" data-tab="perPredictor">单方案命中率</button>
                     </div>
 
@@ -277,6 +278,29 @@
                                 </thead>
                                 <tbody id="byCountTableBody">
                                     <tr><td colspan="5" class="empty-cell">加载中...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="tab-panel" data-tab-panel="segment" hidden>
+                        <div class="consensus-field-tabs">
+                            <!-- 字段切换 chip 由 JS 根据 currentAnalysis.fields 动态注入 -->
+                        </div>
+                        <div class="table-wrap">
+                            <table class="data-table segment-table">
+                                <thead>
+                                    <tr>
+                                        <th>盘口分层</th>
+                                        <th>共识方案数</th>
+                                        <th>预测值</th>
+                                        <th>比赛样本</th>
+                                        <th>命中场次</th>
+                                        <th>命中率</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="segmentTableBody">
+                                    <tr><td colspan="6" class="empty-cell">加载中...</td></tr>
                                 </tbody>
                             </table>
                         </div>

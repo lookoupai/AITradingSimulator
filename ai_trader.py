@@ -536,7 +536,7 @@ class AIPredictor:
                     last_error = exc
                     if preferred_base_url and base_url == preferred_base_url:
                         self._clear_preferred_base_url(resolved_api_mode, base_url)
-                    if self._is_transport_exception(exc) and host:
+                    if (self._is_transport_exception(exc) or isinstance(exc, (APIConnectionError, RequestException))) and host:
                         failed_transport_hosts.add(host)
                     continue
 
