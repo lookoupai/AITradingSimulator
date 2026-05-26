@@ -24,7 +24,7 @@
                         {% if scope == 'all' %}
                         平台所有方案的共识规律 + 今日比赛推荐 — 基于历史命中率纯统计计算，无需 AI 即可使用。
                         {% else %}
-                        分析你自己的所有方案，发现哪些组合搭档时命中率最高，并给出今日的共识推荐。
+                        分析你自己的所有方案，发现哪些方案组合命中率最高，并给出今日的共识推荐。
                         {% endif %}
                     {% endif %}
                 </p>
@@ -98,7 +98,7 @@
                                 <p class="intro-card-note">这才能反映<em>"是哪几个方案"</em>的真实质量。</p>
                                 <div class="intro-tip">
                                     💡 <strong>这是更值得参考的数字</strong>。
-                                    如果同类历史命中率 36%、但实际组合 avg 68%，说明本场是"强方案集合一致"，比平均水平好。
+                                    如果同类历史命中率 36%、但本场组合平均命中率 68%，说明历史表现好的方案同时支持，比平均水平好。
                                 </div>
                             </div>
                         </div>
@@ -106,10 +106,10 @@
                         <div class="intro-card">
                             <div class="intro-card-title">🎯 怎么决策</div>
                             <div class="intro-card-body">
-                                <strong>看绿色高亮卡 + 实际组合 ≥ 50%</strong>
+                                <strong>看绿色标记 + 本场组合 ≥ 50%</strong>
                                 <ol class="intro-steps">
-                                    <li>先看是否被<span class="intro-chip green">绿色高亮</span>（说明方案数和命中率都达标）</li>
-                                    <li>展开"实际组合"看看 avg 是否远高于同类历史命中率</li>
+                                    <li>先看是否被<span class="intro-chip green">绿色标记</span>（说明方案数和命中率都达标）</li>
+                                    <li>展开"实际组合"看看平均命中率是否远高于同类历史命中率</li>
                                     <li>样本数 (n=) 越大越可信，n &lt; 20 慎用</li>
                                 </ol>
                             </div>
@@ -169,9 +169,9 @@
                         <p class="panel-subtitle">
                             每场比赛都列出<strong>多数方案的共识值</strong>，并附上两个可信度参考：<br>
                             ① <strong>同类历史命中率</strong> = 历史上"同样 N 个方案一致预测此值"的整体命中率（n &lt; 20 标黄不可信）<br>
-                            ② <strong>实际组合</strong> = 本场具体支持方案两两组合的历史命中率，优先使用同盘口分层（更准确）<br>
-                            ③ <strong>低命中排除</strong> = 历史低于 25%/20% 的共识人数分组与具体 2/3 方案组合。<br>
-                            <span class="panel-tip">当同类历史命中率与实际组合差距大时，以实际组合为准。绿色高亮 = 推荐关注，红色低命中 = 排除参考。</span>
+                            ② <strong>实际组合</strong> = 本场具体支持方案两两组合的历史命中率，优先使用同盘口类型（更准确）<br>
+                            ③ <strong>低命中风险</strong> = 历史低于 25%/20% 的共识方案数与具体 2/3 方案组合。<br>
+                            <span class="panel-tip">当同类历史命中率与实际组合差距大时，以实际组合为准。绿色标记 = 推荐关注，红色低命中 = 风险提示。</span>
                         </p>
                     </div>
                     <div class="panel-actions consensus-filter-bar">
@@ -234,12 +234,12 @@
                 </div>
                 <div id="historyPanelBody" hidden>
                     <div class="tabs consensus-tabs">
-                        <button class="tab-btn active" data-tab="pair">两两方案组合</button>
-                        <button class="tab-btn" data-tab="byCount">按共识数分布</button>
-                        <button class="tab-btn" data-tab="segment">按盘口分层</button>
-                        <button class="tab-btn" data-tab="pairSegment">两两分层</button>
+                        <button class="tab-btn active" data-tab="pair">组合命中率</button>
+                        <button class="tab-btn" data-tab="byCount">按共识方案数</button>
+                        <button class="tab-btn" data-tab="segment">按盘口类型</button>
+                        <button class="tab-btn" data-tab="pairSegment">组合按盘口</button>
                         <button class="tab-btn" data-tab="perPredictor">单方案命中率</button>
-                        <button class="tab-btn" data-tab="predictorSegment">单方案分层</button>
+                        <button class="tab-btn" data-tab="predictorSegment">单方案按盘口</button>
                     </div>
 
                     <div class="tab-panel" data-tab-panel="pair">
@@ -251,7 +251,7 @@
                                 <thead>
                                     <tr>
                                         <th>方案组合</th>
-                                        <th>一致样本数</th>
+                                        <th>一致场次</th>
                                         <th>命中数</th>
                                         <th>命中率</th>
                                     </tr>
@@ -273,7 +273,7 @@
                                     <tr>
                                         <th>共识方案数</th>
                                         <th>预测值</th>
-                                        <th>样本数</th>
+                                        <th>场次</th>
                                         <th>命中数</th>
                                         <th>命中率</th>
                                     </tr>
@@ -293,10 +293,10 @@
                             <table class="data-table segment-table">
                                 <thead>
                                     <tr>
-                                        <th>盘口分层</th>
+                                        <th>盘口类型</th>
                                         <th>共识方案数</th>
                                         <th>预测值</th>
-                                        <th>比赛样本</th>
+                                        <th>比赛场次</th>
                                         <th>命中场次</th>
                                         <th>命中率</th>
                                     </tr>
@@ -317,9 +317,9 @@
                                 <thead>
                                     <tr>
                                         <th>方案组合</th>
-                                        <th>盘口分层</th>
+                                        <th>盘口类型</th>
                                         <th>预测值</th>
-                                        <th>一致样本</th>
+                                        <th>一致场次</th>
                                         <th>命中数</th>
                                         <th>命中率</th>
                                     </tr>
@@ -357,9 +357,9 @@
                                 <thead>
                                     <tr>
                                         <th>方案</th>
-                                        <th>盘口分层</th>
+                                        <th>盘口类型</th>
                                         <th>预测值</th>
-                                        <th>样本数</th>
+                                        <th>场次</th>
                                         <th>命中数</th>
                                         <th>命中率</th>
                                     </tr>
@@ -424,8 +424,8 @@
                     </div>
                     <div class="consensus-chat-suggestions">
                         <button class="chip-btn suggest" data-prompt="基于当前方案池，今天哪场比赛最值得跟？请按风险排序。">今日最稳</button>
-                        <button class="chip-btn suggest" data-prompt="哪两个方案的组合命中率最高？为什么？请结合数据说明。">最佳搭档</button>
-                        <button class="chip-btn suggest" data-prompt="哪些方案应该被淘汰？为什么？">谁该淘汰</button>
+                        <button class="chip-btn suggest" data-prompt="哪两个方案的组合命中率最高？为什么？请结合数据说明。">最佳组合</button>
+                        <button class="chip-btn suggest" data-prompt="哪些方案历史表现偏低？为什么？">低效方案</button>
                         <button class="chip-btn suggest" data-prompt="为什么有些情况下多方案集体一致反而错？">共识陷阱</button>
                     </div>
                     <div class="consensus-chat-input-row">

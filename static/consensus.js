@@ -69,10 +69,10 @@
         return 'watch';
     }
     function lowHitTypeLabel(type) {
-        if (type === 'consensus_count') return '共识人数分组';
+        if (type === 'consensus_count') return '共识方案数';
         if (type === 'combo_2') return '两方案组合';
         if (type === 'combo_3') return '三方案组合';
-        return type || '低命中信号';
+        return type || '低命中风险';
     }
     function predictorNameById(pid) {
         if (!currentAnalysis) return '#' + pid;
@@ -189,7 +189,7 @@
         }
 
         const cards = recs.map(rec => {
-            // 高亮：任一字段满足 agree>=minAgree 且 (粗粒度 reliable 且 rate>=minRate) 或 (实际组合 avg>=minRate 且样本足)
+            // 高亮：任一字段满足 agree>=minAgree 且同类历史或本场组合命中率达标
             let highlight = false;
             const fieldRows = rec.fields.map(f => {
                 const pb = f.pair_breakdown || {};
@@ -220,18 +220,18 @@
                     const reliableTag = pbReliable ? '' : '<small class="weak-tag">样本偏少</small>';
                     const segmentCoverage = `${pb.segment_match_count || 0}/${pb.pairs.length}`;
                     const sourceTag = pb.source === 'segment'
-                        ? `<small class="pair-source-tag">同盘口${segmentCoverage}：${escapeHtml(pb.market_segment_label || '盘口分层')}</small>`
-                        : '<small class="weak-tag">全量回退</small>';
+                        ? `<small class="pair-source-tag">同盘口${segmentCoverage}：${escapeHtml(pb.market_segment_label || '盘口类型')}</small>`
+                        : '<small class="weak-tag">全部样本</small>';
                     const pairItems = pb.pairs.map(p => {
                         const names = (p.names || []).join(' + ');
                         const cls = (p.rate || 0) >= 50 ? 'good' : 'low';
-                        const sourceText = p.source === 'segment' ? '同盘口' : '全量';
+                        const sourceText = p.source === 'segment' ? '同盘口' : '全部样本';
                         return `<li><span class="pair-names">${escapeHtml(names)} <small>${sourceText}</small></span><span class="pair-rate ${cls}">${fmtRate(p.rate)} <small>(n=${p.total})</small></span></li>`;
                     }).join('');
                     pairHtml = `
-                        <details class="pair-breakdown" title="点击展开本场具体支持方案的两两组合历史命中率；优先使用同盘口分层，缺失时回退全量组合。">
+                        <details class="pair-breakdown" title="点击展开本场具体支持方案的两两组合历史命中率；优先使用同盘口类型，缺失时参考全部样本。">
                             <summary>
-                                实际组合平均 <strong class="${avgClass}">${fmtRate(pb.avg_rate)}</strong>
+                                本场组合平均 <strong class="${avgClass}">${fmtRate(pb.avg_rate)}</strong>
                                 ${sourceTag}
                                 ${reliableTag}
                                 <span class="pair-summary-meta">最高 ${fmtRate(pb.max_rate)} · ${pb.pairs.length} 对组合</span>
@@ -241,7 +241,7 @@
                     `;
                 }
 
-                // 低命中排除展示：按本场各预测值分别显示，不只看多数共识值。
+                // 低命中风险展示：按本场各预测值分别显示，不只看多数共识值。
                 let lowHitHtml = '';
                 const lowHitItems = Object.values(f.low_hit_by_value || {})
                     .sort((a, b) => (b.severity || 0) - (a.severity || 0) || rateSortValue(a.best_rate) - rateSortValue(b.best_rate));
@@ -262,8 +262,8 @@
                             <details class="low-hit-item ${cls}">
                                 <summary>
                                     <span class="low-hit-value">${escapeHtml(item.value)}</span>
-                                    <strong>${escapeHtml(item.level_label || '观察信号')}</strong>
-                                    <small>最低 ${fmtRate(item.best_rate)} · ${item.signal_count || 0} 条信号</small>
+                                    <strong>${escapeHtml(item.level_label || '观察')}</strong>
+                                    <small>最低 ${fmtRate(item.best_rate)} · ${item.signal_count || 0} 条风险提示</small>
                                 </summary>
                                 <ul>${signals}</ul>
                             </details>
@@ -282,7 +282,7 @@
                             </div>
                             <div class="consensus-pick">
                                 <span>${escapeHtml(f.consensus_value)}</span>
-                                <span class="agree">${f.agree_count}/${f.pool_size || f.agree_count}人</span>
+                                <span class="agree">${f.agree_count}/${f.pool_size || f.agree_count}个方案</span>
                             </div>
                         </div>
                         <div class="field-rate-row">
@@ -481,8 +481,8 @@
             .filter(r => (r.market_segment || 'all') !== 'all');
         if (!rows.length) {
             const archiveNote = currentAnalysis.archive_used
-                ? '当前窗口内没有可重建的盘口分层明细。归档日聚合无法还原赔率/让球语义，需要新明细积累后再查看。'
-                : '没有盘口分层样本';
+                ? '当前窗口内没有可重建的盘口类型明细。归档日聚合无法还原赔率/让球信息，需要新明细积累后再查看。'
+                : '没有盘口类型样本';
             segmentTableBody.innerHTML = `<tr><td colspan="6" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
             return;
         }
@@ -498,7 +498,7 @@
             const rateClass = sample < 20 ? 'weak' : ((rate || 0) >= 50 ? 'good' : 'low');
             return `
                 <tr>
-                    <td><span class="segment-chip">${escapeHtml(r.market_segment_label || r.market_segment || '未分层')}</span></td>
+                    <td><span class="segment-chip">${escapeHtml(r.market_segment_label || r.market_segment || '未分类')}</span></td>
                     <td>${r.agree_count}</td>
                     <td>${escapeHtml(r.value)}</td>
                     <td>${sample || 0}</td>
@@ -514,8 +514,8 @@
         const rows = ((currentAnalysis.pair_segment_combinations || {})[pairSegmentField] || []);
         if (!rows.length) {
             const archiveNote = currentAnalysis.archive_used
-                ? '当前窗口内没有可重建的两两分层明细。归档日聚合无法还原具体方案组合与盘口语义，需要新明细积累后再查看。'
-                : '没有两两分层样本';
+                ? '当前窗口内没有可重建的组合盘口明细。归档日聚合无法还原具体方案组合与盘口信息，需要新明细积累后再查看。'
+                : '没有组合盘口样本';
             pairSegmentTableBody.innerHTML = `<tr><td colspan="6" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
             return;
         }
@@ -525,7 +525,7 @@
             return `
                 <tr>
                     <td>${escapeHtml(predictorNameById(p1))} + ${escapeHtml(predictorNameById(p2))}</td>
-                    <td><span class="segment-chip">${escapeHtml(r.market_segment_label || r.market_segment || '未分层')}</span></td>
+                    <td><span class="segment-chip">${escapeHtml(r.market_segment_label || r.market_segment || '未分类')}</span></td>
                     <td>${escapeHtml(r.value)}</td>
                     <td>${r.total || 0}</td>
                     <td>${r.hit || 0}</td>
@@ -544,7 +544,7 @@
         if (perPredictorTableHead) {
             const fieldHeaders = fields.flatMap(f => [
                 `<th>${escapeHtml(f.label)}命中率</th>`,
-                `<th>${escapeHtml(f.label)}样本</th>`
+                `<th>${escapeHtml(f.label)}场次</th>`
             ]).join('');
             perPredictorTableHead.innerHTML = `<th>方案</th><th>引擎</th>${fieldHeaders}`;
         }
@@ -573,8 +573,8 @@
         const rows = ((currentAnalysis.per_predictor_segments || {})[predictorSegmentField] || []);
         if (!rows.length) {
             const archiveNote = currentAnalysis.archive_used
-                ? '当前窗口内没有可重建的单方案分层明细。归档日聚合无法还原赔率/让球语义，需要新明细积累后再查看。'
-                : '没有单方案分层样本';
+                ? '当前窗口内没有可重建的单方案盘口明细。归档日聚合无法还原赔率/让球信息，需要新明细积累后再查看。'
+                : '没有单方案盘口样本';
             predictorSegmentTableBody.innerHTML = `<tr><td colspan="6" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
             return;
         }
@@ -583,7 +583,7 @@
             return `
                 <tr>
                     <td>${escapeHtml(r.predictor_name || predictorNameById(r.predictor_id))}</td>
-                    <td><span class="segment-chip">${escapeHtml(r.market_segment_label || r.market_segment || '未分层')}</span></td>
+                    <td><span class="segment-chip">${escapeHtml(r.market_segment_label || r.market_segment || '未分类')}</span></td>
                     <td>${escapeHtml(r.value)}</td>
                     <td>${r.total || 0}</td>
                     <td>${r.hit || 0}</td>

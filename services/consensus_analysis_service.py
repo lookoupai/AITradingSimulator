@@ -151,7 +151,7 @@ def build_consensus_analysis(
     pair_segment_combinations = _build_pair_segment_combinations(matches, predictor_ids, fields)
     per_predictor_segments = _build_per_predictor_segment_stats(settled_items, predictors_pool, fields)
 
-    # 7a. 低命中排除信号：按预测值拆分共识人数分组、两方案组合、三方案组合。
+    # 7a. 低命中风险信号：按预测值拆分共识方案数、两方案组合、三方案组合。
     low_hit_signals = _build_low_hit_signals(
         matches=matches,
         predictor_ids=predictor_ids,
@@ -493,13 +493,13 @@ def _build_spf_segment(market_context: dict, pred_val: str | None) -> dict:
     if sorted_odds:
         if pred_val == sorted_odds[0][0]:
             role = 'favorite'
-            role_label = '热门项'
+            role_label = '低赔方'
         elif len(sorted_odds) >= 2 and pred_val == sorted_odds[-1][0]:
             role = 'underdog'
-            role_label = '冷门项'
+            role_label = '高赔方'
         else:
             role = 'mid'
-            role_label = '中间项'
+            role_label = '中赔项'
 
     odds_band = 'unknown'
     odds_band_label = '未知赔率'
@@ -539,15 +539,15 @@ def _build_rqspf_segment(market_context: dict, pred_val: str | None) -> dict:
 
     semantic_key = _resolve_rqspf_semantic(direction, pred_val)
     semantic_label = {
-        'cover': '打穿',
-        'push': '走盘',
-        'fail_cover': '让方不穿',
-        'protected_win': '受让方赢盘',
-        'protected_push': '受让走盘',
-        'protected_fail': '受让失守',
-        'home_win': '主胜',
-        'draw': '平局',
-        'away_win': '客胜',
+        'cover': '让胜',
+        'push': '让平',
+        'fail_cover': '让负',
+        'protected_win': '让胜',
+        'protected_push': '让平',
+        'protected_fail': '让负',
+        'home_win': '胜',
+        'draw': '平',
+        'away_win': '负',
         'unknown': '未知语义'
     }.get(semantic_key, '未知语义')
 
@@ -1047,9 +1047,9 @@ def _make_low_hit_signal(
         return None
 
     level_label = {
-        'strong': '强排除',
-        'weak': '排除候选',
-        'watch': '观察信号'
+        'strong': '高风险',
+        'weak': '谨慎参考',
+        'watch': '观察'
     }[level]
     severity = {'strong': 3, 'weak': 2, 'watch': 1}[level]
 
@@ -1094,9 +1094,9 @@ def _classify_low_hit_level(sample_matches: int, rate: float) -> str | None:
 
 def _format_low_hit_reason(sample_matches: int, rate: float, level: str) -> str:
     if level == 'strong':
-        return f"历史 {sample_matches} 场，命中率 {rate:.2f}%，达到强排除阈值"
+        return f"历史 {sample_matches} 场，命中率 {rate:.2f}%，低于高风险阈值"
     if level == 'weak':
-        return f"历史 {sample_matches} 场，命中率 {rate:.2f}%，低于 25% 排除候选阈值"
+        return f"历史 {sample_matches} 场，命中率 {rate:.2f}%，低于谨慎参考阈值"
     return f"历史 {sample_matches} 场，命中率 {rate:.2f}%，样本偏少，仅作观察"
 
 
@@ -1115,7 +1115,7 @@ def _build_today_recommendations(
     对每场未结算比赛：
       - 找出每个字段的共识值（票数最多的预测值）
       - 关联历史"共识=N且值=V"时的命中率作为参考（粗粒度分组）
-      - 当共识方案数 >= 2 时，优先查"实际这几个方案 + 同盘口分层"的两两组合命中率，
+      - 当共识方案数 >= 2 时，优先查"实际这几个方案 + 同盘口类型"的两两组合命中率，
         缺失时回退全量两两组合，让强方案集合的真实表现可以独立判断
       - 标记 is_reliable：粗粒度分组样本 >= MIN_RELIABLE_SAMPLE
       - 计算 weighted_strength：本场该字段所有支持方案的"质量权重"加和。
@@ -1344,10 +1344,10 @@ def _build_low_hit_matches_for_field(
             severity = 2
 
         level_label = {
-            'strong': '强排除',
-            'weak': '排除候选',
-            'watch': '观察信号'
-        }.get(level, '观察信号')
+            'strong': '高风险',
+            'weak': '谨慎参考',
+            'watch': '观察'
+        }.get(level, '观察')
 
         matched[str(value)] = {
             'field': field_key,
@@ -1381,7 +1381,7 @@ def _build_pair_breakdown_for_supporters(
     name_lookup: dict[int, str]
 ) -> dict:
     """
-    给定本场实际共识的 supporters（>=2 个方案），优先从同盘口分层组合查历史命中率，
+    给定本场实际共识的 supporters（>=2 个方案），优先从同盘口类型组合查历史命中率，
     缺失时回退全量组合，并计算 avg_rate / max_rate。
 
     返回结构：

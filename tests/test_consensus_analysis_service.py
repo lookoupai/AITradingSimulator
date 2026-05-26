@@ -249,8 +249,8 @@ class ConsensusAnalysisServiceTests(unittest.TestCase):
             and row['value'] == '胜'
             and row['market_segment'] == 'rqspf:home_receive:protected_win'
         )
-        self.assertEqual(give_row['market_segment_label'], '主让/打穿')
-        self.assertEqual(receive_row['market_segment_label'], '主受让/受让方赢盘')
+        self.assertEqual(give_row['market_segment_label'], '主让/让胜')
+        self.assertEqual(receive_row['market_segment_label'], '主受让/让胜')
 
         pair_segment_rows = analysis['pair_segment_combinations']['spf']
         pair_favorite_row = next(
@@ -267,7 +267,7 @@ class ConsensusAnalysisServiceTests(unittest.TestCase):
             if row['value'] == '胜'
             and row['market_segment'] == 'rqspf:home_give:cover'
         )
-        self.assertEqual(predictor_give_row['market_segment_label'], '主让/打穿')
+        self.assertEqual(predictor_give_row['market_segment_label'], '主让/让胜')
         self.assertEqual(predictor_give_row['total'], 1)
         self.assertEqual(predictor_give_row['hit'], 1)
 
@@ -280,7 +280,7 @@ class ConsensusAnalysisServiceTests(unittest.TestCase):
             if field['field'] == 'rqspf'
         )
         self.assertEqual(today_spf['market_segment'], 'spf:favorite:ultra_low')
-        self.assertEqual(today_spf['market_segment_label'], '热门项/超低赔')
+        self.assertEqual(today_spf['market_segment_label'], '低赔方/超低赔')
         self.assertEqual(today_spf['pair_breakdown']['source'], 'segment')
         self.assertEqual(today_spf['pair_breakdown']['market_segment'], 'spf:favorite:ultra_low')
         self.assertEqual(today_spf['pair_breakdown']['avg_rate'], 100.0)
@@ -290,7 +290,7 @@ class ConsensusAnalysisServiceTests(unittest.TestCase):
             for pair in today_spf['pair_breakdown']['pairs']
         ))
         self.assertEqual(today_rqspf['market_segment'], 'rqspf:home_give:cover')
-        self.assertEqual(today_rqspf['market_segment_label'], '主让/打穿')
+        self.assertEqual(today_rqspf['market_segment_label'], '主让/让胜')
 
 
 if __name__ == '__main__':
