@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import config
 from ai_trader import AIPredictor
 from services.prediction_guard import AIPredictionError
 
@@ -20,9 +21,9 @@ MAX_PREDICTIONS_PER_MATCH_IN_CHAT_CONTEXT = 8
 MAX_HISTORY_SAMPLES_IN_CHAT_CONTEXT = 12
 MAX_ROWS_PER_FIELD_IN_CHAT_CONTEXT = 4
 MAX_CHAT_REPLY_CHARS = 5000
-DEFAULT_CHAT_REQUEST_BUDGET_SECONDS = 16
-FALLBACK_CHAT_REQUEST_BUDGET_SECONDS = 10
-REASONING_CHAT_REQUEST_BUDGET_SECONDS = 75
+DEFAULT_CHAT_REQUEST_BUDGET_SECONDS = config.CONSENSUS_CHAT_REQUEST_BUDGET_SECONDS
+FALLBACK_CHAT_REQUEST_BUDGET_SECONDS = config.CONSENSUS_CHAT_FALLBACK_REQUEST_BUDGET_SECONDS
+REASONING_CHAT_REQUEST_BUDGET_SECONDS = config.CONSENSUS_CHAT_REASONING_REQUEST_BUDGET_SECONDS
 
 
 SYSTEM_PROMPT = (
@@ -107,7 +108,7 @@ def chat_consensus_analysis(
             system_prompt=SYSTEM_PROMPT,
             max_output_tokens=900,
             request_time_budget_seconds=FALLBACK_CHAT_REQUEST_BUDGET_SECONDS
-    )
+        )
     raw_response = result.get('raw_response') or ''
     reply = _normalize_reply_text(raw_response)
     if _looks_like_reasoning_draft(reply):
