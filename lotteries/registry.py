@@ -83,7 +83,7 @@ LOTTERY_DEFINITIONS = {
         consensus_baselines=(('combo', 25.0),),
         # PC28 方案区分度小，需要大样本压噪声
         consensus_min_sample_for_weight=200,
-        consensus_window_unit='issues'
+        consensus_window_unit='days'
     ),
     'jingcai_football': LotteryDefinition(
         lottery_type='jingcai_football',

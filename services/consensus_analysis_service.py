@@ -65,10 +65,7 @@ def build_consensus_analysis(
         db: Database 实例
         user_id: 限定方案池为该用户；None 表示分析平台所有方案（仅管理员调用）
         lottery_type: 'jingcai_football' 或 'pc28'
-        time_window_days: 历史窗口。
-            - lottery_type='jingcai_football' 时为天数（按 created_at 过滤）
-            - lottery_type='pc28' 时为期数（最近 N 期，按 issue_no 倒序 LIMIT）
-            - None 表示不限
+        time_window_days: 历史窗口，按 created_at 过滤最近 N 天；None 表示不限。
 
     返回：见 plan 文件。所有率以百分比 float 形式给出，未达成时为 None。
     """
@@ -96,7 +93,7 @@ def build_consensus_analysis(
             predictor_ids=predictor_ids,
             consensus_fields=definition.consensus_fields,
             only_settled=True,
-            recent_issues_limit=time_window_days  # PC28 把窗口解释为期数
+            time_window_days=time_window_days
         )
         pending_items = _fetch_pc28_predictions_as_items(
             db,
@@ -359,6 +356,7 @@ def _fetch_pc28_predictions_as_items(
     consensus_fields: tuple[str, ...],
     only_settled: bool = True,
     only_pending: bool = False,
+    time_window_days: int | None = None,
     recent_issues_limit: int | None = None
 ) -> list[dict]:
     """
@@ -374,7 +372,8 @@ def _fetch_pc28_predictions_as_items(
         - hit        = {field_key: hit_<field>}         同上
         - actual     = {field_key: actual_<field>}      同上
 
-    `recent_issues_limit` 解释为"最近 N 期"——按 issue_no 倒序取，N = None 表示全部。
+    `time_window_days` 按 created_at 过滤最近 N 天，用于共识分析。
+    `recent_issues_limit` 解释为"最近 N 期"，仅用于聊天上下文等小样本抽取。
     """
     if not predictor_ids:
         return []
@@ -388,29 +387,65 @@ def _fetch_pc28_predictions_as_items(
     actual_cols = ', '.join(f'actual_{f}' for f in fields)
 
     placeholders = ','.join('?' for _ in predictor_ids)
-    sql = f"""
-        SELECT id, predictor_id, issue_no, status, created_at, settled_at,
-               {pred_cols}, {hit_cols}, {actual_cols}
-        FROM predictions
-        WHERE lottery_type = 'pc28' AND predictor_id IN ({placeholders})
+    select_cols = f"""
+        id, predictor_id, issue_no, status, created_at, settled_at,
+        {pred_cols}, {hit_cols}, {actual_cols}
     """
-    params: list[Any] = list(predictor_ids)
+    base_where = f"lottery_type = 'pc28' AND predictor_id IN ({placeholders})"
 
+    status_clause = ''
     if only_settled:
-        sql += " AND status = 'settled'"
+        status_clause = " AND status = 'settled'"
     elif only_pending:
-        sql += " AND status = 'pending'"
+        status_clause = " AND status = 'pending'"
+
+    time_clause = ''
+    time_params: list[Any] = []
+    if time_window_days is not None:
+        try:
+            window_days = max(1, int(time_window_days))
+        except (TypeError, ValueError):
+            window_days = 7
+        cutoff = (datetime.utcnow() - timedelta(days=window_days)).strftime('%Y-%m-%d %H:%M:%S')
+        time_clause = " AND created_at >= ?"
+        time_params.append(cutoff)
 
     if recent_issues_limit is not None:
-        # PC28 issue_no 是数字字符串，按 INTEGER 排序
-        sql += " ORDER BY CAST(issue_no AS INTEGER) DESC"
         try:
             limit_n = max(1, int(recent_issues_limit))
         except (TypeError, ValueError):
             limit_n = HISTORICAL_QUERY_LIMIT
-        sql += f" LIMIT {min(limit_n, HISTORICAL_QUERY_LIMIT)}"
+        limit_n = min(limit_n, HISTORICAL_QUERY_LIMIT)
+        sql = f"""
+            WITH recent_issues AS (
+                SELECT issue_no
+                FROM predictions
+                WHERE {base_where}{status_clause}{time_clause}
+                GROUP BY issue_no
+                ORDER BY CAST(issue_no AS INTEGER) DESC
+                LIMIT ?
+            )
+            SELECT {select_cols}
+            FROM predictions
+            WHERE {base_where}{status_clause}{time_clause}
+              AND issue_no IN (SELECT issue_no FROM recent_issues)
+            ORDER BY CAST(issue_no AS INTEGER) DESC, predictor_id ASC
+            LIMIT {HISTORICAL_QUERY_LIMIT}
+        """
+        params: list[Any] = [
+            *predictor_ids, *time_params,
+            limit_n,
+            *predictor_ids, *time_params
+        ]
     else:
-        sql += f" ORDER BY CAST(issue_no AS INTEGER) DESC LIMIT {HISTORICAL_QUERY_LIMIT}"
+        sql = f"""
+            SELECT {select_cols}
+            FROM predictions
+            WHERE {base_where}{status_clause}{time_clause}
+            ORDER BY CAST(issue_no AS INTEGER) DESC, predictor_id ASC
+            LIMIT {HISTORICAL_QUERY_LIMIT}
+        """
+        params = [*predictor_ids, *time_params]
 
     conn = db.get_connection()
     try:
@@ -473,6 +508,23 @@ def _build_market_segment(item: dict, field_key: str, pred_val: str | None) -> d
     if field_key == 'rqspf':
         return _build_rqspf_segment(market_context, pred_val)
     return {'key': 'all', 'label': '全部样本'}
+
+
+def _iter_all_and_specific_segments(segment: dict) -> Iterable[tuple[str, str]]:
+    """返回全量分层和具体分层；当具体分层也是 all 时只返回一次。"""
+    candidates = (
+        ('all', '全部样本'),
+        (
+            str((segment or {}).get('key') or 'all'),
+            str((segment or {}).get('label') or '全部样本')
+        )
+    )
+    seen: set[tuple[str, str]] = set()
+    for item in candidates:
+        if item in seen:
+            continue
+        seen.add(item)
+        yield item
 
 
 def _build_spf_segment(market_context: dict, pred_val: str | None) -> dict:
@@ -759,17 +811,16 @@ def _build_consensus_by_count(
                 if n_agree < 1:
                     continue
                 segment = _build_market_segment(supporters[0], fkey, pred_val)
+                segment_items = tuple(_iter_all_and_specific_segments(segment))
                 match_hit = int(bool((supporters[0].get('hit') or {}).get(fkey)))
-                bucket[(n_agree, pred_val, 'all', '全部样本')]['match_total'] += 1
-                bucket[(n_agree, pred_val, 'all', '全部样本')]['match_hit'] += match_hit
-                bucket[(n_agree, pred_val, segment['key'], segment['label'])]['match_total'] += 1
-                bucket[(n_agree, pred_val, segment['key'], segment['label'])]['match_hit'] += match_hit
+                for segment_key, segment_label in segment_items:
+                    bucket[(n_agree, pred_val, segment_key, segment_label)]['match_total'] += 1
+                    bucket[(n_agree, pred_val, segment_key, segment_label)]['match_hit'] += match_hit
                 for sup in supporters:
                     hit_val = (sup.get('hit') or {}).get(fkey)
-                    bucket[(n_agree, pred_val, 'all', '全部样本')]['total'] += 1
-                    bucket[(n_agree, pred_val, 'all', '全部样本')]['hit'] += int(bool(hit_val))
-                    bucket[(n_agree, pred_val, segment['key'], segment['label'])]['total'] += 1
-                    bucket[(n_agree, pred_val, segment['key'], segment['label'])]['hit'] += int(bool(hit_val))
+                    for segment_key, segment_label in segment_items:
+                        bucket[(n_agree, pred_val, segment_key, segment_label)]['total'] += 1
+                        bucket[(n_agree, pred_val, segment_key, segment_label)]['hit'] += int(bool(hit_val))
 
         rows = []
         for (n_agree, pred_val, segment_key, segment_label), stat in bucket.items():
@@ -984,7 +1035,7 @@ def _collect_consensus_count_match_stats(
             if not supporters:
                 continue
             segment = _build_market_segment(supporters[0], field_key, value)
-            for segment_key, segment_label in (('all', '全部样本'), (segment['key'], segment['label'])):
+            for segment_key, segment_label in _iter_all_and_specific_segments(segment):
                 key = (len(supporters), value, segment_key, segment_label)
                 stats[key]['total'] += 1
                 stats[key]['hit'] += int(bool((supporters[0].get('hit') or {}).get(field_key)))
@@ -1019,7 +1070,7 @@ def _collect_value_combo_match_stats(
             for combo in combinations(sorted(supporters), combo_size):
                 combo_ids = tuple(pid for pid, _, _ in combo)
                 segment = _build_market_segment(combo[0][2], field_key, value)
-                for segment_key, segment_label in (('all', '全部样本'), (segment['key'], segment['label'])):
+                for segment_key, segment_label in _iter_all_and_specific_segments(segment):
                     key = (combo_ids, value, segment_key, segment_label)
                     stats[key]['total'] += 1
                     stats[key]['hit'] += combo[0][1]

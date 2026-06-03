@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import json
 import sys
 import tempfile
@@ -102,6 +103,92 @@ class ConsensusAnalysisServiceTests(unittest.TestCase):
                 'settled_at': '2026-04-06 20:00:00' if status == 'settled' else None
             }
         ])
+
+    def _create_pc28_predictor(self, name: str) -> int:
+        return self.db.create_predictor(
+            user_id=self.user_id,
+            name=name,
+            lottery_type='pc28',
+            engine_type='ai',
+            algorithm_key='',
+            api_key='key',
+            api_url='https://example.com',
+            model_name='model',
+            api_mode='auto',
+            primary_metric='combo',
+            profit_default_metric='combo',
+            profit_rule_id='pc28_netdisk',
+            share_level='records',
+            prediction_method='test',
+            system_prompt='test',
+            data_injection_mode='summary',
+            prediction_targets=['combo'],
+            history_window=20,
+            temperature=0.3,
+            enabled=True
+        )
+
+    def _set_pc28_issue_created_at(self, issue_no: str, created_at: datetime) -> None:
+        formatted = created_at.strftime('%Y-%m-%d %H:%M:%S')
+        conn = self.db.get_connection()
+        try:
+            conn.execute(
+                '''
+                UPDATE predictions
+                SET created_at = ?, updated_at = ?
+                WHERE lottery_type = 'pc28' AND issue_no = ?
+                ''',
+                (formatted, formatted, issue_no)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_pc28_window_filters_by_days_and_keeps_all_predictors_per_issue(self):
+        predictor_ids = [
+            self._create_pc28_predictor(f'PC28方案{index}')
+            for index in range(1, 4)
+        ]
+        now_utc = datetime.utcnow()
+        issue_created_at = {
+            '101': now_utc - timedelta(days=8),
+            '102': now_utc - timedelta(days=8),
+            '103': now_utc - timedelta(days=2),
+            '104': now_utc - timedelta(days=2)
+        }
+
+        for issue_no, created_at in issue_created_at.items():
+            for predictor_id in predictor_ids:
+                self.db.upsert_prediction({
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'pc28',
+                    'issue_no': issue_no,
+                    'requested_targets': ['combo'],
+                    'prediction_combo': '大单',
+                    'actual_combo': '大单',
+                    'hit_combo': 1,
+                    'status': 'settled',
+                    'settled_at': '2026-04-06 20:00:00'
+                })
+            self._set_pc28_issue_created_at(issue_no, created_at)
+
+        analysis = build_consensus_analysis(
+            self.db,
+            user_id=self.user_id,
+            lottery_type='pc28',
+            time_window_days=7
+        )
+
+        self.assertEqual(analysis['sample_count'], 2)
+        self.assertEqual(analysis['settled_item_count'], 6)
+        combo_row = next(
+            row for row in analysis['consensus_by_count']['combo']
+            if row['agree_count'] == 3
+            and row['value'] == '大单'
+            and row['market_segment'] == 'all'
+        )
+        self.assertEqual(combo_row['match_total'], 2)
+        self.assertEqual(combo_row['total'], 6)
 
     def test_build_consensus_analysis_segments_spf_and_rqspf(self):
         predictor_ids = [

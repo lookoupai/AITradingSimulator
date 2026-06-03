@@ -1070,7 +1070,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     lottery_type: LOTTERY_TYPE,
-                    window_days: parseInt(windowSelect.value, 10) || 30,
+                    window_days: windowSelect.value,
                     ...config
                 })
             });

@@ -5233,18 +5233,18 @@ def _resolve_consensus_scope(scope_arg: str | None) -> tuple[str, int | None]:
     return 'user', int(user_id)
 
 
-def _resolve_consensus_window(window_arg: str | None) -> int | None:
+def _resolve_consensus_window(window_arg: str | None, default_days: int = 30) -> int | None:
     """
     解析时间窗口参数。
-    支持 7 / 30 / 90 / all（或空 -> 默认 30）。
+    支持 7 / 30 / 90 / all。
     """
-    text = str(window_arg or '30').strip().lower()
+    text = str(window_arg if window_arg is not None else default_days).strip().lower()
     if text in {'all', 'full', '0'}:
         return None
     try:
         days = int(text)
     except (TypeError, ValueError):
-        days = 30
+        days = int(default_days)
     if days <= 0:
         return None
     return min(days, 3650)
@@ -5413,7 +5413,10 @@ def api_consensus_analysis():
     if lottery_type not in ('jingcai_football', 'pc28'):
         return jsonify({'error': '当前只支持竞彩足球和 PC28 的共识分析'}), 400
 
-    window = _resolve_consensus_window(request.args.get('window'))
+    window = _resolve_consensus_window(
+        request.args.get('window'),
+        default_days=7 if lottery_type == 'pc28' else 30
+    )
     try:
         analysis = build_consensus_analysis(
             db,
@@ -5479,7 +5482,10 @@ def api_consensus_chat():
     except PermissionError as exc:
         return jsonify({'error': str(exc)}), 403
 
-    window = _resolve_consensus_window(data.get('window') or request.args.get('window'))
+    window = _resolve_consensus_window(
+        data.get('window') or request.args.get('window'),
+        default_days=7 if lottery_type == 'pc28' else 30
+    )
     include_today_context = _consensus_chat_needs_today_context(user_message)
 
     try:
@@ -5567,7 +5573,10 @@ def export_consensus(lottery_type: str):
     if normalized_lottery not in ('jingcai_football', 'pc28'):
         return jsonify({'error': '当前只支持竞彩足球和 PC28 的共识导出'}), 400
 
-    window = _resolve_consensus_window(request.args.get('window'))
+    window = _resolve_consensus_window(
+        request.args.get('window'),
+        default_days=7 if normalized_lottery == 'pc28' else 30
+    )
     try:
         analysis = build_consensus_analysis(
             db,
@@ -5640,11 +5649,10 @@ def api_generate_consensus_rules():
         return jsonify({'error': str(exc)}), 400
 
     user_id = get_current_user_id()
-    window_days = data.get('window_days')
-    try:
-        window_days_int = int(window_days) if window_days is not None else 30
-    except (TypeError, ValueError):
-        window_days_int = 30
+    window_days_int = _resolve_consensus_window(
+        data.get('window_days'),
+        default_days=7 if lottery_type == 'pc28' else 30
+    )
 
     try:
         analysis = build_consensus_analysis(
