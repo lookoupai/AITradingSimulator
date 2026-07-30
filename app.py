@@ -31,7 +31,12 @@ from lotteries.registry import (
 from services.jingcai_football_service import JingcaiFootballService
 from services.algorithm_backtester import backtest_jingcai_user_algorithm
 from services.algorithm_chat_service import generate_algorithm_draft
-from services.consensus_analysis_service import build_consensus_analysis, build_export_envelope
+from services.consensus_analysis_service import (
+    build_consensus_analysis,
+    build_export_envelope,
+    build_pc28_best_pair_execution_export,
+    build_pc28_consensus_execution_export,
+)
 from services.consensus_chat_service import chat_consensus_analysis
 from services.algorithm_definition_validator import validate_algorithm_definition
 from services.algorithm_executor import predict_jingcai_with_user_algorithm
@@ -5589,6 +5594,82 @@ def export_consensus(lottery_type: str):
         return jsonify({'error': f'导出失败: {exc}'}), 500
 
     return jsonify(build_export_envelope(analysis, scope=scope))
+
+
+@app.route('/api/export/consensus/pc28/signals', methods=['GET'])
+def export_pc28_consensus_signals():
+    """公开导出最新 PC28 共识执行信号，供执行平台作为普通来源订阅。"""
+    raw_ids = str(request.args.get('predictor_ids') or '').strip()
+    predictor_ids = None
+    if raw_ids:
+        try:
+            predictor_ids = sorted({int(item) for item in raw_ids.split(',') if str(item).strip()})
+        except ValueError:
+            return jsonify({'error': 'predictor_ids 必须是逗号分隔的整数'}), 400
+        if not predictor_ids:
+            return jsonify({'error': 'predictor_ids 不能为空'}), 400
+    try:
+        min_agreement = max(2, min(int(request.args.get('min_agreement') or 2), 20))
+        raw_min_historical_rate = request.args.get('min_historical_rate')
+        min_historical_rate = (
+            None
+            if raw_min_historical_rate in (None, '')
+            else float(raw_min_historical_rate)
+        )
+        min_historical_sample = max(
+            0,
+            min(int(request.args.get('min_historical_sample') or 0), 1000000),
+        )
+        window = max(1, min(int(request.args.get('window') or 7), 3650))
+        payload = build_pc28_consensus_execution_export(
+            db,
+            predictor_ids=predictor_ids,
+            field=request.args.get('field') or 'odd_even',
+            min_agreement=min_agreement,
+            min_historical_rate=min_historical_rate,
+            min_historical_sample=min_historical_sample,
+            time_window_days=window,
+        )
+    except (TypeError, ValueError) as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        runtime_logger.exception('PC28 共识执行导出失败: %s', exc)
+        return jsonify({'error': f'共识导出失败: {exc}'}), 500
+    return jsonify(payload)
+
+
+@app.route('/api/export/consensus/pc28/best-pair-signals', methods=['GET'])
+def export_pc28_best_pair_signals():
+    """公开导出 PC28 当期达标且历史命中率最高的方案对信号。"""
+    raw_ids = str(request.args.get('predictor_ids') or '').strip()
+    predictor_ids = None
+    if raw_ids:
+        try:
+            predictor_ids = sorted({int(item) for item in raw_ids.split(',') if str(item).strip()})
+        except ValueError:
+            return jsonify({'error': 'predictor_ids 必须是逗号分隔的整数'}), 400
+        if not predictor_ids:
+            return jsonify({'error': 'predictor_ids 不能为空'}), 400
+    try:
+        min_historical_rate = float(request.args.get('min_historical_rate') or 28)
+        min_historical_sample = max(
+            1,
+            min(int(request.args.get('min_historical_sample') or 300), 1000000),
+        )
+        window = max(1, min(int(request.args.get('window') or 30), 3650))
+        payload = build_pc28_best_pair_execution_export(
+            db,
+            predictor_ids=predictor_ids,
+            min_historical_rate=min_historical_rate,
+            min_historical_sample=min_historical_sample,
+            time_window_days=window,
+        )
+    except (TypeError, ValueError) as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        runtime_logger.exception('PC28 最优共识方案对导出失败: %s', exc)
+        return jsonify({'error': f'最优共识方案对导出失败: {exc}'}), 500
+    return jsonify(payload)
 
 
 # ============= 个性化共识规则 API =============

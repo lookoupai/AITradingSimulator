@@ -56,7 +56,8 @@ def build_consensus_analysis(
     *,
     user_id: int | None,
     lottery_type: str = 'jingcai_football',
-    time_window_days: int | None = 30
+    time_window_days: int | None = 30,
+    predictor_ids: list[int] | None = None
 ) -> dict:
     """
     构建一份共识分析快照。
@@ -80,7 +81,12 @@ def build_consensus_analysis(
     ]
 
     # 1. 方案池
-    predictors_pool = _select_predictor_pool(db, user_id=user_id, lottery_type=normalized)
+    predictors_pool = _select_predictor_pool(
+        db,
+        user_id=user_id,
+        lottery_type=normalized,
+        predictor_ids=predictor_ids,
+    )
     predictor_ids = [p['id'] for p in predictors_pool]
 
     if not predictor_ids or not fields:
@@ -224,7 +230,13 @@ def _empty_analysis(lottery_type: str, fields: list[dict], window: int | None) -
     }
 
 
-def _select_predictor_pool(db, *, user_id: int | None, lottery_type: str) -> list[dict]:
+def _select_predictor_pool(
+    db,
+    *,
+    user_id: int | None,
+    lottery_type: str,
+    predictor_ids: list[int] | None = None,
+) -> list[dict]:
     """
     选取参与分析的方案。规则：
     - 限定 lottery_type
@@ -236,11 +248,15 @@ def _select_predictor_pool(db, *, user_id: int | None, lottery_type: str) -> lis
     else:
         all_predictors = db.get_all_predictors(include_secret=False)
 
-    return [
+    selected = [
         p for p in (all_predictors or [])
         if (p.get('lottery_type') or '') == lottery_type
         and bool(p.get('enabled'))
     ]
+    if predictor_ids is None:
+        return selected
+    allowed = {int(item) for item in predictor_ids}
+    return [item for item in selected if int(item['id']) in allowed]
 
 
 def _fetch_prediction_items(
@@ -1610,3 +1626,318 @@ def build_export_envelope(analysis: dict, *, scope: str) -> dict:
         'generated_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
         'data': analysis
     }
+
+
+def build_pc28_consensus_execution_export(
+    db,
+    *,
+    predictor_ids: list[int] | None = None,
+    field: str = 'odd_even',
+    min_agreement: int = 2,
+    min_historical_rate: float | None = None,
+    min_historical_sample: int = 0,
+    time_window_days: int | None = 7,
+) -> dict:
+    """生成单条可执行的 PC28 共识信号。
+
+    共识计算仍复用历史分析服务；本函数只负责把最新满足门槛的共识
+    转换成 pc28touzhu 可消费的 execution-view，避免执行侧重复实现预测逻辑。
+    """
+    normalized_field = str(field or '').strip()
+    if normalized_field not in {'big_small', 'odd_even', 'combo'}:
+        raise ValueError('field 仅支持 big_small、odd_even 或 combo')
+    agreement = max(2, int(min_agreement or 2))
+    historical_rate_floor = None
+    if min_historical_rate not in (None, ''):
+        historical_rate_floor = float(min_historical_rate)
+        if historical_rate_floor < 0 or historical_rate_floor > 100:
+            raise ValueError('min_historical_rate 必须在 0 到 100 之间')
+    historical_sample_floor = max(0, int(min_historical_sample or 0))
+    analysis = build_consensus_analysis(
+        db,
+        user_id=None,
+        lottery_type='pc28',
+        time_window_days=time_window_days,
+        predictor_ids=predictor_ids,
+    )
+    pool = analysis.get('predictors') or []
+    pool_ids = sorted(int(item['id']) for item in pool if item.get('id') is not None)
+    candidates = []
+    for recommendation in analysis.get('today_recommendations') or []:
+        issue_no = str(recommendation.get('event_key') or '').strip()
+        if not issue_no:
+            continue
+        field_row = next(
+            (item for item in recommendation.get('fields') or [] if item.get('field') == normalized_field),
+            None,
+        )
+        if not field_row or int(field_row.get('agree_count') or 0) < agreement:
+            continue
+        distributions = field_row.get('all_predictions') or {}
+        counts = sorted(
+            (int(item.get('count') or 0) for item in distributions.values()),
+            reverse=True,
+        )
+        if len(counts) > 1 and counts[0] == counts[1]:
+            continue
+        value = str(field_row.get('consensus_value') or '').strip()
+        if not value:
+            continue
+        historical_rate = field_row.get('historical_rate')
+        historical_sample = int(field_row.get('historical_sample') or 0)
+        if historical_sample < historical_sample_floor:
+            continue
+        if historical_rate_floor is not None:
+            if historical_rate is None or float(historical_rate) < historical_rate_floor:
+                continue
+        candidates.append((int(issue_no) if issue_no.isdigit() else -1, issue_no, field_row))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    generated_at = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    if not candidates:
+        return {
+            'schema_version': '1.0',
+            'source_type': 'ai_trading_simulator',
+            'export_type': 'consensus_execution',
+            'lottery_type': 'pc28',
+            'field': normalized_field,
+            'min_agreement': agreement,
+            'min_historical_rate': historical_rate_floor,
+            'min_historical_sample': historical_sample_floor,
+            'predictor_ids': pool_ids,
+            'generated_at': generated_at,
+            'items': [],
+        }
+
+    _, issue_no, field_row = candidates[0]
+    value = str(field_row['consensus_value'])
+    supporter_ids = sorted(int(item) for item in field_row.get('supporters') or [])
+    historical_rate = field_row.get('historical_rate')
+    confidence = (
+        round(float(historical_rate) / 100.0, 4)
+        if historical_rate is not None
+        else round(len(supporter_ids) / max(1, len(pool_ids)), 4)
+    )
+    config_parts = [normalized_field, str(agreement)]
+    if historical_rate_floor is not None:
+        config_parts.extend([
+            'rate%s' % ('%g' % historical_rate_floor),
+            'sample%s' % historical_sample_floor,
+        ])
+    config_parts.append('-'.join(str(item) for item in pool_ids))
+    config_key = '-'.join(config_parts)
+    signal = {
+        'bet_type': normalized_field,
+        'bet_value': value,
+        'confidence': confidence,
+        'message_text': f'{value}10',
+        'normalized_payload': {
+            'primary_metric': normalized_field,
+            'consensus_count': len(supporter_ids),
+            'pool_size': len(pool_ids),
+            'supporter_predictor_ids': supporter_ids,
+            'predictor_ids': pool_ids,
+            'consensus_config': config_key,
+            'historical_rate': historical_rate,
+            'historical_sample': int(field_row.get('historical_sample') or 0),
+            'historical_rate_threshold': historical_rate_floor,
+            'historical_sample_threshold': historical_sample_floor,
+            'profit_rule_id': 'pc28_high',
+            'odds_profile': 'regular',
+            'share_level': 'records',
+        },
+    }
+    return {
+        'schema_version': '1.0',
+        'source_type': 'ai_trading_simulator',
+        'export_type': 'consensus_execution',
+        'lottery_type': 'pc28',
+        'field': normalized_field,
+        'min_agreement': agreement,
+        'min_historical_rate': historical_rate_floor,
+        'min_historical_sample': historical_sample_floor,
+        'predictor_ids': pool_ids,
+        'generated_at': generated_at,
+        'items': [{
+            'schema_version': '1.0',
+            'signal_id': f'pc28-consensus-{config_key}-{issue_no}',
+            'source_type': 'ai_trading_simulator',
+            'source_ref': {
+                'platform': 'AITradingSimulator',
+                'algorithm_key': 'pc28_consensus_v1',
+                'consensus_config': config_key,
+                'predictor_ids': pool_ids,
+                'supporter_predictor_ids': supporter_ids,
+                'historical_rate': historical_rate,
+                'historical_sample': int(field_row.get('historical_sample') or 0),
+            },
+            'lottery_type': 'pc28',
+            'issue_no': issue_no,
+            'published_at': generated_at,
+            'signals': [signal],
+        }],
+    }
+
+
+def build_pc28_best_pair_execution_export(
+    db,
+    *,
+    predictor_ids: list[int] | None = None,
+    min_historical_rate: float = 28.0,
+    min_historical_sample: int = 300,
+    time_window_days: int = 30,
+) -> dict:
+    """从当期同值共识的 PC28 方案对中选择历史命中率最高者。"""
+    historical_rate_floor = float(min_historical_rate)
+    if historical_rate_floor < 0 or historical_rate_floor > 100:
+        raise ValueError('min_historical_rate 必须在 0 到 100 之间')
+    historical_sample_floor = max(1, int(min_historical_sample or 0))
+    window_days = max(1, int(time_window_days or 30))
+
+    analysis = build_consensus_analysis(
+        db,
+        user_id=None,
+        lottery_type='pc28',
+        time_window_days=window_days,
+        predictor_ids=predictor_ids,
+    )
+    pool = analysis.get('predictors') or []
+    pool_ids = sorted(int(item['id']) for item in pool if item.get('id') is not None)
+    name_lookup = {
+        int(item['id']): item.get('name') or f"方案#{item['id']}"
+        for item in pool
+        if item.get('id') is not None
+    }
+    generated_at = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    envelope = {
+        'schema_version': '1.0',
+        'source_type': 'ai_trading_simulator',
+        'export_type': 'best_consensus_pair_execution',
+        'lottery_type': 'pc28',
+        'field': 'combo',
+        'selection_mode': 'best_consensus_pair',
+        'min_historical_rate': historical_rate_floor,
+        'min_historical_sample': historical_sample_floor,
+        'window_days': window_days,
+        'predictor_ids': pool_ids,
+        'generated_at': generated_at,
+        'qualified_pairs': [],
+        'items': [],
+    }
+    if not pool_ids:
+        return envelope
+
+    pair_lookup = {}
+    for row in (analysis.get('pair_combinations') or {}).get('combo') or []:
+        pair = tuple(sorted(int(item) for item in (row.get('pair') or [])))
+        if len(pair) != 2:
+            continue
+        pair_lookup[pair] = {
+            'predictor_ids': list(pair),
+            'predictor_names': [name_lookup.get(item, f'方案#{item}') for item in pair],
+            'historical_rate': row.get('rate'),
+            'historical_sample': int(row.get('total') or 0),
+            'historical_hit': int(row.get('hit') or 0),
+        }
+
+    recommendations = sorted(
+        analysis.get('today_recommendations') or [],
+        key=lambda item: (
+            int(item.get('event_key'))
+            if str(item.get('event_key') or '').isdigit()
+            else -1
+        ),
+        reverse=True,
+    )
+    if not recommendations:
+        return envelope
+
+    recommendation = recommendations[0]
+    issue_no = str(recommendation.get('event_key') or '').strip()
+    field_row = next(
+        (item for item in recommendation.get('fields') or [] if item.get('field') == 'combo'),
+        None,
+    )
+    if not issue_no or not field_row:
+        return envelope
+
+    qualified = []
+    for value, distribution in (field_row.get('all_predictions') or {}).items():
+        supporters = sorted(int(item) for item in (distribution.get('predictors') or []))
+        for pair in combinations(supporters, 2):
+            pair_row = pair_lookup.get(tuple(pair))
+            if not pair_row:
+                continue
+            rate = pair_row.get('historical_rate')
+            sample = int(pair_row.get('historical_sample') or 0)
+            if rate is None or float(rate) < historical_rate_floor:
+                continue
+            if sample < historical_sample_floor:
+                continue
+            qualified.append({
+                **pair_row,
+                'bet_value': str(value),
+            })
+
+    qualified.sort(
+        key=lambda item: (
+            -float(item['historical_rate']),
+            -int(item['historical_sample']),
+            tuple(item['predictor_ids']),
+        )
+    )
+    envelope['qualified_pairs'] = qualified
+    if not qualified:
+        return envelope
+
+    selected = qualified[0]
+    value = str(selected['bet_value'])
+    config_key = 'combo-best-pair-rate%s-sample%s-window%s-%s' % (
+        '%g' % historical_rate_floor,
+        historical_sample_floor,
+        window_days,
+        '-'.join(str(item) for item in pool_ids),
+    )
+    signal = {
+        'bet_type': 'combo',
+        'bet_value': value,
+        'confidence': round(float(selected['historical_rate']) / 100.0, 4),
+        'message_text': f'{value}10',
+        'normalized_payload': {
+            'primary_metric': 'combo',
+            'selection_mode': 'best_consensus_pair',
+            'consensus_count': 2,
+            'predictor_ids': pool_ids,
+            'supporter_predictor_ids': selected['predictor_ids'],
+            'supporter_predictor_names': selected['predictor_names'],
+            'historical_rate': selected['historical_rate'],
+            'historical_sample': int(selected['historical_sample']),
+            'historical_rate_threshold': historical_rate_floor,
+            'historical_sample_threshold': historical_sample_floor,
+            'historical_window_days': window_days,
+            'profit_rule_id': 'pc28_high',
+            'odds_profile': 'regular',
+            'share_level': 'records',
+        },
+    }
+    envelope['selected_pair'] = selected
+    envelope['items'] = [{
+        'schema_version': '1.0',
+        'signal_id': f'pc28-best-consensus-pair-{config_key}-{issue_no}',
+        'source_type': 'ai_trading_simulator',
+        'source_ref': {
+            'platform': 'AITradingSimulator',
+            'algorithm_key': 'pc28_best_consensus_pair_v1',
+            'selection_config': config_key,
+            'predictor_ids': pool_ids,
+            'supporter_predictor_ids': selected['predictor_ids'],
+            'supporter_predictor_names': selected['predictor_names'],
+            'historical_rate': selected['historical_rate'],
+            'historical_sample': int(selected['historical_sample']),
+        },
+        'lottery_type': 'pc28',
+        'issue_no': issue_no,
+        'published_at': generated_at,
+        'signals': [signal],
+    }]
+    return envelope

@@ -78,9 +78,9 @@ LOTTERY_DEFINITIONS = {
         supports_public_pages=True,
         supports_prompt_assistant=True,
         overview_mode='pc28',
-        # 共识分析仅做 combo（实测大小单双区分度极低、单点共识极少）
-        consensus_fields=('combo',),
-        consensus_baselines=(('combo', 25.0),),
+        # 共识分析覆盖可执行的三类离散玩法；单点号码不参与共识。
+        consensus_fields=('big_small', 'odd_even', 'combo'),
+        consensus_baselines=(('big_small', 50.0), ('odd_even', 50.0), ('combo', 25.0)),
         # PC28 方案区分度小，需要大样本压噪声
         consensus_min_sample_for_weight=200,
         consensus_window_unit='days'
