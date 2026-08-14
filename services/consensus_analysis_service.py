@@ -23,7 +23,8 @@ from lotteries.registry import get_lottery_definition, normalize_lottery_type
 from utils import jingcai_football as football_utils
 
 
-# 历史样本上限（避免大表全量扫描）
+# 未指定时间或期号窗口时的保护上限。
+# 已指定窗口的查询必须返回窗口内的全部行，否则多方案数据会被按行截断。
 HISTORICAL_QUERY_LIMIT = 20000
 
 # 历史命中率被认为"可靠"的最小样本量。
@@ -446,7 +447,6 @@ def _fetch_pc28_predictions_as_items(
             WHERE {base_where}{status_clause}{time_clause}
               AND issue_no IN (SELECT issue_no FROM recent_issues)
             ORDER BY CAST(issue_no AS INTEGER) DESC, predictor_id ASC
-            LIMIT {HISTORICAL_QUERY_LIMIT}
         """
         params: list[Any] = [
             *predictor_ids, *time_params,
@@ -454,12 +454,17 @@ def _fetch_pc28_predictions_as_items(
             *predictor_ids, *time_params
         ]
     else:
+        fallback_limit_clause = (
+            f"LIMIT {HISTORICAL_QUERY_LIMIT}"
+            if time_window_days is None
+            else ''
+        )
         sql = f"""
             SELECT {select_cols}
             FROM predictions
             WHERE {base_where}{status_clause}{time_clause}
             ORDER BY CAST(issue_no AS INTEGER) DESC, predictor_id ASC
-            LIMIT {HISTORICAL_QUERY_LIMIT}
+            {fallback_limit_clause}
         """
         params = [*predictor_ids, *time_params]
 

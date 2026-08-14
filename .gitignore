@@ -27,6 +27,8 @@ wheels/
 # Database
 *.db
 *.db-*
+*.db.before-*
+*.db.after-*
 *.sqlite
 *.sqlite-*
 *.sqlite3

@@ -2109,6 +2109,12 @@ def _validate_predictor_payload(
         errors.append('模型名称不能为空')
     if engine_type == 'machine' and not algorithm_key:
         errors.append('机器算法不能为空')
+    if (
+        engine_type == 'machine'
+        and algorithm_key == 'pc28_high_ev_combo_v1'
+        and profit_rule_id != 'pc28_high'
+    ):
+        errors.append('高赔组合期望值 V1 仅支持加拿大28高倍结算规则')
     if engine_type == 'machine' and is_user_algorithm_key(algorithm_key):
         user_algorithm_id = get_user_algorithm_id(algorithm_key)
         user_algorithm = db.get_user_algorithm_for_user(user_algorithm_id, user_id) if user_id and user_algorithm_id else None

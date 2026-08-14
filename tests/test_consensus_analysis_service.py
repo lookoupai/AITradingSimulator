@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 if 'dotenv' not in sys.modules:
     dotenv_stub = types.ModuleType('dotenv')
@@ -189,6 +190,42 @@ class ConsensusAnalysisServiceTests(unittest.TestCase):
         )
         self.assertEqual(combo_row['match_total'], 2)
         self.assertEqual(combo_row['total'], 6)
+
+    def test_pc28_window_is_not_truncated_by_fallback_row_limit(self):
+        predictor_ids = [
+            self._create_pc28_predictor(f'PC28方案{index}')
+            for index in range(1, 4)
+        ]
+        created_at = datetime.utcnow() - timedelta(days=1)
+
+        for issue_no in ('201', '202'):
+            for predictor_id in predictor_ids:
+                self.db.upsert_prediction({
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'pc28',
+                    'issue_no': issue_no,
+                    'requested_targets': ['combo'],
+                    'prediction_combo': '大单',
+                    'actual_combo': '大单',
+                    'hit_combo': 1,
+                    'status': 'settled',
+                    'settled_at': '2026-04-06 20:00:00'
+                })
+            self._set_pc28_issue_created_at(issue_no, created_at)
+
+        with patch(
+            'services.consensus_analysis_service.HISTORICAL_QUERY_LIMIT',
+            2,
+        ):
+            analysis = build_consensus_analysis(
+                self.db,
+                user_id=self.user_id,
+                lottery_type='pc28',
+                time_window_days=7,
+            )
+
+        self.assertEqual(analysis['sample_count'], 2)
+        self.assertEqual(analysis['settled_item_count'], 6)
 
     def test_build_consensus_analysis_segments_spf_and_rqspf(self):
         predictor_ids = [

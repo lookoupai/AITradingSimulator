@@ -21,6 +21,8 @@ def predict_pc28(context: dict, predictor: dict) -> tuple[dict, str, str]:
         prediction, debug_payload = _predict_pc28_omission_reversion_v1(context, predictor)
     elif algorithm_key == 'pc28_combo_markov_v1':
         prediction, debug_payload = _predict_pc28_combo_markov_v1(context, predictor)
+    elif algorithm_key == 'pc28_high_ev_combo_v1':
+        prediction, debug_payload = _predict_pc28_high_ev_combo_v1(context, predictor)
     else:
         raise ValueError(f'暂不支持的 PC28 机器算法: {algorithm_key}')
     algorithm_label = get_algorithm_label('pc28', 'machine', algorithm_key)
@@ -387,6 +389,43 @@ def _predict_pc28_combo_markov_v1(context: dict, predictor: dict) -> tuple[dict,
             }
             for item in candidates[:5]
         ]
+    }
+    return prediction, debug_payload
+
+
+def _predict_pc28_high_ev_combo_v1(context: dict, predictor: dict) -> tuple[dict, dict]:
+    if str(predictor.get('profit_rule_id') or '').strip() != 'pc28_high':
+        raise ValueError('高赔组合期望值 V1 仅支持加拿大28高倍结算规则')
+
+    normal_hit_rate = 0.150
+    refund_rate = 0.081
+    loss_rate = 0.769
+    odds = 6.33
+    theoretical_ev = normal_hit_rate * odds + refund_rate - 1.0
+    break_even_odds = (1.0 - refund_rate) / normal_hit_rate
+
+    prediction = {
+        'issue_no': context.get('next_issue_no'),
+        'prediction_number': 15,
+        'prediction_big_small': '大',
+        'prediction_odd_even': '单',
+        'prediction_combo': '大单',
+        'confidence': round(normal_hit_rate + refund_rate, 3),
+        'reasoning_summary': '高赔常规结算下，大单的全量历史期望值为正，固定执行1单位基线'
+    }
+    debug_payload = {
+        'algorithm': 'pc28_high_ev_combo_v1',
+        'next_issue_no': context.get('next_issue_no'),
+        'settlement_rule': 'pc28_high',
+        'odds_profile': 'regular',
+        'selected_combo': '大单',
+        'normal_hit_rate': normal_hit_rate,
+        'refund_rate': refund_rate,
+        'loss_rate': loss_rate,
+        'non_loss_rate': round(normal_hit_rate + refund_rate, 3),
+        'odds': odds,
+        'theoretical_ev': round(theoretical_ev, 4),
+        'break_even_odds': round(break_even_odds, 4)
     }
     return prediction, debug_payload
 

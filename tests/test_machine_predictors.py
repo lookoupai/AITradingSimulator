@@ -368,6 +368,68 @@ class MachinePredictorRouteTests(unittest.TestCase):
             self.assertEqual(prediction['prediction_odd_even'], '单')
             self.assertIn('历史转移更偏向大单', prediction['reasoning_summary'])
 
+    def test_predict_now_runs_pc28_high_ev_combo_algorithm(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_id = create_predictor(
+                harness,
+                user_id,
+                'pc28',
+                engine_type='machine',
+                algorithm_key='pc28_high_ev_combo_v1',
+                api_key='',
+                api_url='',
+                model_name='',
+                system_prompt='',
+                primary_metric='combo',
+                profit_default_metric='combo',
+                profit_rule_id='pc28_high'
+            )
+            context = {
+                'latest_draw': None,
+                'next_issue_no': '20260424023',
+                'countdown': '00:01:00',
+                'recent_draws': [],
+                'omission_preview': {},
+                'today_preview': {},
+                'preview': {}
+            }
+
+            with mock.patch.object(harness.module.pc28_service, 'sync_recent_draws', return_value=[]), \
+                 mock.patch.object(harness.module.prediction_engine, '_build_context', return_value=context):
+                response = client.post(f'/api/predictors/{predictor_id}/predict-now')
+
+            self.assertEqual(response.status_code, 200)
+            prediction = response.get_json()['prediction']
+            self.assertEqual(prediction['status'], 'pending')
+            self.assertEqual(prediction['prediction_number'], 15)
+            self.assertEqual(prediction['prediction_big_small'], '大')
+            self.assertEqual(prediction['prediction_odd_even'], '单')
+            self.assertEqual(prediction['prediction_combo'], '大单')
+            self.assertEqual(prediction['confidence'], 0.231)
+            self.assertIn('"theoretical_ev": 0.0305', prediction['raw_response'])
+
+    def test_pc28_high_ev_combo_algorithm_rejects_netdisk_rule(self):
+        with fresh_app_harness() as harness:
+            client, _ = harness.make_client()
+
+            response = client.post('/api/predictors', json={
+                'lottery_type': 'pc28',
+                'engine_type': 'machine',
+                'algorithm_key': 'pc28_high_ev_combo_v1',
+                'name': 'high-ev-netdisk',
+                'primary_metric': 'combo',
+                'profit_default_metric': 'combo',
+                'profit_rule_id': 'pc28_netdisk',
+                'share_level': 'records',
+                'prediction_targets': ['number', 'big_small', 'odd_even', 'combo'],
+                'history_window': 20,
+                'enabled': True
+            })
+
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('仅支持加拿大28高倍结算规则', response.get_json()['error'])
+
     def test_predict_now_runs_football_machine_algorithm(self):
         with fresh_app_harness() as harness:
             client, user_id = harness.make_client()
