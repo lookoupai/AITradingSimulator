@@ -9,6 +9,7 @@ from requests import Response
 
 from ai_trader import AIPredictor
 from services.prediction_guard import AIPredictionError
+from utils.pc28 import normalize_api_mode
 
 
 class AIPredictorEncodingTests(unittest.TestCase):
@@ -442,6 +443,14 @@ class AIPredictorEncodingTests(unittest.TestCase):
             }
         )
 
+    def test_extract_unsupported_parameter_name_accepts_thinking_errors(self):
+        self.assertEqual(
+            self.predictor._extract_unsupported_parameter_name(
+                'HTTP 400: Unrecognized request argument supplied: thinking'
+            ),
+            'thinking'
+        )
+
     def test_call_with_token_limit_fallback_drops_response_format_when_unsupported(self):
         attempts = []
 
@@ -517,6 +526,74 @@ class AIPredictorEncodingTests(unittest.TestCase):
 
         self.assertEqual(minimax_predictor._prediction_max_output_tokens(), 3200)
         self.assertEqual(minimax_predictor._build_provider_extra_body('chat_completions'), {'reasoning_split': True})
+
+    def test_glm_reasoning_model_disables_visible_thinking_and_gets_higher_budget(self):
+        glm_predictor = AIPredictor(
+            api_key='test-key',
+            api_url='https://token.sensenova.cn',
+            model_name='glm-5.2'
+        )
+
+        self.assertTrue(glm_predictor._is_slow_reasoning_model())
+        self.assertEqual(glm_predictor._prediction_max_output_tokens(), 3200)
+        self.assertEqual(
+            glm_predictor._build_provider_extra_body('chat_completions'),
+            {'thinking': {'type': 'disabled'}}
+        )
+
+        payload = glm_predictor._build_compatible_payload(
+            resolved_api_mode='chat_completions',
+            prompt='PROMPT',
+            system_prompt='SYSTEM',
+            max_output_tokens=None,
+            json_output=True
+        )
+        self.assertEqual(payload['thinking'], {'type': 'disabled'})
+
+    def test_deepseek_hybrid_model_disables_visible_thinking(self):
+        deepseek_predictor = AIPredictor(
+            api_key='test-key',
+            api_url='https://example.com/v1',
+            model_name='DeepSeek-V4-Flash-0731'
+        )
+
+        self.assertTrue(deepseek_predictor._is_deepseek_reasoning_model())
+        self.assertTrue(deepseek_predictor._is_slow_reasoning_model())
+        self.assertEqual(deepseek_predictor._prediction_max_output_tokens(), 3200)
+        self.assertEqual(
+            deepseek_predictor._build_provider_extra_body('chat_completions'),
+            {'thinking': {'type': 'disabled'}}
+        )
+
+    def test_deepseek_reasoner_is_budgeted_but_not_forced_into_non_thinking_mode(self):
+        deepseek_predictor = AIPredictor(
+            api_key='test-key',
+            api_url='https://example.com/v1',
+            model_name='deepseek-ai/DeepSeek-R1'
+        )
+
+        self.assertTrue(deepseek_predictor._is_deepseek_reasoning_model())
+        self.assertTrue(deepseek_predictor._is_slow_reasoning_model())
+        self.assertEqual(deepseek_predictor._prediction_max_output_tokens(), 3200)
+        self.assertEqual(
+            deepseek_predictor._build_provider_extra_body('chat_completions'),
+            {}
+        )
+
+    def test_explicit_non_thinking_api_mode_forces_chat_completions_and_thinking_switch(self):
+        predictor = AIPredictor(
+            api_key='test-key',
+            api_url='https://example.com/v1',
+            model_name='gemma-4-31b',
+            api_mode='chat_completions_no_thinking'
+        )
+
+        self.assertEqual(normalize_api_mode('chat_completions_no_thinking'), 'chat_completions_no_thinking')
+        self.assertEqual(predictor._resolve_api_mode(), 'chat_completions')
+        self.assertEqual(
+            predictor._build_provider_extra_body('chat_completions'),
+            {'thinking': {'type': 'disabled'}}
+        )
 
     def test_predict_next_issue_requests_json_output(self):
         predictor_config = {
@@ -780,6 +857,23 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(prediction['prediction_combo'], '小双')
         self.assertEqual(prediction['confidence'], 0.71)
 
+    def test_parse_response_extracts_chinese_conclusion_after_long_analysis(self):
+        prediction = self.predictor._parse_response(
+            raw_response=(
+                '先统计最近60期并完成小六壬起课。历史样本中曾出现和值：12。'
+                '综合判断：最终预测：和值为16，大小为大，单双为双，组合为大双，置信度为0.65。'
+            ),
+            expected_issue_no='3419007',
+            requested_targets=['number', 'big_small', 'odd_even', 'combo']
+        )
+
+        self.assertEqual(prediction['issue_no'], '3419007')
+        self.assertEqual(prediction['prediction_number'], 16)
+        self.assertEqual(prediction['prediction_big_small'], '大')
+        self.assertEqual(prediction['prediction_odd_even'], '双')
+        self.assertEqual(prediction['prediction_combo'], '大双')
+        self.assertEqual(prediction['confidence'], 0.65)
+
     def test_parse_response_accepts_nested_json_string(self):
         prediction = self.predictor._parse_response(
             raw_response=(
@@ -796,6 +890,28 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertEqual(prediction['prediction_odd_even'], '双')
         self.assertEqual(prediction['prediction_combo'], '大双')
         self.assertEqual(prediction['confidence'], 0.6)
+
+    def test_parse_response_accepts_chinese_and_common_json_aliases(self):
+        prediction = self.predictor._parse_response(
+            raw_response=json.dumps({
+                '期号': '3419008',
+                '和值': 18,
+                '大小': '大',
+                '单双': '双',
+                '组合': '大双',
+                '置信度': '65%',
+                '理由': '小六壬速喜，统计偏大双'
+            }, ensure_ascii=False),
+            expected_issue_no='3419008',
+            requested_targets=['number', 'big_small', 'odd_even', 'combo']
+        )
+
+        self.assertEqual(prediction['issue_no'], '3419008')
+        self.assertEqual(prediction['prediction_number'], 18)
+        self.assertEqual(prediction['prediction_big_small'], '大')
+        self.assertEqual(prediction['prediction_odd_even'], '双')
+        self.assertEqual(prediction['prediction_combo'], '大双')
+        self.assertEqual(prediction['confidence'], 0.65)
 
     def test_predict_next_issue_repairs_reasoning_drift_output(self):
         predictor_config = {

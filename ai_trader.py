@@ -254,12 +254,12 @@ class AIPredictor:
         }
 
     def _prediction_max_output_tokens(self) -> int:
-        if self._is_minimax_reasoning_model():
+        if self._is_slow_reasoning_model():
             return 3200
         return 1800
 
     def _prediction_repair_max_output_tokens(self) -> int:
-        return 500
+        return 800
 
     def _build_prompt(self, context: dict, predictor_config: dict) -> str:
         targets = normalize_target_list(predictor_config.get('prediction_targets'))
@@ -298,16 +298,19 @@ class AIPredictor:
 平台数据输入：
 {default_data_block if not placeholders_used else '你在自定义提示词中已经使用了占位符，平台不再重复附加默认数据块。'}
 
-输出 JSON 字段示例：
-{{
-  "issue_no": "{context.get('next_issue_no') or ''}",
-  "predicted_number": 12,
-  "predicted_big_small": "小",
-  "predicted_odd_even": "双",
-  "predicted_combo": "小双",
-  "confidence": 0.68,
-  "reasoning_summary": "简要说明依据"
-}}
+输出 JSON 字段（只允许以下字段，实际值必须根据本次输入重新判断）：
+- issue_no（字符串，固定为 {context.get('next_issue_no') or '未知'}）
+- predicted_number（0-27 的整数）
+- predicted_big_small（大或小）
+- predicted_odd_even（单或双）
+- predicted_combo（大单、大双、小单或小双）
+- confidence（0-1 的小数）
+- reasoning_summary（不超过 30 个字）
+
+执行约束（优先级最高）：
+- 禁止输出分析步骤、历史数据复述、计算过程、思考草稿或 Markdown。
+- 不要解释“如何预测”，直接把最终结果填入 JSON。
+- 如果输出预算不足，优先完成 JSON，不要继续扩写 reasoning_summary。
 
 现在开始，仅输出 JSON。"""
 
@@ -1045,7 +1048,19 @@ class AIPredictor:
         if not message:
             return None
 
-        if not any(keyword in message for keyword in ['unsupported parameter', 'unknown parameter', 'extra inputs are not permitted']):
+        if not any(keyword in message for keyword in [
+            'unsupported parameter',
+            'unknown parameter',
+            'unknown field',
+            'unexpected field',
+            'unexpected keyword',
+            'unrecognized request argument',
+            'unrecognized parameter',
+            'invalid parameter',
+            'extra inputs are not permitted',
+            'not allowed',
+            'not permitted'
+        ]):
             return None
 
         supported_candidates = [
@@ -1055,6 +1070,8 @@ class AIPredictor:
             'temperature',
             'response_format',
             'reasoning_split',
+            'thinking',
+            'enable_thinking',
             'text.format',
             'text'
         ]
@@ -1066,18 +1083,57 @@ class AIPredictor:
     def _build_provider_extra_body(self, resolved_api_mode: str) -> dict:
         if resolved_api_mode != 'chat_completions':
             return {}
+        if self._is_explicit_non_thinking_mode():
+            return {'thinking': {'type': 'disabled'}}
         if self._is_minimax_reasoning_model():
             return {'reasoning_split': True}
+        if self._is_glm_reasoning_model():
+            # GLM gateways commonly expose this OpenAI-compatible switch in the
+            # request body. Unsupported gateways are handled by the capability
+            # fallback and cached per endpoint/model.
+            return {'thinking': {'type': 'disabled'}}
+        if self._is_deepseek_toggleable_model():
+            # DeepSeek V3.1/V3.2/V4 expose the same thinking switch. Older
+            # deepseek-reasoner/R1 models are handled as reasoning-only models
+            # but intentionally do not receive this parameter.
+            return {'thinking': {'type': 'disabled'}}
         return {}
+
+    def _is_explicit_non_thinking_mode(self) -> bool:
+        return self.api_mode == 'chat_completions_no_thinking'
 
     def _is_minimax_reasoning_model(self) -> bool:
         model_name = str(self.model_name or '').strip().lower()
         return model_name.startswith('minimax-m2')
 
+    def _is_glm_reasoning_model(self) -> bool:
+        model_name = self._normalized_model_id()
+        return model_name.startswith(('glm-4.', 'glm-5'))
+
+    def _is_deepseek_reasoning_model(self) -> bool:
+        model_name = self._normalized_model_id()
+        return model_name.startswith((
+            'deepseek-r1',
+            'deepseek-reasoner',
+            'deepseek-v3.1',
+            'deepseek-v3.2',
+            'deepseek-v4'
+        ))
+
+    def _is_deepseek_toggleable_model(self) -> bool:
+        model_name = self._normalized_model_id()
+        return model_name.startswith(('deepseek-v3.1', 'deepseek-v3.2', 'deepseek-v4'))
+
+    def _normalized_model_id(self) -> str:
+        model_name = str(self.model_name or '').strip().lower()
+        return model_name.rsplit('/', 1)[-1]
+
     def _is_slow_reasoning_model(self) -> bool:
         model_name = str(self.model_name or '').strip().lower()
         return (
             self._is_minimax_reasoning_model()
+            or self._is_glm_reasoning_model()
+            or self._is_deepseek_reasoning_model()
             or 'thinking' in model_name
             or 'reasoning' in model_name
             or model_name.startswith(('o1', 'o3', 'o4'))
@@ -1365,6 +1421,8 @@ class AIPredictor:
         return payload
 
     def _resolve_api_mode(self) -> str:
+        if self.api_mode == 'chat_completions_no_thinking':
+            return 'chat_completions'
         if self.api_mode != 'auto':
             return self.api_mode
 
@@ -1815,22 +1873,48 @@ class AIPredictor:
         return f"[original]\n{original}\n\n[repair_json]\n{repaired}"
 
     def _normalize_prediction(self, payload: dict, expected_issue_no: Optional[str], requested_targets) -> dict:
-        if 'prediction' in payload and isinstance(payload['prediction'], dict):
-            payload = payload['prediction']
+        for nested_key in ('prediction', 'result', 'data'):
+            nested_payload = payload.get(nested_key)
+            if isinstance(nested_payload, dict):
+                payload = nested_payload
+                break
 
         targets = normalize_target_list(requested_targets)
 
         prediction_number = parse_pc28_number(
-            payload.get('predicted_number', payload.get('number', payload.get('num')))
+            self._first_payload_value(
+                payload,
+                'predicted_number',
+                'number',
+                'num',
+                'sum',
+                'total',
+                '和值'
+            )
         )
         prediction_big_small = normalize_big_small(
-            payload.get('predicted_big_small', payload.get('big_small'))
+            self._first_payload_value(
+                payload,
+                'predicted_big_small',
+                'big_small',
+                '大小'
+            )
         )
         prediction_odd_even = normalize_odd_even(
-            payload.get('predicted_odd_even', payload.get('odd_even'))
+            self._first_payload_value(
+                payload,
+                'predicted_odd_even',
+                'odd_even',
+                '单双'
+            )
         )
         prediction_combo = normalize_combo(
-            payload.get('predicted_combo', payload.get('combo'))
+            self._first_payload_value(
+                payload,
+                'predicted_combo',
+                'combo',
+                '组合'
+            )
         )
 
         if prediction_number is not None:
@@ -1851,16 +1935,27 @@ class AIPredictor:
         if not prediction_combo and prediction_big_small and prediction_odd_even:
             prediction_combo = build_combo(prediction_big_small, prediction_odd_even)
 
-        confidence = self._normalize_confidence(payload.get('confidence'))
+        confidence = self._normalize_confidence(
+            self._first_payload_value(payload, 'confidence', '置信度')
+        )
         reasoning_summary = str(
-            payload.get('reasoning_summary')
-            or payload.get('reasoning')
-            or payload.get('analysis')
-            or payload.get('justification')
+            self._first_payload_value(
+                payload,
+                'reasoning_summary',
+                'reasoning',
+                'analysis',
+                'justification',
+                '说明',
+                '理由'
+            )
             or ''
         ).strip()
 
-        issue_no = str(payload.get('issue_no') or payload.get('nbr') or expected_issue_no or '').strip()
+        issue_no = str(
+            self._first_payload_value(payload, 'issue_no', 'nbr', '期号')
+            or expected_issue_no
+            or ''
+        ).strip()
 
         return {
             'issue_no': issue_no,
@@ -1872,25 +1967,34 @@ class AIPredictor:
             'reasoning_summary': reasoning_summary
         }
 
+    def _first_payload_value(self, payload: dict, *keys):
+        for key in keys:
+            value = payload.get(key)
+            if value is not None and value != '':
+                return value
+        return None
+
     def _extract_from_text(self, text: str, expected_issue_no: Optional[str], requested_targets) -> dict:
         if self._looks_like_schema_description(text):
             raise ValueError('AI 返回的是字段说明文本，未给出最终预测结果')
 
-        number = self._extract_number_from_text(text)
-        big_small_match = re.search(
-            r'(?:predicted_big_small|预测大小|大小|big[_\s-]*small)\s*[:：=是为]?\s*(大|小|big|small)(?!\s*(?:/|、|或|and|,|，))',
-            text,
-            re.IGNORECASE
+        focused_text = self._focus_prediction_text(text)
+        number = self._extract_number_from_text(focused_text) or self._extract_number_from_text(text)
+
+        def search_field(pattern: str):
+            return (
+                re.search(pattern, focused_text, re.IGNORECASE)
+                or re.search(pattern, text, re.IGNORECASE)
+            )
+
+        big_small_match = search_field(
+            r'(?:predicted_big_small|预测大小|大小(?:判断|预测|结果)?|big[_\s-]*small)\s*[:：=是为]?\s*(大|小|big|small)(?!\s*(?:/|、|或|and|,|，))'
         )
-        odd_even_match = re.search(
-            r'(?:predicted_odd_even|预测单双|单双|odd[_\s-]*even)\s*[:：=是为]?\s*(单|双|odd|even)(?!\s*(?:/|、|或|and|,|，))',
-            text,
-            re.IGNORECASE
+        odd_even_match = search_field(
+            r'(?:predicted_odd_even|预测单双|单双(?:判断|预测|结果)?|odd[_\s-]*even)\s*[:：=是为]?\s*(单|双|odd|even)(?!\s*(?:/|、|或|and|,|，))'
         )
-        combo_match = re.search(
-            r'(?:predicted_combo|预测组合|组合|combo)\s*[:：=是为]?\s*(大单|大双|小单|小双|big\s*odd|big\s*even|small\s*odd|small\s*even)(?!\s*(?:/|、|或|and|,|，))',
-            text,
-            re.IGNORECASE
+        combo_match = search_field(
+            r'(?:predicted_combo|预测组合|组合(?:判断|预测|结果)?|combo)\s*[:：=是为]?\s*(大单|大双|小单|小双|big\s*odd|big\s*even|small\s*odd|small\s*even)(?!\s*(?:/|、|或|and|,|，))'
         )
 
         prediction = self._normalize_prediction(
@@ -1901,7 +2005,7 @@ class AIPredictor:
                 'predicted_odd_even': odd_even_match.group(1) if odd_even_match else None,
                 'predicted_combo': combo_match.group(1) if combo_match else None,
                 'confidence': self._extract_confidence(text),
-                'reasoning_summary': text[:240]
+                'reasoning_summary': self._extract_reasoning_summary(focused_text)
             },
             expected_issue_no,
             requested_targets
@@ -1912,7 +2016,8 @@ class AIPredictor:
 
     def _extract_number_from_text(self, text: str) -> Optional[int]:
         patterns = [
-            r'(?:predicted_number|prediction_number|预测号码|推荐号码|预测和值|和值预测|号码预测|号码|number|num)\s*[:：=是为]?\s*(\d{1,2})(?!\s*(?:[-~～]|到|至|/)\s*\d)'
+            r'(?:predicted_number|prediction_number|预测号码|推荐号码|预测和值|和值预测|号码预测|最终预测(?:号码|和值)?|预测结果(?:号码|和值)?|预测结论(?:号码|和值)?|推荐(?:号码|和值)?|建议(?:号码|和值)?|号码|number|num)\s*[:：=是为]?\s*(\d{1,2})(?!\s*(?:[-~～]|到|至|/)\s*\d)',
+            r'(?:和值|号码)\s*(?:预测|推荐|结果)?\s*[:：=是为]\s*(\d{1,2})(?!\s*(?:[-~～]|到|至|/)\s*\d)'
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, text, re.IGNORECASE):
@@ -1920,6 +2025,33 @@ class AIPredictor:
                 if number is not None:
                     return number
         return None
+
+    def _focus_prediction_text(self, text: str) -> str:
+        """优先在结论附近提取，避免把历史数据行当成最终预测。"""
+        markers = (
+            '最终预测',
+            '最终结果',
+            '预测结论',
+            '综合判断',
+            '综合结论',
+            '推荐结果',
+            '结论',
+            '因此',
+            '所以'
+        )
+        positions = [text.rfind(marker) for marker in markers]
+        start = max(positions, default=-1)
+        if start < 0:
+            return text
+        return text[start:]
+
+    def _extract_reasoning_summary(self, text: str) -> str:
+        summary = str(text or '').strip()
+        if not summary:
+            return ''
+        summary = re.sub(r'^[-*#\s]+', '', summary)
+        summary = re.sub(r'^(?:最终预测|预测结果|综合判断|结论)\s*[:：]?\s*', '', summary)
+        return summary[:240]
 
     def _looks_like_schema_description(self, text: str) -> bool:
         lowered = str(text or '').lower()
@@ -1980,6 +2112,11 @@ class AIPredictor:
     def _normalize_confidence(self, value) -> Optional[float]:
         if value is None or value == '':
             return None
+
+        if isinstance(value, str):
+            value = value.strip().replace('％', '%')
+            if value.endswith('%'):
+                value = value[:-1].strip()
 
         try:
             confidence = float(value)

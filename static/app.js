@@ -5651,7 +5651,7 @@ class PredictionApp {
                     ${preset.tags.map((tag) => `<span class="tag">${this.escapeHtml(tag)}</span>`).join('')}
                     <span class="tag">${lotteryType === 'jingcai_football' ? `历史 ${preset.historyWindow} 场` : `历史 ${preset.historyWindow} 期`}</span>
                     <span class="tag">${preset.injectionMode === 'raw' ? '原始模式' : '摘要模式'}</span>
-                    <span class="tag">${preset.apiMode === 'responses' ? 'Responses' : preset.apiMode === 'chat_completions' ? 'Chat Completions' : '自动模式'}</span>
+                    <span class="tag">${preset.apiMode === 'responses' ? 'Responses' : preset.apiMode === 'chat_completions_no_thinking' ? 'Chat Completions（关闭思考）' : preset.apiMode === 'chat_completions' ? 'Chat Completions' : '自动模式'}</span>
                 </div>
                 <div class="preset-actions">
                     <button type="button" class="btn ghost compact" data-apply-preset="${preset.id}">一键填充</button>

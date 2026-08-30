@@ -9,7 +9,7 @@ from typing import Iterable, Optional
 
 ALLOWED_TARGETS = ('number', 'big_small', 'odd_even', 'combo')
 ALLOWED_INJECTION_MODES = ('summary', 'raw')
-ALLOWED_API_MODES = ('auto', 'chat_completions', 'responses')
+ALLOWED_API_MODES = ('auto', 'chat_completions', 'chat_completions_no_thinking', 'responses')
 ALLOWED_PRIMARY_METRICS = ('combo', 'number', 'big_small', 'odd_even', 'double_group', 'kill_group')
 ALLOWED_PROFIT_METRICS = ('combo', 'number', 'big_small', 'odd_even')
 ALLOWED_PROFIT_RULES = ('pc28_netdisk', 'pc28_high')

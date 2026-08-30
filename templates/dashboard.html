@@ -678,9 +678,10 @@
                     <select id="apiMode" class="form-input">
                         <option value="auto">自动：OpenAI 官方直连优先 Responses，第三方网关默认 Chat Completions</option>
                         <option value="chat_completions">Chat Completions：兼容大多数第三方 OpenAI 网关</option>
+                        <option value="chat_completions_no_thinking">Chat Completions（关闭思考）：优先返回最终 JSON，适合支持 thinking 开关的模型</option>
                         <option value="responses">Responses：适合 OpenAI 官方直连与新项目</option>
                     </select>
-                    <small class="field-hint">不确定时先用自动；如果是 DeepSeek、LongCat、Gemini 兼容网关，通常优先 Chat Completions。</small>
+                    <small class="field-hint">不确定时先用自动；需要模型直接返回结果时，可选择“Chat Completions（关闭思考）”。专用推理模型可能不支持关闭。</small>
                 </label>
                 <label class="form-field span-2" id="apiKeyField">
                     <span>API Key</span>
