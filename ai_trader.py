@@ -612,6 +612,7 @@ class AIPredictor:
             ],
             'temperature': self.temperature
         }
+        response_kwargs.update(self._build_reasoning_request_options(resolved_api_mode))
         provider_extra_body = self._build_provider_extra_body(resolved_api_mode)
         if provider_extra_body:
             response_kwargs['extra_body'] = provider_extra_body
@@ -731,6 +732,7 @@ class AIPredictor:
             'temperature': self.temperature,
             'stream': False
         }
+        payload.update(self._build_reasoning_request_options(resolved_api_mode))
         if json_output:
             payload['response_format'] = {'type': 'json_object'}
         payload.update(self._build_provider_extra_body(resolved_api_mode))
@@ -1057,6 +1059,9 @@ class AIPredictor:
             'unrecognized request argument',
             'unrecognized parameter',
             'invalid parameter',
+            'requires a json schema',
+            'use response_format with type json_schema',
+            'use guided_json',
             'extra inputs are not permitted',
             'not allowed',
             'not permitted'
@@ -1069,6 +1074,7 @@ class AIPredictor:
             'max_tokens',
             'temperature',
             'response_format',
+            'reasoning_effort',
             'reasoning_split',
             'thinking',
             'enable_thinking',
@@ -1085,18 +1091,13 @@ class AIPredictor:
             return {}
         if self._is_explicit_non_thinking_mode():
             return {'thinking': {'type': 'disabled'}}
-        if self._is_minimax_reasoning_model():
-            return {'reasoning_split': True}
-        if self._is_glm_reasoning_model():
-            # GLM gateways commonly expose this OpenAI-compatible switch in the
-            # request body. Unsupported gateways are handled by the capability
-            # fallback and cached per endpoint/model.
-            return {'thinking': {'type': 'disabled'}}
-        if self._is_deepseek_toggleable_model():
-            # DeepSeek V3.1/V3.2/V4 expose the same thinking switch. Older
-            # deepseek-reasoner/R1 models are handled as reasoning-only models
-            # but intentionally do not receive this parameter.
-            return {'thinking': {'type': 'disabled'}}
+        return {}
+
+    def _build_reasoning_request_options(self, resolved_api_mode: str) -> dict:
+        if resolved_api_mode == 'chat_completions' and self._is_explicit_non_thinking_mode():
+            # Some gateways validate thinking.type against reasoning_effort and
+            # reject a disabled switch unless effort is explicitly set to none.
+            return {'reasoning_effort': 'none'}
         return {}
 
     def _is_explicit_non_thinking_mode(self) -> bool:

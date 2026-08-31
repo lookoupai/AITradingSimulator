@@ -451,7 +451,15 @@ class AIPredictorEncodingTests(unittest.TestCase):
             'thinking'
         )
 
-    def test_call_with_token_limit_fallback_drops_response_format_when_unsupported(self):
+    def test_extract_unsupported_parameter_name_accepts_json_schema_requirement(self):
+        self.assertEqual(
+            self.predictor._extract_unsupported_parameter_name(
+                "response_format with type 'json_object' requires a JSON schema; use guided_json instead"
+            ),
+            'response_format'
+        )
+
+    def test_call_with_token_limit_fallback_drops_response_format_when_schema_is_required(self):
         attempts = []
 
         def caller(request_kwargs):
@@ -460,7 +468,10 @@ class AIPredictorEncodingTests(unittest.TestCase):
                 return self._build_response(
                     json.dumps({
                         'error': {
-                            'message': 'Unsupported parameter: response_format'
+                            'message': (
+                                "'response_format' with type 'json_object' requires a JSON schema. "
+                                "Use 'guided_json' directly with a JSON schema."
+                            )
                         }
                     }, ensure_ascii=False),
                     'application/json',
@@ -525,9 +536,9 @@ class AIPredictorEncodingTests(unittest.TestCase):
         )
 
         self.assertEqual(minimax_predictor._prediction_max_output_tokens(), 3200)
-        self.assertEqual(minimax_predictor._build_provider_extra_body('chat_completions'), {'reasoning_split': True})
+        self.assertEqual(minimax_predictor._build_provider_extra_body('chat_completions'), {})
 
-    def test_glm_reasoning_model_disables_visible_thinking_and_gets_higher_budget(self):
+    def test_glm_reasoning_model_keeps_normal_api_request_and_gets_higher_budget(self):
         glm_predictor = AIPredictor(
             api_key='test-key',
             api_url='https://token.sensenova.cn',
@@ -536,10 +547,7 @@ class AIPredictorEncodingTests(unittest.TestCase):
 
         self.assertTrue(glm_predictor._is_slow_reasoning_model())
         self.assertEqual(glm_predictor._prediction_max_output_tokens(), 3200)
-        self.assertEqual(
-            glm_predictor._build_provider_extra_body('chat_completions'),
-            {'thinking': {'type': 'disabled'}}
-        )
+        self.assertEqual(glm_predictor._build_provider_extra_body('chat_completions'), {})
 
         payload = glm_predictor._build_compatible_payload(
             resolved_api_mode='chat_completions',
@@ -548,9 +556,10 @@ class AIPredictorEncodingTests(unittest.TestCase):
             max_output_tokens=None,
             json_output=True
         )
-        self.assertEqual(payload['thinking'], {'type': 'disabled'})
+        self.assertNotIn('thinking', payload)
+        self.assertNotIn('reasoning_effort', payload)
 
-    def test_deepseek_hybrid_model_disables_visible_thinking(self):
+    def test_deepseek_hybrid_model_keeps_normal_api_request(self):
         deepseek_predictor = AIPredictor(
             api_key='test-key',
             api_url='https://example.com/v1',
@@ -560,10 +569,7 @@ class AIPredictorEncodingTests(unittest.TestCase):
         self.assertTrue(deepseek_predictor._is_deepseek_reasoning_model())
         self.assertTrue(deepseek_predictor._is_slow_reasoning_model())
         self.assertEqual(deepseek_predictor._prediction_max_output_tokens(), 3200)
-        self.assertEqual(
-            deepseek_predictor._build_provider_extra_body('chat_completions'),
-            {'thinking': {'type': 'disabled'}}
-        )
+        self.assertEqual(deepseek_predictor._build_provider_extra_body('chat_completions'), {})
 
     def test_deepseek_reasoner_is_budgeted_but_not_forced_into_non_thinking_mode(self):
         deepseek_predictor = AIPredictor(
@@ -594,6 +600,19 @@ class AIPredictorEncodingTests(unittest.TestCase):
             predictor._build_provider_extra_body('chat_completions'),
             {'thinking': {'type': 'disabled'}}
         )
+        self.assertEqual(
+            predictor._build_reasoning_request_options('chat_completions'),
+            {'reasoning_effort': 'none'}
+        )
+        payload = predictor._build_compatible_payload(
+            resolved_api_mode='chat_completions',
+            prompt='PROMPT',
+            system_prompt='SYSTEM',
+            max_output_tokens=None,
+            json_output=True
+        )
+        self.assertEqual(payload['thinking'], {'type': 'disabled'})
+        self.assertEqual(payload['reasoning_effort'], 'none')
 
     def test_predict_next_issue_requests_json_output(self):
         predictor_config = {
