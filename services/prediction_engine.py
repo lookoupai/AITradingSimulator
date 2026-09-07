@@ -127,7 +127,8 @@ class PredictionEngine:
             shared_context = self._build_context(history_window=max_window, draws=draws)
 
             prediction_results = []
-            for predictor in predictors:
+            # 本地算法先落库，避免共识信号等待前面的 AI 网络请求或超时。
+            for predictor in sorted(predictors, key=uses_ai_engine):
                 try:
                     result = self._generate_prediction_locked(
                         predictor,

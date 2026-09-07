@@ -21,6 +21,42 @@ def build_pc28_draw(issue_no: str, result_number: int) -> dict:
 
 
 class MachinePredictorRouteTests(unittest.TestCase):
+    def test_auto_cycle_publishes_machine_signal_before_ai_request(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            ai_id = create_predictor(harness, user_id, 'pc28')
+            machine_id = create_predictor(
+                harness, user_id, 'pc28', engine_type='machine',
+                algorithm_key='pc28_frequency_v1', api_key='', api_url='', model_name='',
+            )
+            draws = [build_pc28_draw(str(3479100 - i), 10 + i % 8) for i in range(20)]
+            context = {
+                'latest_draw': draws[0], 'next_issue_no': '3479101',
+                'countdown': '00:03:00', 'recent_draws': draws,
+                'omission_preview': {}, 'today_preview': {}, 'preview': {},
+            }
+            published_before_ai = []
+
+            def failing_ai(*args, **kwargs):
+                published_before_ai.append(harness.db.get_prediction_by_issue(machine_id, '3479101'))
+                raise RuntimeError('模拟 AI 请求超时')
+
+            engine = harness.module.prediction_engine
+            with mock.patch.object(engine, 'settle_pending_predictions', return_value=[]), \
+                 mock.patch.object(harness.module.pc28_service, 'sync_recent_draws', return_value=draws), \
+                 mock.patch.object(engine, '_build_context', return_value=context), \
+                 mock.patch('services.prediction_engine.AIPredictor.predict_next_issue', side_effect=failing_ai):
+                result = engine.run_auto_cycle()
+
+            self.assertEqual(len(published_before_ai), 1)
+            self.assertIsNotNone(published_before_ai[0])
+            self.assertEqual(published_before_ai[0]['status'], 'pending')
+            self.assertIn(published_before_ai[0]['prediction_odd_even'], {'单', '双'})
+            self.assertEqual(
+                {item['predictor_id']: item['status'] for item in result['predictions']},
+                {ai_id: 'failed', machine_id: 'pending'},
+            )
+
     def _build_football_match(self, with_detail: bool = False) -> dict:
         match = {
             'event_key': 'T001',
