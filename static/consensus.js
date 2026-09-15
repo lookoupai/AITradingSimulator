@@ -103,6 +103,7 @@
             }
             currentAnalysis = await res.json();
             renderAll();
+            setupPairCopyEvents();
         } catch (e) {
             poolMeta.textContent = '加载失败：' + e.message;
             todayList.innerHTML = `<div class="empty-panel">加载失败：${escapeHtml(e.message)}</div>`;
@@ -435,22 +436,46 @@
         const rows = (currentAnalysis.pair_combinations[pairField] || []);
         if (!rows.length) {
             const archiveNote = currentAnalysis.archive_used
-                ? '当前窗口内没有足够的明细样本。归档机制保留的是日聚合，无法重建两两组合指标，需要新明细积累一段时间后再查看。'
+                ? '当前窗口内没有足够的明细样本。归档机制保留的是日聚合,无法重建两两组合指标,需要新明细积累一段时间后再查看。'
                 : '没有足够样本';
             pairTableBody.innerHTML = `<tr><td colspan="4" class="empty-cell">${escapeHtml(archiveNote)}</td></tr>`;
             return;
         }
+        const poolIds = (currentAnalysis.predictors || []).map(p => p.id);
+        const windowDays = currentAnalysis.window_days || 7;
         pairTableBody.innerHTML = rows.map(r => {
             const [p1, p2] = r.pair;
+            const pairIds = [p1, p2].filter(id => id != null).sort((a, b) => a - b);
+            const predictorIds = pairIds.length === 2 ? pairIds : poolIds;
+            const url = buildBestPairConsensusUrl(predictorIds, 25, 20, windowDays);
             return `
                 <tr>
-                    <td>${escapeHtml(predictorNameById(p1))} + ${escapeHtml(predictorNameById(p2))}</td>
+                    <td>
+                        ${escapeHtml(predictorNameById(p1))} + ${escapeHtml(predictorNameById(p2))}
+                        <button type="button" class="btn compact pair-copy-btn" data-url="${escapeHtml(url)}" title="复制此组合共识导出链接（供 pc28touzhu 来源导入）">
+                            <i class="bi bi-link-45deg"></i> 复制
+                        </button>
+                    </td>
                     <td>${r.total}</td>
                     <td>${r.hit}</td>
                     <td>${fmtRate(r.rate)}</td>
                 </tr>
             `;
         }).join('');
+    }
+
+    // 事件委托：只需绑定一次，切换字段/重渲染后按钮依然存在且可用
+    let pairCopyEventsBound = false;
+    function setupPairCopyEvents() {
+        if (!pairTableBody || pairCopyEventsBound) return;
+        pairCopyEventsBound = true;
+        pairTableBody.addEventListener('click', function (e) {
+            const btn = e.target.closest('.pair-copy-btn');
+            if (!btn) return;
+            const url = btn.dataset.url;
+            if (!url) return;
+            copyToClipboard(url, btn);
+        });
     }
 
     function renderByCount() {
@@ -591,6 +616,62 @@
                 </tr>
             `;
         }).join('');
+    }
+
+    // ---------- 复制共识方案链接（供 pc28touzhu 导入） ----------
+    // 把当前单方案/组合命中率一键生成 AITradingSimulator 公开导出链接，
+    // 复制后可直接作为 pc28touzhu 的「方案来源」导入地址。
+    function consensusApiOrigin() {
+        return window.location.origin;
+    }
+
+    // 组合命中率最优方案对导出：pc28touzhu 最常用来建档「单双共识」这类来源
+    function buildBestPairConsensusUrl(predictorIds, rateFloor, sampleFloor, windowDays) {
+        const p = new URLSearchParams();
+        if (predictorIds && predictorIds.length) p.set('predictor_ids', predictorIds.join(','));
+        p.set('min_historical_rate', rateFloor);
+        p.set('min_historical_sample', sampleFloor);
+        p.set('window', windowDays);
+        return `${consensusApiOrigin()}/api/export/consensus/pc28/best-pair-signals?${p.toString()}`;
+    }
+
+    // 共识执行信号导出：field / min_agreement 方式
+    function buildExecutionConsensusUrl(predictorIds, field, minAgreement, windowDays) {
+        const p = new URLSearchParams();
+        if (predictorIds && predictorIds.length) p.set('predictor_ids', predictorIds.join(','));
+        p.set('field', field || 'combo');
+        p.set('min_agreement', minAgreement);
+        p.set('window', windowDays);
+        return `${consensusApiOrigin()}/api/export/consensus/pc28/signals?${p.toString()}`;
+    }
+
+    async function copyToClipboard(text, btn, successText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            const old = btn.innerHTML;
+            btn.innerHTML = successText || '<i class="bi bi-check2"></i> 已复制';
+            setTimeout(() => { btn.innerHTML = old; }, 1600);
+        } catch (e) {
+            alert('复制失败，请手动复制：\n' + text);
+        }
+    }
+
+    // pc28touzhu 的来源导入当前只认 execution 导出地址（/api/export/predictors/<id>/signals 等），
+    // 共识导出口径不同，此函数给出一段可粘贴到「来源管理」的说明 + 链接，而非直接导入。
+    // ---------- 复制共识方案链接（供 pc28touzhu 导入） ----------
+    function copyConsensusSourceHint(predictorIds, rateFloor, sampleFloor, windowDays) {
+        const bestPair = buildBestPairConsensusUrl(predictorIds, rateFloor, sampleFloor, windowDays);
+        const windowDaysCurrent = (currentAnalysis && currentAnalysis.window_days) || windowDays;
+        const exec = buildExecutionConsensusUrl(predictorIds, fieldLabelByKey(pairField || 'combo'), 2, windowDaysCurrent);
+        const text =
+            `【组合最优方案对（单双/组合共识）】\n${bestPair}\n` +
+            `\n【共识执行信号】\n${exec}\n` +
+            `\n在 pc28touzhu「来源管理 → 方案来源」导入时：\n` +
+            `- source_type 选 ai_trading_simulator_export\n` +
+            `- config.fetch.url 填上面任意一条（公开无需登录）\n` +
+            `- 来源名称建议类似「PC28方案单双共识」\n` +
+            `若提示链接不合法，请确认该链接为 AITradingSimulator 的公开导出地址（域名需可外网访问）。`;
+        return text;
     }
 
     // ---------- 导出 JSON ----------
