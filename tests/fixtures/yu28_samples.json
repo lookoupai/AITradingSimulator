@@ -1,0 +1,137 @@
+{
+ "dt_combo": {
+  "items": [
+   {
+    "id": 5505,
+    "name": "组合3078",
+    "category": "combo_predict",
+    "author": "雨哥",
+    "hit20": "20/20",
+    "hit100": "87/100",
+    "streak": 28,
+    "miss": 0,
+    "maxStreak": 28,
+    "maxMiss": 5
+   },
+   {
+    "id": 5847,
+    "name": "组合2085",
+    "category": "combo_predict",
+    "author": "雨哥",
+    "hit20": "20/20",
+    "hit100": "84/100",
+    "streak": 31,
+    "miss": 0,
+    "maxStreak": 31,
+    "maxMiss": 6
+   },
+   {
+    "id": 5944,
+    "name": "组合2526",
+    "category": "combo_predict",
+    "author": "雨哥",
+    "hit20": "20/20",
+    "hit100": "84/100",
+    "streak": 23,
+    "miss": 0,
+    "maxStreak": 27,
+    "maxMiss": 6
+   },
+   {
+    "id": 2066,
+    "name": "组合1972",
+    "category": "combo_predict",
+    "author": "雨哥",
+    "hit20": "20/20",
+    "hit100": "83/100",
+    "streak": 21,
+    "miss": 0,
+    "maxStreak": 27,
+    "maxMiss": 6
+   },
+   {
+    "id": 730,
+    "name": "组合263",
+    "category": "combo_predict",
+    "author": "雨哥",
+    "hit20": "20/20",
+    "hit100": "83/100",
+    "streak": 24,
+    "miss": 0,
+    "maxStreak": 24,
+    "maxMiss": 6
+   }
+  ],
+  "page": 1,
+  "pageSize": 5,
+  "total": 2437,
+  "category": "combo_predict",
+  "sort": "rate20_desc"
+ },
+ "sf_combo": {
+  "id": 2430,
+  "name": "组合1325",
+  "category": "combo_predict",
+  "author": "雨哥",
+  "hit20": "19/20",
+  "hit100": "89/100",
+  "streak": 1,
+  "miss": 0,
+  "maxStreak": 26,
+  "maxMiss": 7,
+  "predict": "小+双",
+  "predictNbr": "3483926"
+ },
+ "sf_big_small": {
+  "id": 4632,
+  "name": "大小2424",
+  "category": "big_small",
+  "author": "雨哥",
+  "hit20": "16/20",
+  "hit100": "68/100",
+  "streak": 0,
+  "miss": 1,
+  "maxStreak": 11,
+  "maxMiss": 16,
+  "predict": "小",
+  "predictNbr": "3483926"
+ },
+ "sf_odd_even": {
+  "id": 1688,
+  "name": "单双1045",
+  "category": "odd_even",
+  "author": "雨哥",
+  "hit20": "16/20",
+  "hit100": "57/100",
+  "streak": 0,
+  "miss": 2,
+  "maxStreak": 14,
+  "maxMiss": 12,
+  "predict": "单",
+  "predictNbr": "3483926"
+ },
+ "ai_dx": {
+  "data": [
+   {
+    "nbr": "3483926",
+    "predict": "大",
+    "number": null,
+    "num": null,
+    "result": null,
+    "hit": null
+   }
+  ]
+ },
+ "ai_ds": {
+  "data": [
+   {
+    "nbr": "3483926",
+    "predict": "双",
+    "number": null,
+    "num": null,
+    "result": null,
+    "hit": null
+   }
+  ]
+ }
+}

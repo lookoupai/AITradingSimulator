@@ -36,7 +36,18 @@ class Jnd28Plugin:
     def predict_url(self, base_url: str) -> str:
         return f"{str(base_url or '').strip().rstrip('/')}/api/ai-predict"
 
-    def fetch_snapshot(self, base_url: str, timeout: float | None = None) -> ExternalSnapshot:
+    def probe(self, base_url: str, api_key: str | None = None, timeout: float | None = None) -> dict:
+        """管理端“测试连接”：整批拉取一次，返回连通性与目录概况。"""
+        snapshot = self.fetch_snapshot(base_url, timeout=timeout)
+        return {
+            'target_issue_no': snapshot.target_issue_no,
+            'upstream_published_at': snapshot.upstream_published_at,
+            'model_count': len(snapshot.models),
+            'invalid_model_count': snapshot.invalid_model_count
+        }
+
+    def fetch_snapshot(self, base_url: str, timeout: float | None = None, api_key: str | None = None, model_keys: list[str] | None = None) -> ExternalSnapshot:
+        """JND 一次返回全部模型；api_key/model_keys 为插件协议统一参数，此处不使用。"""
         resolved_timeout = float(timeout or config.EXTERNAL_SOURCE_REQUEST_TIMEOUT)
         max_bytes = int(config.EXTERNAL_SOURCE_MAX_RESPONSE_BYTES)
         data = fetch_json(self.predict_url(base_url), resolved_timeout, max_bytes)

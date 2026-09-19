@@ -5,9 +5,11 @@ from __future__ import annotations
 
 from services.external_sources.base import ExternalSourceError
 from services.external_sources.jnd28 import JND28_PLUGIN
+from services.external_sources.yu28 import YU28_PLUGIN
 
 PLUGIN_REGISTRY = {
-    JND28_PLUGIN.plugin_key: JND28_PLUGIN
+    JND28_PLUGIN.plugin_key: JND28_PLUGIN,
+    YU28_PLUGIN.plugin_key: YU28_PLUGIN
 }
 
 
@@ -21,6 +23,10 @@ def get_plugin(plugin_key: str):
 
 def list_plugins() -> list[dict]:
     return [
-        {'plugin_key': plugin.plugin_key, 'display_name': plugin.display_name}
+        {
+            'plugin_key': plugin.plugin_key,
+            'display_name': plugin.display_name,
+            'requires_api_key': bool(getattr(plugin, 'requires_api_key', False))
+        }
         for plugin in PLUGIN_REGISTRY.values()
     ]

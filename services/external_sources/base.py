@@ -52,6 +52,22 @@ class ExternalSnapshot:
     raw: bytes = b''
 
 
+def _describe_error_response(response) -> str:
+    """从错误响应中提取上游错误信息（如 {"error":{"code","message"}}），不泄露请求凭据。"""
+    try:
+        body = json.loads(response.text or '')
+    except (AttributeError, json.JSONDecodeError, ValueError):
+        return f'HTTP {response.status_code}'
+    if isinstance(body, dict):
+        error = body.get('error')
+        if isinstance(error, dict):
+            code = str(error.get('code') or '').strip()
+            message = str(error.get('message') or '').strip()
+            if code or message:
+                return f'HTTP {response.status_code} {code}: {message}'.strip()
+    return f'HTTP {response.status_code}'
+
+
 def parse_iso_timestamp(value) -> datetime | None:
     """解析带时区的 ISO 时间字符串；解析失败返回 None，不伪造时间。"""
     text = str(value or '').strip()
@@ -67,13 +83,16 @@ def parse_iso_timestamp(value) -> datetime | None:
     return parsed
 
 
-def fetch_json(url: str, timeout: float, max_bytes: int) -> dict:
+def fetch_json(url: str, timeout: float, max_bytes: int, headers: dict | None = None) -> dict:
     """带超时与响应体上限的 GET，返回解析后的 JSON 对象。"""
+    request_headers = {'Accept': 'application/json', 'User-Agent': 'AITradingSimulator/1.0'}
+    if headers:
+        request_headers.update(headers)
     try:
         response = requests.get(
             url,
             timeout=(min(10.0, timeout), timeout),
-            headers={'Accept': 'application/json', 'User-Agent': 'AITradingSimulator/1.0'},
+            headers=request_headers,
             stream=True
         )
     except requests.RequestException as exc:
@@ -81,7 +100,7 @@ def fetch_json(url: str, timeout: float, max_bytes: int) -> dict:
     try:
         with response:
             if response.status_code != 200:
-                raise ExternalSourceRequestError(f'HTTP {response.status_code}')
+                raise ExternalSourceRequestError(_describe_error_response(response))
             content_type = str(response.headers.get('Content-Type') or '')
             if 'json' not in content_type.lower() and 'text' not in content_type.lower():
                 raise ExternalSourceParseError(f'响应类型异常：{content_type or "未知"}')

@@ -101,6 +101,11 @@
                             <input type="text" id="adminExternalSourceBaseUrl" placeholder="https://jnd-28.vip">
                             <small class="field-hint">必须使用 HTTPS；创建后默认停用，请先测试连接并开放模型。</small>
                         </label>
+                        <label class="form-field span-2" id="adminExternalApiKeyField">
+                            <span>API Key</span>
+                            <input type="password" id="adminExternalSourceApiKey" placeholder="yu28_...（在该平台用户中心生成）">
+                            <small class="field-hint">与28开放平台需要 API Key；仅存于服务器，用于采集请求头，不会展示给普通用户。</small>
+                        </label>
                         <label class="form-field">
                             <span>采集间隔（秒）</span>
                             <input type="number" id="adminExternalSourceInterval" min="30" max="3600" value="60">

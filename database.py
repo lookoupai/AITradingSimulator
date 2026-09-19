@@ -760,6 +760,10 @@ class Database:
         except Exception:
             pass
         try:
+            cursor.execute("ALTER TABLE external_sources ADD COLUMN api_key TEXT")
+        except Exception:
+            pass
+        try:
             cursor.execute("ALTER TABLE predictions ADD COLUMN external_source_id INTEGER")
         except Exception:
             pass
@@ -5234,15 +5238,15 @@ class Database:
         conn.close()
         return row
 
-    def create_external_source(self, plugin_key: str, name: str, base_url: str, interval_seconds: int, enabled: bool = False) -> int:
+    def create_external_source(self, plugin_key: str, name: str, base_url: str, interval_seconds: int, enabled: bool = False, api_key: str | None = None) -> int:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
             '''
-            INSERT INTO external_sources (plugin_key, name, base_url, enabled, interval_seconds)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO external_sources (plugin_key, name, base_url, enabled, interval_seconds, api_key)
+            VALUES (?, ?, ?, ?, ?, ?)
             ''',
-            (plugin_key, name, base_url, 1 if enabled else 0, int(interval_seconds))
+            (plugin_key, name, base_url, 1 if enabled else 0, int(interval_seconds), str(api_key or '').strip() or None)
         )
         source_id = cursor.lastrowid
         conn.commit()
@@ -5252,7 +5256,7 @@ class Database:
     def update_external_source(self, source_id: int, fields: dict):
         if not fields:
             return
-        allowed = {'name', 'base_url', 'enabled', 'interval_seconds', 'extra_config',
+        allowed = {'name', 'base_url', 'enabled', 'interval_seconds', 'extra_config', 'api_key',
                    'last_attempt_at', 'last_success_at', 'last_error', 'last_error_at',
                    'last_target_issue', 'last_model_count', 'consecutive_failures'}
         updates = []
@@ -5264,6 +5268,8 @@ class Database:
                 value = 1 if value else 0
             if key == 'extra_config':
                 value = json.dumps(value or {}, ensure_ascii=False)
+            if key == 'api_key':
+                value = str(value or '').strip() or None
             updates.append(f'{key} = ?')
             values.append(value)
         if not updates:
@@ -5296,13 +5302,13 @@ class Database:
             model_key = str(model.get('model_key') or '').strip()
             display_name = str(model.get('display_name') or '').strip() or model_key
             supported_targets = json.dumps(model.get('supported_targets') or [], ensure_ascii=False)
-            cursor.execute('SELECT id, display_name FROM external_models WHERE source_id = ? AND model_key = ?', (source_id, model_key))
+            cursor.execute('SELECT id, display_name, supported_targets FROM external_models WHERE source_id = ? AND model_key = ?', (source_id, model_key))
             existing = cursor.fetchone()
             if existing:
-                if str(existing['display_name'] or '') != display_name:
+                if str(existing['display_name'] or '') != display_name or str(existing['supported_targets'] or '') != supported_targets:
                     cursor.execute(
-                        'UPDATE external_models SET display_name = ?, last_seen_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                        (display_name, seen_at, existing['id'])
+                        'UPDATE external_models SET display_name = ?, supported_targets = ?, last_seen_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                        (display_name, supported_targets, seen_at, existing['id'])
                     )
                     updated += 1
                 else:
@@ -5325,6 +5331,17 @@ class Database:
         conn.close()
         return {'added': added, 'updated': updated, 'total': total}
 
+    EXTERNAL_TARGET_KEY_ALIASES = {'combo_predict': 'combo', 'kill_group': None, 'double_group': None}
+
+    def _normalize_model_targets(self, targets: list) -> list:
+        """目录支持目标统一为本平台目标键；历史遗留的分类名（如 combo_predict）归一。"""
+        normalized = []
+        for target in targets:
+            mapped = self.EXTERNAL_TARGET_KEY_ALIASES.get(target, target)
+            if mapped and mapped not in normalized:
+                normalized.append(mapped)
+        return normalized
+
     def list_external_models(self, source_id: int, enabled_only: bool = False) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -5342,7 +5359,7 @@ class Database:
         for row in cursor.fetchall():
             data = dict(row)
             data['enabled'] = bool(data.get('enabled'))
-            data['supported_targets'] = self._decode_json_list(data.get('supported_targets'))
+            data['supported_targets'] = self._normalize_model_targets(self._decode_json_list(data.get('supported_targets')))
             rows.append(data)
         conn.close()
         return rows
@@ -5359,7 +5376,7 @@ class Database:
         if row:
             data = dict(row)
             data['enabled'] = bool(data.get('enabled'))
-            data['supported_targets'] = self._decode_json_list(data.get('supported_targets'))
+            data['supported_targets'] = self._normalize_model_targets(self._decode_json_list(data.get('supported_targets')))
             result = data
         conn.close()
         return result
@@ -5510,6 +5527,29 @@ class Database:
         result = dict(row) if row else None
         conn.close()
         return result
+
+    def list_bound_enabled_external_model_keys(self, source_id: int) -> list[str]:
+        """该来源下“启用且被启用方案绑定”的模型标识（按需采集的请求范围）。"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT DISTINCT p.external_model_key AS model_key
+            FROM predictors p
+            JOIN external_models m
+              ON m.source_id = p.external_source_id
+             AND m.model_key = p.external_model_key
+             AND m.enabled = 1
+            WHERE p.external_source_id = ?
+              AND p.engine_type = 'external'
+              AND p.enabled = 1
+            ORDER BY model_key ASC
+            ''',
+            (source_id,)
+        )
+        keys = [row['model_key'] for row in cursor.fetchall()]
+        conn.close()
+        return keys
 
     def count_predictors_bound_to_external_source(self, source_id: int) -> int:
         conn = self.get_connection()

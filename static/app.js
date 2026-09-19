@@ -403,6 +403,10 @@ class PredictionApp {
         if (externalSourceSelect) {
             externalSourceSelect.addEventListener('change', () => this.syncExternalModelOptions());
         }
+        const externalModelSelect = document.getElementById('externalModelKey');
+        if (externalModelSelect) {
+            externalModelSelect.addEventListener('change', () => this.applyExternalTargetConstraint());
+        }
         const createExportTokenBtn = document.getElementById('createExportTokenBtn');
         if (createExportTokenBtn) {
             createExportTokenBtn.addEventListener('click', () => this.createExportToken());
@@ -929,6 +933,7 @@ class PredictionApp {
         }
         if (isExternalEngine && this.currentLotteryType !== null) {
             this.syncExternalEngineSelects(options);
+            this.applyExternalTargetConstraint();
         }
         const fallbackField = document.getElementById('userAlgorithmFallbackField');
         if (fallbackField) {
@@ -4712,6 +4717,7 @@ class PredictionApp {
         this.renderPresetCards();
         this.showModal();
         if ((data.engine_type || '') === 'external') {
+            this.applyExternalTargetConstraint();
             this.showExportTokenBlock(data.id);
         } else {
             this.hideExportTokenBlock();
@@ -5972,6 +5978,63 @@ class PredictionApp {
         `).join('');
         const keys = source.models.map((model) => model.model_key);
         modelSelect.value = keys.includes(selectedKey) ? selectedKey : keys[0];
+        this.applyExternalTargetConstraint();
+    }
+
+    applyExternalTargetConstraint() {
+        // 外部算法只输出自己那一类预测：选中模型后自动勾选其支持的目标并禁用其余
+        const sourceSelect = document.getElementById('externalSourceId');
+        const modelSelect = document.getElementById('externalModelKey');
+        const hint = document.getElementById('externalEngineHint');
+        if (!sourceSelect || !modelSelect) {
+            return;
+        }
+        const source = (this.externalOptions || []).find((item) => String(item.source_id) === String(sourceSelect.value));
+        const model = (source?.models || []).find((item) => item.model_key === modelSelect.value);
+        const supported = (model?.supported_targets || []).filter((target) => target !== 'number');
+        const targetInputs = [
+            ['big_small', 'targetBigSmall'],
+            ['odd_even', 'targetOddEven'],
+            ['combo', 'targetCombo']
+        ];
+        if (supported.length) {
+            targetInputs.forEach(([target, inputId]) => {
+                const input = document.getElementById(inputId);
+                if (!input) {
+                    return;
+                }
+                input.disabled = !supported.includes(target);
+                input.checked = supported.includes(target);
+            });
+            if (hint) {
+                const labels = { big_small: '大/小', odd_even: '单/双', combo: '组合' };
+                hint.textContent = `该算法仅输出${supported.map((target) => labels[target] || target).join('、')}预测，方案目标已自动匹配；绑定修改只影响之后的预测，历史记录保留当时的模型与结果。`;
+            }
+            this.constrainExternalMetricSelects(supported);
+        } else if (hint) {
+            hint.textContent = '模型列表由管理员开放；绑定修改只影响之后的预测，历史记录保留当时的模型与结果。';
+        }
+    }
+
+    constrainExternalMetricSelects(supported) {
+        // 目标约束后同步收窄主玩法与默认收益玩法的可选项
+        const primarySelect = document.getElementById('primaryMetric');
+        if (primarySelect) {
+            const previousValue = primarySelect.value;
+            const options = Array.from(primarySelect.options).map((option) => option.value);
+            const allowed = options.filter((value) => supported.includes(value));
+            if (allowed.length && !allowed.includes(previousValue)) {
+                primarySelect.value = allowed[0];
+            }
+        }
+        this.syncProfitMetricOptions(this.getFormLotteryType(), null);
+        const profitSelect = document.getElementById('profitDefaultMetric');
+        if (profitSelect && profitSelect.value && !supported.includes(profitSelect.value)) {
+            const profitOptions = Array.from(profitSelect.options).map((option) => option.value);
+            if (profitOptions.length && !profitOptions.every((value) => supported.includes(value))) {
+                profitSelect.value = profitOptions.find((value) => supported.includes(value)) || profitOptions[0];
+            }
+        }
     }
 
     syncProfitMetricOptions(lotteryType = this.getFormLotteryType(), preferredValue = null) {
@@ -6026,6 +6089,19 @@ class PredictionApp {
 
             this.hideModal();
             this.currentPredictorId = data.predictor?.id || Number(predictorId) || this.currentPredictorId;
+            if (!predictorId) {
+                // 新建方案后重置侧栏筛选器，避免筛选条件把刚创建的方案藏起来
+                this.selectedPredictorLotteryFilter = 'all';
+                this.selectedPredictorEngineFilter = 'all';
+                this.selectedPredictorStyleFilter = 'all';
+                [['predictorLotteryFilter', 'all'], ['predictorEngineFilter', 'all'], ['predictorStyleFilter', 'all']]
+                    .forEach(([selectId, value]) => {
+                        const select = document.getElementById(selectId);
+                        if (select) {
+                            select.value = value;
+                        }
+                    });
+            }
             await this.refresh(true);
         } catch (error) {
             alert(error.message);

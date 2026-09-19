@@ -53,8 +53,18 @@ def collect_source(db, source: dict) -> dict:
     source_id = int(source['id'])
     plugin = get_plugin(source.get('plugin_key'))
     fetched_at = get_current_utc_time_str()
+    model_keys = []
+    if getattr(plugin, 'fetches_per_model', False):
+        # 按需来源（如 yu28）：只请求启用且被启用方案绑定的算法，避免无谓请求
+        model_keys = db.list_bound_enabled_external_model_keys(source_id)
+        if not model_keys:
+            return {'ok': True, 'skipped': True, 'reason': '没有启用且被方案绑定的算法，跳过采集'}
     try:
-        snapshot = plugin.fetch_snapshot(source.get('base_url'))
+        snapshot = plugin.fetch_snapshot(
+            source.get('base_url'),
+            api_key=source.get('api_key'),
+            model_keys=model_keys or None
+        )
     except ExternalSourceError as exc:
         failures = int(source.get('consecutive_failures') or 0) + 1
         db.update_external_source(source_id, {
@@ -110,8 +120,31 @@ def collect_source(db, source: dict) -> dict:
 
 
 def refresh_catalog(db, source: dict) -> dict:
-    """采集一次并刷新模型目录（不自动开放任何模型）。"""
+    """刷新模型目录（不自动开放任何模型）。有独立目录接口的插件（如 yu28 算法大厅）走目录接口，
+    其余插件从一次采集快照提取目录。"""
     source_id = int(source['id'])
+    plugin = get_plugin(source.get('plugin_key'))
+    if hasattr(plugin, 'fetch_catalog'):
+        fetched_at = get_current_utc_time_str()
+        try:
+            records = plugin.fetch_catalog(source.get('base_url'), api_key=source.get('api_key'))
+        except ExternalSourceError as exc:
+            return {'ok': False, 'error': str(exc), 'fetched_at': fetched_at}
+        summary = db.upsert_external_models(source_id, records, fetched_at)
+        db.update_external_source(source_id, {
+            'last_attempt_at': fetched_at,
+            'last_success_at': fetched_at,
+            'last_error': None,
+            'consecutive_failures': 0
+        })
+        return {
+            'ok': True,
+            'fetched_at': fetched_at,
+            'catalog': summary,
+            'target_issue_no': None,
+            'model_count': summary.get('total', 0),
+            'invalid_model_count': 0
+        }
     result = collect_source(db, source)
     if not result.get('ok'):
         return result
@@ -203,17 +236,22 @@ def adopt_prediction_for_predictor(db, predictor: dict, next_issue_no_value: str
     if draw:
         return {'status': 'skipped', 'issue_no': issue_no, 'reason': '该期已开奖'}
 
-    batches = db.get_external_batches(source_id, issue_no=issue_no, limit=1, ascending=True)
+    batches = db.get_external_batches(source_id, issue_no=issue_no, limit=5, ascending=True)
     if not batches:
         return {'status': 'waiting', 'issue_no': issue_no, 'reason': '来源尚未发布该期预测'}
 
-    batch = batches[0]
-    model_snapshot = next(
-        (item for item in _models_from_raw_payload(db, batch) if item['model_key'] == model_key),
-        None
-    )
-    if not model_snapshot:
-        return {'status': 'skipped', 'issue_no': issue_no, 'reason': '该批次中不存在所选模型'}
+    # 依次检查各版本批次：首个包含所选模型的版本即采用版本（上游修订/绑定变更产生的后续版本兜底）
+    batch = None
+    model_snapshot = None
+    for candidate in batches:
+        items = _models_from_raw_payload(db, candidate)
+        found = next((item for item in items if item['model_key'] == model_key), None)
+        if found:
+            batch = candidate
+            model_snapshot = found
+            break
+    if not batch or not model_snapshot:
+        return {'status': 'skipped', 'issue_no': issue_no, 'reason': '各版本批次中均不存在所选模型'}
 
     targets = {key: value for key, value in model_snapshot['targets'].items() if value}
     if not targets:

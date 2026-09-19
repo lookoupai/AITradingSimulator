@@ -101,6 +101,10 @@ class AdminPage {
         if (createButton) {
             createButton.addEventListener('click', () => this.createExternalSource());
         }
+        const pluginKeySelect = document.getElementById('adminExternalPluginKey');
+        if (pluginKeySelect) {
+            pluginKeySelect.addEventListener('change', () => this.syncExternalApiKeyField());
+        }
         const externalPanel = document.getElementById('adminExternalSourcesPanel');
         if (externalPanel) {
             externalPanel.addEventListener('click', (event) => {
@@ -788,12 +792,94 @@ class AdminPage {
         }
     }
 
+    captureExternalUiState(container) {
+        const state = {};
+        const activeElement = document.activeElement;
+        if (activeElement && container.contains(activeElement) && activeElement.id) {
+            state._activeElementId = activeElement.id;
+            try {
+                state._activeSelectionStart = activeElement.selectionStart ?? null;
+            } catch (error) {
+                state._activeSelectionStart = null;
+            }
+        }
+        container.querySelectorAll('[data-ext-source]').forEach((card) => {
+            const sourceId = card.dataset.extSource;
+            const modelsWrapper = document.getElementById(`extModels-${sourceId}`);
+            const expanded = Boolean(modelsWrapper) && modelsWrapper.style.display !== 'none';
+            const modelsBody = document.getElementById(`extModelsBody-${sourceId}`);
+            state[sourceId] = {
+                modelsExpanded: expanded,
+                modelsBodyHtml: expanded && modelsBody ? modelsBody.innerHTML : '',
+                testResult: document.getElementById(`extTestResult-${sourceId}`)?.innerHTML || '',
+                form: {
+                    name: document.getElementById(`extSourceName-${sourceId}`)?.value ?? null,
+                    baseUrl: document.getElementById(`extSourceBaseUrl-${sourceId}`)?.value ?? null,
+                    interval: document.getElementById(`extSourceInterval-${sourceId}`)?.value ?? null
+                }
+            };
+        });
+        return state;
+    }
+
+    restoreExternalUiState(container, state) {
+        if (!state) {
+            return;
+        }
+        Object.entries(state).forEach(([sourceId, snapshot]) => {
+            const form = snapshot.form || {};
+            const nameInput = document.getElementById(`extSourceName-${sourceId}`);
+            if (nameInput && form.name !== null) {
+                nameInput.value = form.name;
+            }
+            const baseUrlInput = document.getElementById(`extSourceBaseUrl-${sourceId}`);
+            if (baseUrlInput && form.baseUrl !== null) {
+                baseUrlInput.value = form.baseUrl;
+            }
+            const intervalInput = document.getElementById(`extSourceInterval-${sourceId}`);
+            if (intervalInput && form.interval !== null) {
+                intervalInput.value = form.interval;
+            }
+            const testNode = document.getElementById(`extTestResult-${sourceId}`);
+            if (testNode && snapshot.testResult) {
+                testNode.innerHTML = snapshot.testResult;
+            }
+            if (snapshot.modelsExpanded) {
+                const wrapper = document.getElementById(`extModels-${sourceId}`);
+                if (wrapper) {
+                    wrapper.style.display = '';
+                    const body = document.getElementById(`extModelsBody-${sourceId}`);
+                    if (body) {
+                        if (snapshot.modelsBodyHtml && !snapshot.modelsBodyHtml.includes('加载中')) {
+                            body.innerHTML = snapshot.modelsBodyHtml;
+                        } else {
+                            this.loadExternalModels(sourceId);
+                        }
+                    }
+                }
+            }
+        });
+        const activeElement = state._activeElementId ? document.getElementById(state._activeElementId) : null;
+        if (activeElement && container.contains(activeElement)) {
+            activeElement.focus();
+            if (state._activeSelectionStart !== null && typeof activeElement.setSelectionRange === 'function') {
+                try {
+                    activeElement.setSelectionRange(state._activeSelectionStart, state._activeSelectionStart);
+                } catch (error) {
+                    // 非文本输入（如 number 被部分浏览器限制）时忽略光标恢复
+                }
+            }
+        }
+    }
+
     renderExternalSources(payload) {
         const container = document.getElementById('adminExternalSourcesPanel');
         if (!container) {
             return;
         }
-        this.syncExternalPluginOptions(payload.plugins);
+        this.externalPlugins = payload.plugins || [];
+        this.syncExternalPluginOptions(this.externalPlugins);
+        this.syncExternalApiKeyField();
         const scheduler = payload.scheduler || {};
         const sources = payload.sources || [];
         this.externalSources = sources;
@@ -815,6 +901,7 @@ class AdminPage {
             return;
         }
         container.className = 'prediction-summary';
+        const previousUiState = this.captureExternalUiState(container);
         container.innerHTML = [schedulerRow].concat(sources.map((source) => {
             const statusLine = source.last_error
                 ? `<p class="hint-text">最近错误：${this.escapeHtml(source.last_error || '--')}（${this.escapeHtml(source.last_error_at || '--')}）</p>`
@@ -852,6 +939,12 @@ class AdminPage {
                         <input type="text" id="extSourceBaseUrl-${source.id}" value="${this.escapeHtml(source.base_url || '')}">
                         <small class="field-hint">最近目标期号：${this.escapeHtml(source.last_target_issue || '--')} · 最近成功：${this.escapeHtml(source.last_success_at || '--')} · 最近尝试：${this.escapeHtml(source.last_attempt_at || '--')}</small>
                     </label>
+                    ${source.requires_api_key ? `
+                    <label class="form-field span-2">
+                        <span>API Key</span>
+                        <input type="password" id="extSourceApiKey-${source.id}" value="" placeholder="${this.escapeHtml(source.masked_api_key || '未设置')}（留空表示保持原值）">
+                    </label>
+                    ` : ''}
                 </div>
                 ${statusLine}
                 <div class="panel-actions">
@@ -882,6 +975,18 @@ class AdminPage {
             </div>
             `;
         }).join(''));
+        this.restoreExternalUiState(container, previousUiState);
+    }
+
+    syncExternalApiKeyField() {
+        const select = document.getElementById('adminExternalPluginKey');
+        const field = document.getElementById('adminExternalApiKeyField');
+        if (!select || !field) {
+            return;
+        }
+        const plugins = this.externalPlugins || [];
+        const plugin = plugins.find((item) => item.plugin_key === select.value);
+        field.style.display = plugin && plugin.requires_api_key ? '' : 'none';
     }
 
     async createExternalSource() {
@@ -889,7 +994,8 @@ class AdminPage {
             plugin_key: document.getElementById('adminExternalPluginKey')?.value || 'jnd28',
             name: document.getElementById('adminExternalSourceName')?.value || '',
             base_url: document.getElementById('adminExternalSourceBaseUrl')?.value || '',
-            interval_seconds: Number(document.getElementById('adminExternalSourceInterval')?.value || 60)
+            interval_seconds: Number(document.getElementById('adminExternalSourceInterval')?.value || 60),
+            api_key: document.getElementById('adminExternalSourceApiKey')?.value || ''
         };
         try {
             const response = await fetch('/api/admin/external-sources', {
@@ -1015,6 +1121,10 @@ class AdminPage {
             base_url: document.getElementById(`extSourceBaseUrl-${sourceId}`)?.value || '',
             interval_seconds: Number(document.getElementById(`extSourceInterval-${sourceId}`)?.value || 60)
         };
+        const apiKeyInput = document.getElementById(`extSourceApiKey-${sourceId}`);
+        if (apiKeyInput && apiKeyInput.value.trim()) {
+            payload.api_key = apiKeyInput.value.trim();
+        }
         try {
             const response = await fetch(`/api/admin/external-sources/${sourceId}`, {
                 method: 'PUT',

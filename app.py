@@ -1633,7 +1633,8 @@ def _build_admin_dashboard_data() -> dict:
         'recent_failures': [_serialize_admin_failure(item) for item in failed_predictions],
         'external_sources': {
             'scheduler': external_scheduler_data,
-            'sources': [_serialize_external_source(item) for item in db.list_external_sources()]
+            'sources': [_serialize_external_source(item) for item in db.list_external_sources()],
+            'plugins': list_external_source_plugins()
         }
     }
 
@@ -1653,10 +1654,13 @@ def _serialize_external_source(source: dict) -> dict:
         'id': source_id,
         'plugin_key': source.get('plugin_key'),
         'plugin_display_name': _external_plugin_display_name(source.get('plugin_key')),
+        'requires_api_key': bool(getattr(_external_plugin(source.get('plugin_key')), 'requires_api_key', False)),
         'name': source.get('name'),
         'base_url': source.get('base_url'),
         'enabled': bool(source.get('enabled')),
         'interval_seconds': int(source.get('interval_seconds') or 0),
+        'masked_api_key': mask_api_key(source.get('api_key')),
+        'has_api_key': bool(source.get('api_key')),
         'status': status,
         'last_attempt_at': utc_to_beijing(source.get('last_attempt_at')) if source.get('last_attempt_at') else None,
         'last_success_at': utc_to_beijing(source.get('last_success_at')) if source.get('last_success_at') else None,
@@ -1687,6 +1691,19 @@ def _external_plugin_display_name(plugin_key) -> str:
         if plugin.get('plugin_key') == str(plugin_key or '').strip():
             return plugin.get('display_name') or plugin_key
     return str(plugin_key or '')
+
+
+def _external_plugin(plugin_key):
+    try:
+        return get_external_source_plugin(plugin_key)
+    except Exception:
+        return None
+
+
+def _external_plugin_default_base_url(plugin_key) -> str:
+    if str(plugin_key or '').strip() == 'yu28':
+        return getattr(config, 'EXTERNAL_SOURCE_YU28_DEFAULT_BASE_URL', '')
+    return getattr(config, 'EXTERNAL_SOURCE_JND_DEFAULT_BASE_URL', '')
 
 
 def _serialize_bet_profile(item: dict) -> dict:
@@ -2386,6 +2403,15 @@ def _validate_predictor_payload(
         ]
         if not prediction_targets:
             errors.append('外部预测至少选择一个目标：大小 / 单双 / 组合')
+        elif external_source_id is not None and external_model_key:
+            external_model_for_targets = db.get_external_model(external_source_id, external_model_key)
+            supported_targets = set(external_model_for_targets.get('supported_targets') or []) if external_model_for_targets else set()
+            if supported_targets and not (set(prediction_targets) & supported_targets):
+                from utils.pc28 import TARGET_LABELS as _TARGET_LABELS
+                supported_label = '、'.join(_TARGET_LABELS.get(target, target) for target in sorted(supported_targets))
+                errors.append(
+                    f"模型「{(external_model_for_targets or {}).get('display_name') or external_model_key}」仅支持{supported_label}预测，请调整预测目标"
+                )
 
     if not name:
         errors.append('方案名称不能为空')
@@ -4280,18 +4306,23 @@ def create_admin_external_source():
     if not name:
         name = plugin.display_name
     if not base_url:
-        base_url = getattr(config, 'EXTERNAL_SOURCE_JND_DEFAULT_BASE_URL', '') if plugin_key == 'jnd28' else ''
+        base_url = _external_plugin_default_base_url(plugin_key)
     if not base_url:
         return jsonify({'error': '来源基址不能为空'}), 400
     if not plugin.validate_base_url(base_url):
         return jsonify({'error': '来源基址必须使用 HTTPS'}), 400
+
+    api_key = str(data.get('api_key') or '').strip()
+    if getattr(plugin, 'requires_api_key', False) and not api_key:
+        return jsonify({'error': f'接入插件「{plugin.display_name}」需要 API Key，请在其平台生成后填写'}), 400
 
     source_id = db.create_external_source(
         plugin_key=plugin.plugin_key,
         name=name,
         base_url=base_url,
         interval_seconds=interval_seconds,
-        enabled=enabled
+        enabled=enabled,
+        api_key=api_key
     )
     return jsonify({
         'message': '外部预测来源已创建，默认停用；请先测试连接并开放模型后再启用。',
@@ -4323,6 +4354,10 @@ def update_admin_external_source(source_id: int):
         fields['interval_seconds'] = _normalize_external_source_interval(data.get('interval_seconds'))
     if 'enabled' in data:
         fields['enabled'] = bool(data.get('enabled'))
+    if 'api_key' in data:
+        api_key = str(data.get('api_key') or '').strip()
+        if api_key:
+            fields['api_key'] = api_key
     db.update_external_source(source_id, fields)
     return jsonify({
         'message': '外部预测来源已更新',
@@ -4356,16 +4391,24 @@ def test_admin_external_source(source_id: int):
     started = time.monotonic()
     try:
         plugin = get_external_source_plugin(source.get('plugin_key'))
-        snapshot = plugin.fetch_snapshot(source.get('base_url'))
+        if hasattr(plugin, 'probe'):
+            # 按需型插件（如 yu28）：探测 = 目录/凭据校验 + 试取固定模型，
+            # 不依赖已绑定的用户算法
+            probe = plugin.probe(source.get('base_url'), api_key=source.get('api_key'))
+        else:
+            snapshot = plugin.fetch_snapshot(source.get('base_url'))
+            probe = {
+                'target_issue_no': snapshot.target_issue_no,
+                'upstream_published_at': snapshot.upstream_published_at,
+                'model_count': len(snapshot.models),
+                'invalid_model_count': snapshot.invalid_model_count
+            }
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc), 'elapsed_ms': int((time.monotonic() - started) * 1000)}), 200
     elapsed_ms = int((time.monotonic() - started) * 1000)
     return jsonify({
         'ok': True,
-        'target_issue_no': snapshot.target_issue_no,
-        'upstream_published_at': snapshot.upstream_published_at,
-        'model_count': len(snapshot.models),
-        'invalid_model_count': snapshot.invalid_model_count,
+        **probe,
         'elapsed_ms': elapsed_ms
     })
 
