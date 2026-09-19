@@ -60,3 +60,7 @@ Thumbs.db
 .ace-tool/
 .codex
 .codex_staging/
+
+# Local agent tooling
+.boss/
+.spec-workflow/
