@@ -649,8 +649,9 @@
                     <select id="engineType" class="form-input">
                         <option value="ai">AI 模型</option>
                         <option value="machine">机器算法</option>
+                        <option value="external">外部预测</option>
                     </select>
-                    <small class="field-hint">AI 模型适合提示词驱动；机器算法适合低成本稳定运行。</small>
+                    <small class="field-hint">AI 模型适合提示词驱动；机器算法适合低成本稳定运行；外部预测使用管理员接入的公开预测源，无需 API Key。</small>
                 </label>
                 <label class="form-field">
                     <span>预测方法</span>
@@ -665,6 +666,24 @@
                     <select id="algorithmKey" class="form-input"></select>
                     <small class="field-hint" id="algorithmHint">选择当前方案要使用的内置机器算法。</small>
                 </label>
+                <div class="form-field span-2" id="externalEngineField" style="display: none;">
+                    <span>外部预测源</span>
+                    <div class="form-grid">
+                        <label class="form-field">
+                            <span>来源</span>
+                            <select id="externalSourceId" class="form-input">
+                                <option value="">加载中...</option>
+                            </select>
+                        </label>
+                        <label class="form-field">
+                            <span>模型</span>
+                            <select id="externalModelKey" class="form-input">
+                                <option value="">请先选择来源</option>
+                            </select>
+                        </label>
+                    </div>
+                    <small class="field-hint" id="externalEngineHint">模型列表由管理员开放；绑定修改只影响之后的预测，历史记录保留当时的模型与结果。</small>
+                </div>
                 <label class="form-field" id="apiUrlField">
                     <span>API 地址</span>
                     <input type="text" id="apiUrl" placeholder="https://api.deepseek.com">
@@ -824,8 +843,21 @@
                     <option value="records">公开统计 + 预测记录</option>
                     <option value="analysis">公开统计 + 预测记录 + 分析说明</option>
                 </select>
-                <small class="field-hint">公开榜单默认只展示统计；这里决定访客进入公开详情页后还能看到多少内容。</small>
+                <small class="field-hint">公开榜单默认只展示统计；这里决定访客进入公开详情页后还能看到多少内容。分享等级为「只公开统计」的方案，匿名将无法读取信号导出。</small>
             </label>
+
+            <div class="form-field span-2" id="exportTokenBlock" style="display: none;">
+                <span>导出授权 Token</span>
+                <div id="exportTokenList" class="hint-text">加载中...</div>
+                <div class="panel-actions">
+                    <input type="text" id="exportTokenLabel" placeholder="Token 备注名（可选）" style="flex:1;">
+                    <button class="btn ghost" id="createExportTokenBtn" type="button"><i class="bi bi-key"></i> 生成 Token</button>
+                </div>
+                <details class="hint-text">
+                    <summary>下游如何使用 Token？</summary>
+                    <p>信号导出请求头携带：<code>Authorization: Bearer &lt;token&gt;</code> 或 <code>X-Export-Token: &lt;token&gt;</code>。pc28touzhu 来源配置的 fetch.headers 可直接填写。Token 与本方案绑定，可随时撤销。</p>
+                </details>
+            </div>
 
             <div class="modal-actions">
                 <button class="btn ghost" id="testPredictorBtn">测试模型</button>

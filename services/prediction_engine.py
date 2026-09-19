@@ -8,6 +8,7 @@ from typing import Optional
 
 import config
 from ai_trader import AIPredictor
+from services import external_prediction_service
 from services import machine_prediction
 from services.prediction_guard import AIPredictionError, PredictionGuardService
 from utils.pc28 import next_issue_no, normalize_target_list
@@ -84,6 +85,13 @@ class PredictionEngine:
                                 'settled_at': get_current_utc_time_str()
                             }
                             self.db.upsert_prediction(expired_payload)
+                    continue
+
+                external_expired_payload = external_prediction_service.prepare_external_settlement_payload(
+                    self.db, prediction, draw
+                )
+                if external_expired_payload:
+                    self.db.upsert_prediction(external_expired_payload)
                     continue
 
                 payload = {
@@ -225,6 +233,24 @@ class PredictionEngine:
                 existing_prediction = None
             else:
                 return existing_prediction
+
+        if external_prediction_service.is_external_predictor(predictor):
+            adoption = external_prediction_service.adopt_prediction_for_predictor(self.db, predictor, issue_no)
+            if adoption.get('status') == 'created':
+                saved = self.db.get_prediction_by_issue(predictor['id'], issue_no)
+                if saved and self.notification_service and saved.get('status') == 'pending':
+                    self.notification_service.notify_prediction_created(
+                        predictor=predictor,
+                        prediction=saved,
+                        lottery_type='pc28'
+                    )
+                return saved or {'predictor_id': predictor['id'], 'issue_no': issue_no, 'status': 'pending'}
+            return {
+                'predictor_id': predictor['id'],
+                'issue_no': issue_no,
+                'status': adoption.get('status') or 'skipped',
+                'reason': adoption.get('reason')
+            }
 
         prompt_snapshot = ''
         raw_response = ''

@@ -399,6 +399,14 @@ class PredictionApp {
             this.updateLotteryForm();
         });
         this.bindEvent('engineType', 'change', () => this.updateLotteryForm());
+        const externalSourceSelect = document.getElementById('externalSourceId');
+        if (externalSourceSelect) {
+            externalSourceSelect.addEventListener('change', () => this.syncExternalModelOptions());
+        }
+        const createExportTokenBtn = document.getElementById('createExportTokenBtn');
+        if (createExportTokenBtn) {
+            createExportTokenBtn.addEventListener('click', () => this.createExportToken());
+        }
         this.bindEvent('algorithmSource', 'change', () => this.updateLotteryForm());
         this.bindEvent('primaryMetric', 'change', () => this.syncProfitMetricOptions());
         ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo'].forEach((id) => {
@@ -606,6 +614,10 @@ class PredictionApp {
 
     enforceNumberTarget() {
         if (this.getFormLotteryType() !== 'pc28') {
+            return;
+        }
+        if (this.getFormEngineType() === 'external') {
+            // 外部预测源不提供单点玩法，不强制勾选单点目标
             return;
         }
         const targetNumber = document.getElementById('targetNumber');
@@ -897,10 +909,27 @@ class PredictionApp {
         document.getElementById('profitMetricField').style.display = showProfit ? '' : 'none';
         document.getElementById('profitPanel').style.display = showProfit ? '' : 'none';
 
+        const isExternalEngine = currentEngineType === 'external';
         const showMachineAlgorithm = currentEngineType === 'machine';
-        const showPromptAssistant = config.supportsPromptAssistant && !showMachineAlgorithm;
-        const showPresets = config.supportsPresets && !showMachineAlgorithm;
+        const showPromptAssistant = config.supportsPromptAssistant && !showMachineAlgorithm && !isExternalEngine;
+        const showPresets = config.supportsPresets && !showMachineAlgorithm && !isExternalEngine;
         document.getElementById('algorithmField').style.display = showMachineAlgorithm ? '' : 'none';
+        const externalEngineField = document.getElementById('externalEngineField');
+        if (externalEngineField) {
+            externalEngineField.style.display = isExternalEngine ? '' : 'none';
+        }
+        const targetOptionNumber = document.getElementById('targetOptionNumber');
+        const targetNumberInput = document.getElementById('targetNumber');
+        if (targetOptionNumber && targetNumberInput) {
+            if (isExternalEngine) {
+                targetOptionNumber.style.display = 'none';
+                targetNumberInput.checked = false;
+                targetNumberInput.disabled = true;
+            }
+        }
+        if (isExternalEngine && this.currentLotteryType !== null) {
+            this.syncExternalEngineSelects(options);
+        }
         const fallbackField = document.getElementById('userAlgorithmFallbackField');
         if (fallbackField) {
             fallbackField.style.display = showMachineAlgorithm && algorithmSource === 'user' ? '' : 'none';
@@ -916,7 +945,7 @@ class PredictionApp {
         document.getElementById('promptVariablesBlock').style.display = showPromptAssistant ? '' : 'none';
         document.getElementById('externalPromptBlock').style.display = showPromptAssistant ? '' : 'none';
         document.getElementById('presetBlock').style.display = showPresets ? '' : 'none';
-        document.getElementById('testPredictorBtn').textContent = showMachineAlgorithm ? '检查算法' : '测试模型';
+        document.getElementById('testPredictorBtn').textContent = isExternalEngine ? '检查绑定' : (showMachineAlgorithm ? '检查算法' : '测试模型');
 
         if (!showPromptAssistant) {
             this.hidePromptAssistantResult();
@@ -990,9 +1019,17 @@ class PredictionApp {
         const select = document.getElementById('primaryMetric');
         const config = this.getLotteryConfig(lotteryType);
         const previousValue = selectedValue || select.value || config.defaultPrimaryMetric;
-        select.innerHTML = config.primaryMetricOptions.map((item) => `
+        const isExternalEngine = this.getFormEngineType() === 'external';
+        const metricOptions = isExternalEngine
+            ? config.primaryMetricOptions.filter((item) => ['big_small', 'odd_even', 'combo'].includes(item.key))
+            : config.primaryMetricOptions;
+        select.innerHTML = metricOptions.map((item) => `
             <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
         `).join('');
+        if (isExternalEngine && !metricOptions.some((item) => item.key === previousValue)) {
+            select.value = metricOptions[0]?.key || '';
+            return;
+        }
         select.value = config.primaryMetricOptions.some((item) => item.key === previousValue)
             ? previousValue
             : config.defaultPrimaryMetric;
@@ -2695,6 +2732,13 @@ class PredictionApp {
             const executionBadge = predictor.engine_type === 'machine'
                 ? `<span class="tag">${this.escapeHtml(this.predictorExecutionLabel(predictor))}</span>`
                 : '';
+            const externalBadge = predictor.engine_type === 'external' && predictor.external_binding
+                ? `<span class="tag">${this.escapeHtml(`${predictor.external_binding.source_name || '外部来源'} · ${predictor.external_binding.model_name || predictor.external_binding.model_key || '--'}`)}</span>`
+                : '';
+            const externalStatusHint = predictor.engine_type === 'external' && predictor.external_binding
+                && predictor.external_binding.status && predictor.external_binding.status !== 'ok'
+                ? `<div class="hint-text">${this.escapeHtml(predictor.external_binding.status_message || '')}</div>`
+                : '';
             return `
                 <div class="predictor-item ${predictor.id === this.currentPredictorId ? 'active' : ''}" data-id="${predictor.id}">
                     <div class="predictor-head">
@@ -2705,10 +2749,12 @@ class PredictionApp {
                         <span class="status-chip ${status.className}">${this.escapeHtml(status.label)}</span>
                     </div>
                     ${predictor.auto_paused ? `<div class="hint-text">${this.escapeHtml(`AI 连续失败 ${predictor.consecutive_ai_failures || 0} 次，已自动暂停`)}</div>` : ''}
+                    ${externalStatusHint}
                     ${styleDescription ? `<div class="hint-text">${this.escapeHtml(styleDescription)}</div>` : ''}
                     <div class="predictor-tags">
                         ${engineBadge}
                         ${executionBadge}
+                        ${externalBadge}
                         ${(predictor.prediction_targets || []).map((target) => `<span class="tag">${this.escapeHtml(this.targetLabel(target, predictor.lottery_type || 'pc28'))}</span>`).join('')}
                     </div>
                     <div class="predictor-actions">
@@ -4656,13 +4702,128 @@ class PredictionApp {
             selectedProfitRuleId: data.profit_rule_id || this.getLotteryConfig(this.formLotteryType).defaultProfitRuleId,
             selectedProfitDefaultMetric: data.profit_default_metric || data.default_simulation_metric || this.getLotteryConfig(this.formLotteryType).defaultProfitMetric,
             selectedHistoryWindow: data.history_window || 60,
-            selectedAlgorithmKey: data.algorithm_key || ''
+            selectedAlgorithmKey: data.algorithm_key || '',
+            selectedExternalSourceId: (data.external_binding || {}).external_source_id || '',
+            selectedExternalModelKey: (data.external_binding || {}).external_model_key || ''
         });
         document.getElementById('historyWindow').value = data.history_window || 60;
         this.clearExternalPromptTemplate();
         this.presetExpanded = false;
         this.renderPresetCards();
         this.showModal();
+        if ((data.engine_type || '') === 'external') {
+            this.showExportTokenBlock(data.id);
+        } else {
+            this.hideExportTokenBlock();
+        }
+    }
+
+    showExportTokenBlock(predictorId) {
+        const block = document.getElementById('exportTokenBlock');
+        if (!block) {
+            return;
+        }
+        block.style.display = '';
+        block.dataset.predictorId = String(predictorId);
+        this.loadExportTokens(predictorId);
+    }
+
+    hideExportTokenBlock() {
+        const block = document.getElementById('exportTokenBlock');
+        if (!block) {
+            return;
+        }
+        block.style.display = 'none';
+        block.dataset.predictorId = '';
+        const list = document.getElementById('exportTokenList');
+        if (list) {
+            list.innerHTML = '';
+        }
+    }
+
+    async loadExportTokens(predictorId) {
+        const list = document.getElementById('exportTokenList');
+        if (!list) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/predictors/${predictorId}/export-tokens`, { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '加载导出 Token 失败');
+            }
+            const tokens = data.tokens || [];
+            const active = tokens.filter((token) => !token.revoked);
+            if (!tokens.length) {
+                list.innerHTML = '未创建授权 Token。公开分享（记录/分析）的方案无需 Token 即可导出。';
+                return;
+            }
+            list.innerHTML = tokens.map((token) => `
+                <div class="hint-text">
+                    <code>${this.escapeHtml(token.token_prefix || '')}…</code>
+                    ${this.escapeHtml(token.label || '未命名')} · 创建于 ${this.escapeHtml(token.created_at || '--')} · 最近使用 ${this.escapeHtml(token.last_used_at || '从未')}
+                    ${token.revoked
+                        ? '<span class="tag">已撤销</span>'
+                        : `<button class="icon-btn danger" data-token-id="${token.id}" title="撤销 Token"><i class="bi bi-x-lg"></i></button>`}
+                </div>
+            `).join('') + (active.length ? '' : '<div class="hint-text">当前没有生效中的 Token。</div>');
+            list.querySelectorAll('button[data-token-id]').forEach((button) => {
+                button.addEventListener('click', () => this.revokeExportToken(predictorId, Number(button.dataset.tokenId)));
+            });
+        } catch (error) {
+            list.innerHTML = `<span class="hint-text">${this.escapeHtml(error.message)}</span>`;
+        }
+    }
+
+    async createExportToken() {
+        const block = document.getElementById('exportTokenBlock');
+        if (!block || !block.dataset.predictorId) {
+            return;
+        }
+        const predictorId = Number(block.dataset.predictorId);
+        const labelInput = document.getElementById('exportTokenLabel');
+        try {
+            const response = await fetch(`/api/predictors/${predictorId}/export-tokens`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ label: labelInput?.value || '' })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '生成 Token 失败');
+            }
+            if (labelInput) {
+                labelInput.value = '';
+            }
+            await this.loadExportTokens(predictorId);
+            const tokenText = data.token || '';
+            if (navigator.clipboard && tokenText) {
+                navigator.clipboard.writeText(tokenText).catch(() => {});
+            }
+            alert(`Token 已生成（仅此一次展示，已尝试复制到剪贴板）：\n\n${tokenText}\n\n请立即保存。`);
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async revokeExportToken(predictorId, tokenId) {
+        if (!window.confirm('确定撤销该 Token？撤销后使用它的下游连接将立即失效。')) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/predictors/${predictorId}/export-tokens/${tokenId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '撤销 Token 失败');
+            }
+            await this.loadExportTokens(predictorId);
+        } catch (error) {
+            alert(error.message);
+        }
     }
 
     showModal() {
@@ -5630,6 +5791,7 @@ class PredictionApp {
         this.hideTestResult();
         this.hidePromptAssistantResult();
         this.clearExternalPromptTemplate();
+        this.hideExportTokenBlock();
     }
 
     renderPresetCards() {
@@ -5713,12 +5875,13 @@ class PredictionApp {
 
     collectFormData() {
         this.enforceNumberTarget();
+        const engineType = document.getElementById('engineType').value || 'ai';
         const predictionTargets = ['targetNumber', 'targetBigSmall', 'targetOddEven', 'targetCombo']
             .map((id) => document.getElementById(id))
             .filter((input) => input && input.checked && input.dataset.targetKey)
             .map((input) => input.dataset.targetKey);
 
-        return {
+        const formData = {
             lottery_type: document.getElementById('lotteryType').value || 'pc28',
             engine_type: document.getElementById('engineType').value || 'ai',
             algorithm_key: document.getElementById('algorithmKey').value || '',
@@ -5740,6 +5903,75 @@ class PredictionApp {
             share_level: document.getElementById('shareLevel').value,
             prediction_targets: predictionTargets
         };
+        if (engineType === 'external') {
+            formData.external_source_id = document.getElementById('externalSourceId')?.value || '';
+            formData.external_model_key = document.getElementById('externalModelKey')?.value || '';
+            formData.prediction_targets = predictionTargets.filter((target) => target !== 'number');
+        }
+        return formData;
+    }
+
+    async loadExternalOptions() {
+        try {
+            const response = await fetch('/api/external/options', { credentials: 'include' });
+            if (!response.ok) {
+                this.externalOptions = [];
+                return;
+            }
+            const data = await response.json();
+            this.externalOptions = data.sources || [];
+        } catch (error) {
+            this.externalOptions = [];
+        }
+        return this.externalOptions;
+    }
+
+    async syncExternalEngineSelects(options = {}) {
+        const sourceSelect = document.getElementById('externalSourceId');
+        const modelSelect = document.getElementById('externalModelKey');
+        if (!sourceSelect || !modelSelect) {
+            return;
+        }
+        if (!Array.isArray(this.externalOptions)) {
+            await this.loadExternalOptions();
+        }
+        const sources = this.externalOptions || [];
+        const previousSource = options.selectedExternalSourceId !== undefined
+            ? String(options.selectedExternalSourceId || '')
+            : sourceSelect.value;
+        if (!sources.length) {
+            sourceSelect.innerHTML = '<option value="">暂无可用外部来源，请联系管理员</option>';
+            modelSelect.innerHTML = '<option value="">暂无可用模型</option>';
+            sourceSelect.disabled = true;
+            modelSelect.disabled = true;
+            return;
+        }
+        sourceSelect.disabled = false;
+        modelSelect.disabled = false;
+        sourceSelect.innerHTML = sources.map((source) => `
+            <option value="${this.escapeHtml(String(source.source_id))}">${this.escapeHtml(source.name || `来源 #${source.source_id}`)}</option>
+        `).join('');
+        const activeSource = sources.find((source) => String(source.source_id) === previousSource) || sources[0];
+        sourceSelect.value = String(activeSource.source_id);
+        this.syncExternalModelOptions(options.selectedExternalModelKey || '');
+    }
+
+    syncExternalModelOptions(selectedKey = '') {
+        const sourceSelect = document.getElementById('externalSourceId');
+        const modelSelect = document.getElementById('externalModelKey');
+        if (!sourceSelect || !modelSelect) {
+            return;
+        }
+        const source = (this.externalOptions || []).find((item) => String(item.source_id) === String(sourceSelect.value));
+        if (!source || !(source.models || []).length) {
+            modelSelect.innerHTML = '<option value="">该来源暂无开放模型</option>';
+            return;
+        }
+        modelSelect.innerHTML = source.models.map((model) => `
+            <option value="${this.escapeHtml(model.model_key)}">${this.escapeHtml(model.display_name)}（${this.escapeHtml(model.model_key)}）</option>
+        `).join('');
+        const keys = source.models.map((model) => model.model_key);
+        modelSelect.value = keys.includes(selectedKey) ? selectedKey : keys[0];
     }
 
     syncProfitMetricOptions(lotteryType = this.getFormLotteryType(), preferredValue = null) {
@@ -6510,7 +6742,13 @@ class PredictionApp {
         if (!predictor) {
             return '--';
         }
-        return predictor.engine_type_label || (predictor.engine_type === 'machine' ? '机器算法' : 'AI 模型');
+        if (predictor.engine_type === 'machine') {
+            return predictor.engine_type_label || '机器算法';
+        }
+        if (predictor.engine_type === 'external') {
+            return predictor.engine_type_label || '外部预测';
+        }
+        return predictor.engine_type_label || 'AI 模型';
     }
 
     predictorStyleDescription(predictor) {

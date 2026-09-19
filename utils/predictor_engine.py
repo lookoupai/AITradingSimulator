@@ -6,11 +6,12 @@ from __future__ import annotations
 from lotteries.registry import normalize_lottery_type
 
 
-ALLOWED_ENGINE_TYPES = ('ai', 'machine')
+ALLOWED_ENGINE_TYPES = ('ai', 'machine', 'external')
 DEFAULT_ENGINE_TYPE = 'ai'
 ENGINE_TYPE_LABELS = {
     'ai': 'AI 模型',
-    'machine': '机器算法'
+    'machine': '机器算法',
+    'external': '外部预测'
 }
 MACHINE_ALGORITHM_CATALOG = {
     'pc28': (
@@ -166,6 +167,12 @@ def resolve_execution_label(predictor: dict | None) -> str:
             or get_algorithm_label(lottery_type, engine_type, predictor.get('algorithm_key'))
             or '内置机器算法'
         )
+    if engine_type == 'external':
+        return (
+            str(predictor.get('external_model_name') or '').strip()
+            or str(predictor.get('external_model_key') or '').strip()
+            or '外部预测'
+        )
     return str(predictor.get('model_name') or '').strip() or '--'
 
 
@@ -175,6 +182,12 @@ def resolve_execution_description(predictor: dict | None) -> str:
     engine_type = normalize_engine_type(predictor.get('engine_type'))
     if engine_type == 'machine':
         return get_algorithm_description(lottery_type, engine_type, predictor.get('algorithm_key'))
+    if engine_type == 'external':
+        source_name = str(predictor.get('external_source_name') or '').strip()
+        model_name = str(predictor.get('external_model_name') or '').strip()
+        if source_name and model_name:
+            return f'使用外部预测源“{source_name}”的“{model_name}”模型产出预测。'
+        return '使用管理员接入的外部预测源产出预测。'
 
     method_name = str(predictor.get('prediction_method') or '').strip()
     if method_name:

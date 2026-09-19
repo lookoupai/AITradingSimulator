@@ -243,6 +243,15 @@ a {
     background: transparent;
 }
 
+.btn.danger {
+    background: transparent;
+    color: var(--danger);
+}
+
+.btn.danger:hover {
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border) 55%);
+}
+
 .icon-btn.danger,
 .status-chip.failed {
     color: var(--danger);

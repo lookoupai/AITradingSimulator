@@ -62,11 +62,13 @@ def fresh_app_harness():
     old_env = {
         'AUTO_PREDICTION': os.environ.get('AUTO_PREDICTION'),
         'DATABASE_PATH': os.environ.get('DATABASE_PATH'),
-        'NOTIFICATION_WORKER_ENABLED': os.environ.get('NOTIFICATION_WORKER_ENABLED')
+        'NOTIFICATION_WORKER_ENABLED': os.environ.get('NOTIFICATION_WORKER_ENABLED'),
+        'EXTERNAL_COLLECTOR_ENABLED': os.environ.get('EXTERNAL_COLLECTOR_ENABLED')
     }
     os.environ['AUTO_PREDICTION'] = 'false'
     os.environ['DATABASE_PATH'] = db_path
     os.environ['NOTIFICATION_WORKER_ENABLED'] = 'false'
+    os.environ['EXTERNAL_COLLECTOR_ENABLED'] = 'false'
 
     try:
         _purge_repo_modules()

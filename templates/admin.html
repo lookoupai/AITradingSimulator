@@ -74,6 +74,52 @@
             <section class="panel">
                 <div class="panel-header">
                     <div>
+                        <h3>外部预测源</h3>
+                        <p class="panel-subtitle">管理员维护外部预测 API 来源与开放模型；采集由后端统一执行，用户方案共享采集结果。</p>
+                    </div>
+                    <div class="panel-actions">
+                        <button class="btn ghost" id="adminExternalAddToggle">
+                            <i class="bi bi-plus-lg"></i>
+                            添加来源
+                        </button>
+                    </div>
+                </div>
+                <div id="adminExternalSourceCreate" style="display: none;" class="prediction-summary">
+                    <div class="form-grid">
+                        <label class="form-field">
+                            <span>接入插件</span>
+                            <select id="adminExternalPluginKey" class="form-input">
+                                <option value="jnd28">JND 预测源（jnd-28.vip）</option>
+                            </select>
+                        </label>
+                        <label class="form-field">
+                            <span>来源名称</span>
+                            <input type="text" id="adminExternalSourceName" placeholder="留空默认使用插件名">
+                        </label>
+                        <label class="form-field span-2">
+                            <span>来源基址</span>
+                            <input type="text" id="adminExternalSourceBaseUrl" placeholder="https://jnd-28.vip">
+                            <small class="field-hint">必须使用 HTTPS；创建后默认停用，请先测试连接并开放模型。</small>
+                        </label>
+                        <label class="form-field">
+                            <span>采集间隔（秒）</span>
+                            <input type="number" id="adminExternalSourceInterval" min="30" max="3600" value="60">
+                            <small class="field-hint">不低于 30 秒；该站公开限制为 60 次/分钟/IP。</small>
+                        </label>
+                    </div>
+                    <div class="panel-actions">
+                        <button class="btn primary" data-action="create-external-source">
+                            <i class="bi bi-check-lg"></i>
+                            创建来源
+                        </button>
+                    </div>
+                </div>
+                <div id="adminExternalSourcesPanel" class="prediction-summary empty-panel">加载中...</div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
                         <h3>竞彩足球数据健康</h3>
                         <p class="panel-subtitle">查看历史赛果、赔率和详情字段覆盖率，并手动触发历史补齐任务。</p>
                     </div>

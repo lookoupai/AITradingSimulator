@@ -619,6 +619,108 @@ class Database:
             '''
         )
 
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS external_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plugin_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                extra_config TEXT NOT NULL DEFAULT '{}',
+                last_attempt_at TEXT,
+                last_success_at TEXT,
+                last_error TEXT,
+                last_error_at TEXT,
+                last_target_issue TEXT,
+                last_model_count INTEGER,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS external_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                model_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                supported_targets TEXT NOT NULL DEFAULT '[]',
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_id, model_key),
+                FOREIGN KEY (source_id) REFERENCES external_sources(id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS external_prediction_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                target_issue_no TEXT NOT NULL,
+                upstream_published_at TEXT,
+                fetched_at TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                batch_version INTEGER NOT NULL DEFAULT 1,
+                model_count INTEGER NOT NULL DEFAULT 0,
+                invalid_model_count INTEGER NOT NULL DEFAULT 0,
+                raw_payload BLOB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_id, target_issue_no, fingerprint),
+                FOREIGN KEY (source_id) REFERENCES external_sources(id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS external_predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL,
+                source_id INTEGER NOT NULL,
+                model_key TEXT NOT NULL,
+                lottery_type TEXT NOT NULL DEFAULT 'pc28',
+                issue_no TEXT NOT NULL,
+                upstream_published_at TEXT,
+                fetched_at TEXT NOT NULL,
+                prediction_big_small TEXT,
+                prediction_odd_even TEXT,
+                prediction_combo TEXT,
+                confidence REAL,
+                model_payload TEXT NOT NULL DEFAULT '{}',
+                fingerprint TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_id, model_key, issue_no, fingerprint),
+                FOREIGN KEY (batch_id) REFERENCES external_prediction_batches(id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS predictor_export_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                predictor_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                token_prefix TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TEXT,
+                revoked_at TEXT,
+                FOREIGN KEY (predictor_id) REFERENCES predictors(id)
+            )
+            '''
+        )
+
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictors_user ON predictors(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_algorithm_execution_logs_algorithm ON user_algorithm_execution_logs(algorithm_id, created_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_lottery_events_lookup ON lottery_events(lottery_type, batch_key, event_time)')
@@ -644,6 +746,31 @@ class Database:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_deliveries_subscription ON notification_deliveries(subscription_id, created_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_delivery_jobs_status ON notification_delivery_jobs(status, available_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_notification_rule_states_subscription ON notification_rule_states(subscription_id, rule_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_external_models_source ON external_models(source_id, enabled)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_external_batches_issue ON external_prediction_batches(source_id, target_issue_no, batch_version)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_external_predictions_lookup ON external_predictions(source_id, model_key, issue_no)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_predictor_export_tokens_predictor ON predictor_export_tokens(predictor_id)')
+
+        try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN external_source_id INTEGER")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE predictors ADD COLUMN external_model_key TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE predictions ADD COLUMN external_source_id INTEGER")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE predictions ADD COLUMN external_model_key TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE predictions ADD COLUMN external_fetched_at TEXT")
+        except Exception:
+            pass
 
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
@@ -811,11 +938,19 @@ class Database:
         lottery_type: str = 'pc28',
         engine_type: str = 'ai',
         algorithm_key: str = '',
-        user_algorithm_fallback_strategy: str = 'fail'
+        user_algorithm_fallback_strategy: str = 'fail',
+        external_source_id: int | None = None,
+        external_model_key: str = ''
     ) -> int:
         normalized_lottery_type = normalize_lottery_type(lottery_type)
         normalized_engine_type = normalize_engine_type(engine_type)
         normalized_targets = normalize_prediction_targets(normalized_lottery_type, prediction_targets)
+        if normalized_engine_type == 'external':
+            # 外部预测源不提供单点玩法，目标仅保留大小/单双/组合
+            normalized_targets = [
+                target for target in normalized_targets
+                if target in ('big_small', 'odd_even', 'combo')
+            ]
         normalized_algorithm_key = normalize_algorithm_key(
             normalized_lottery_type,
             normalized_engine_type,
@@ -828,9 +963,10 @@ class Database:
             INSERT INTO predictors (
                 user_id, name, lottery_type, engine_type, algorithm_key, api_key, api_url, model_name, api_mode, primary_metric, profit_default_metric, profit_rule_id, share_predictions, share_level,
                 prediction_method, system_prompt, data_injection_mode,
-                prediction_targets, user_algorithm_fallback_strategy, history_window, temperature, enabled
+                prediction_targets, user_algorithm_fallback_strategy, history_window, temperature, enabled,
+                external_source_id, external_model_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 user_id,
@@ -854,7 +990,9 @@ class Database:
                 self._normalize_user_algorithm_fallback_strategy(user_algorithm_fallback_strategy),
                 history_window,
                 temperature,
-                1 if enabled else 0
+                1 if enabled else 0,
+                external_source_id,
+                str(external_model_key or '').strip()
             )
         )
         predictor_id = cursor.lastrowid
@@ -873,7 +1011,13 @@ class Database:
         values = []
         for key, value in fields.items():
             if key == 'prediction_targets':
-                value = json.dumps(normalize_prediction_targets(lottery_type, value), ensure_ascii=False)
+                normalized_targets = normalize_prediction_targets(lottery_type, value)
+                if engine_type == 'external':
+                    normalized_targets = [
+                        target for target in normalized_targets
+                        if target in ('big_small', 'odd_even', 'combo')
+                    ]
+                value = json.dumps(normalized_targets, ensure_ascii=False)
             if key == 'lottery_type':
                 value = normalize_lottery_type(value)
                 lottery_type = value
@@ -930,6 +1074,7 @@ class Database:
         cursor.execute('DELETE FROM prediction_items WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM prediction_runs WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM predictions WHERE predictor_id = ?', (predictor_id,))
+        cursor.execute('DELETE FROM predictor_export_tokens WHERE predictor_id = ?', (predictor_id,))
         cursor.execute('DELETE FROM predictors WHERE id = ?', (predictor_id,))
         conn.commit()
         conn.close()
@@ -3030,9 +3175,10 @@ class Database:
                 prediction_combo, confidence, reasoning_summary, raw_response,
                 prompt_snapshot, status, error_message, actual_number,
                 actual_big_small, actual_odd_even, actual_combo, hit_number,
-                hit_big_small, hit_odd_even, hit_combo, settled_at
+                hit_big_small, hit_odd_even, hit_combo, settled_at,
+                external_source_id, external_model_key, external_fetched_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(predictor_id, issue_no) DO UPDATE SET
                 requested_targets = excluded.requested_targets,
                 prediction_number = excluded.prediction_number,
@@ -3054,6 +3200,13 @@ class Database:
                 hit_odd_even = excluded.hit_odd_even,
                 hit_combo = excluded.hit_combo,
                 settled_at = excluded.settled_at,
+                external_source_id = COALESCE(excluded.external_source_id, predictions.external_source_id),
+                external_model_key = CASE
+                    WHEN excluded.external_model_key IS NOT NULL AND excluded.external_model_key != ''
+                    THEN excluded.external_model_key
+                    ELSE predictions.external_model_key
+                END,
+                external_fetched_at = COALESCE(excluded.external_fetched_at, predictions.external_fetched_at),
                 updated_at = CURRENT_TIMESTAMP
             ''',
             (
@@ -3079,7 +3232,10 @@ class Database:
                 payload.get('hit_big_small'),
                 payload.get('hit_odd_even'),
                 payload.get('hit_combo'),
-                payload.get('settled_at')
+                payload.get('settled_at'),
+                payload.get('external_source_id'),
+                payload.get('external_model_key') or '',
+                payload.get('external_fetched_at')
             )
         )
         conn.commit()
@@ -5040,6 +5196,413 @@ class Database:
         if not data.get('error_message') and data.get('run_error_message'):
             data['error_message'] = data.get('run_error_message')
         return data
+
+    # ============ 外部预测源 ============
+
+    @staticmethod
+    def _prepare_external_source(row) -> dict | None:
+        if not row:
+            return None
+        data = dict(row)
+        data['enabled'] = bool(data.get('enabled'))
+        data['extra_config'] = Database._decode_json_object_static(data.get('extra_config'))
+        return data
+
+    @staticmethod
+    def _decode_json_object_static(value) -> dict:
+        if isinstance(value, dict):
+            return value
+        try:
+            parsed = json.loads(value) if value else {}
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    def list_external_sources(self) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM external_sources ORDER BY id ASC')
+        rows = [self._prepare_external_source(row) for row in cursor.fetchall()]
+        conn.close()
+        return [row for row in rows if row]
+
+    def get_external_source(self, source_id: int) -> dict | None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM external_sources WHERE id = ?', (source_id,))
+        row = self._prepare_external_source(cursor.fetchone())
+        conn.close()
+        return row
+
+    def create_external_source(self, plugin_key: str, name: str, base_url: str, interval_seconds: int, enabled: bool = False) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO external_sources (plugin_key, name, base_url, enabled, interval_seconds)
+            VALUES (?, ?, ?, ?, ?)
+            ''',
+            (plugin_key, name, base_url, 1 if enabled else 0, int(interval_seconds))
+        )
+        source_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return source_id
+
+    def update_external_source(self, source_id: int, fields: dict):
+        if not fields:
+            return
+        allowed = {'name', 'base_url', 'enabled', 'interval_seconds', 'extra_config',
+                   'last_attempt_at', 'last_success_at', 'last_error', 'last_error_at',
+                   'last_target_issue', 'last_model_count', 'consecutive_failures'}
+        updates = []
+        values = []
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            if key == 'enabled':
+                value = 1 if value else 0
+            if key == 'extra_config':
+                value = json.dumps(value or {}, ensure_ascii=False)
+            updates.append(f'{key} = ?')
+            values.append(value)
+        if not updates:
+            return
+        updates.append('updated_at = CURRENT_TIMESTAMP')
+        values.append(source_id)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE external_sources SET {', '.join(updates)} WHERE id = ?", values)
+        conn.commit()
+        conn.close()
+
+    def delete_external_source(self, source_id: int):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM external_predictions WHERE source_id = ?', (source_id,))
+        cursor.execute('DELETE FROM external_prediction_batches WHERE source_id = ?', (source_id,))
+        cursor.execute('DELETE FROM external_models WHERE source_id = ?', (source_id,))
+        cursor.execute('DELETE FROM external_sources WHERE id = ?', (source_id,))
+        conn.commit()
+        conn.close()
+
+    def upsert_external_models(self, source_id: int, models: list[dict], seen_at: str) -> dict:
+        """models: [{model_key, display_name, supported_targets}]；返回 {added, updated, total}。"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        added = 0
+        updated = 0
+        for model in models:
+            model_key = str(model.get('model_key') or '').strip()
+            display_name = str(model.get('display_name') or '').strip() or model_key
+            supported_targets = json.dumps(model.get('supported_targets') or [], ensure_ascii=False)
+            cursor.execute('SELECT id, display_name FROM external_models WHERE source_id = ? AND model_key = ?', (source_id, model_key))
+            existing = cursor.fetchone()
+            if existing:
+                if str(existing['display_name'] or '') != display_name:
+                    cursor.execute(
+                        'UPDATE external_models SET display_name = ?, last_seen_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                        (display_name, seen_at, existing['id'])
+                    )
+                    updated += 1
+                else:
+                    cursor.execute(
+                        'UPDATE external_models SET last_seen_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                        (seen_at, existing['id'])
+                    )
+            else:
+                cursor.execute(
+                    '''
+                    INSERT INTO external_models (source_id, model_key, display_name, supported_targets, first_seen_at, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ''',
+                    (source_id, model_key, display_name, supported_targets, seen_at, seen_at)
+                )
+                added += 1
+        conn.commit()
+        cursor.execute('SELECT COUNT(*) AS n FROM external_models WHERE source_id = ?', (source_id,))
+        total = int(cursor.fetchone()['n'])
+        conn.close()
+        return {'added': added, 'updated': updated, 'total': total}
+
+    def list_external_models(self, source_id: int, enabled_only: bool = False) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if enabled_only:
+            cursor.execute(
+                'SELECT * FROM external_models WHERE source_id = ? AND enabled = 1 ORDER BY display_name ASC, model_key ASC',
+                (source_id,)
+            )
+        else:
+            cursor.execute(
+                'SELECT * FROM external_models WHERE source_id = ? ORDER BY display_name ASC, model_key ASC',
+                (source_id,)
+            )
+        rows = []
+        for row in cursor.fetchall():
+            data = dict(row)
+            data['enabled'] = bool(data.get('enabled'))
+            data['supported_targets'] = self._decode_json_list(data.get('supported_targets'))
+            rows.append(data)
+        conn.close()
+        return rows
+
+    def get_external_model(self, source_id: int, model_key: str) -> dict | None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT * FROM external_models WHERE source_id = ? AND model_key = ? LIMIT 1',
+            (source_id, str(model_key or '').strip())
+        )
+        row = cursor.fetchone()
+        result = None
+        if row:
+            data = dict(row)
+            data['enabled'] = bool(data.get('enabled'))
+            data['supported_targets'] = self._decode_json_list(data.get('supported_targets'))
+            result = data
+        conn.close()
+        return result
+
+    def set_external_models_enabled(self, source_id: int, model_keys: list[str], enabled: bool) -> int:
+        if not model_keys:
+            return 0
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        placeholders = ', '.join('?' for _ in model_keys)
+        cursor.execute(
+            f'''
+            UPDATE external_models SET enabled = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE source_id = ? AND model_key IN ({placeholders})
+            ''',
+            (1 if enabled else 0, source_id, *[str(key).strip() for key in model_keys])
+        )
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return affected
+
+    def record_external_batch(self, source_id: int, snapshot: dict, raw_payload_compressed: bytes, fingerprint: str, fetched_at: str) -> tuple[int | None, bool]:
+        """写入批次（同内容去重）。snapshot 需含 target_issue_no/upstream_published_at/model_count/invalid_model_count。"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT id FROM external_prediction_batches WHERE source_id = ? AND target_issue_no = ? AND fingerprint = ?',
+            (source_id, str(snapshot.get('target_issue_no')), fingerprint)
+        )
+        existing = cursor.fetchone()
+        if existing:
+            conn.close()
+            return int(existing['id']), False
+        cursor.execute(
+            'SELECT COALESCE(MAX(batch_version), 0) + 1 AS next_version FROM external_prediction_batches WHERE source_id = ? AND target_issue_no = ?',
+            (source_id, str(snapshot.get('target_issue_no')))
+        )
+        next_version = int(cursor.fetchone()['next_version'])
+        cursor.execute(
+            '''
+            INSERT INTO external_prediction_batches (
+                source_id, target_issue_no, upstream_published_at, fetched_at,
+                fingerprint, batch_version, model_count, invalid_model_count, raw_payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                source_id,
+                str(snapshot.get('target_issue_no') or ''),
+                snapshot.get('upstream_published_at'),
+                fetched_at,
+                fingerprint,
+                next_version,
+                int(snapshot.get('model_count') or 0),
+                int(snapshot.get('invalid_model_count') or 0),
+                sqlite3.Binary(raw_payload_compressed)
+            )
+        )
+        batch_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return batch_id, True
+
+    def get_external_batches(self, source_id: int, issue_no: str | None = None, limit: int = 10, ascending: bool = False) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        order = 'ASC' if ascending else 'DESC'
+        if issue_no is not None:
+            cursor.execute(
+                f'SELECT * FROM external_prediction_batches WHERE source_id = ? AND target_issue_no = ? ORDER BY batch_version {order} LIMIT ?',
+                (source_id, str(issue_no), int(limit))
+            )
+        else:
+            cursor.execute(
+                'SELECT * FROM external_prediction_batches WHERE source_id = ? ORDER BY fetched_at DESC, id DESC LIMIT ?',
+                (source_id, int(limit))
+            )
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def get_external_batch_by_id(self, batch_id: int) -> dict | None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM external_prediction_batches WHERE id = ?', (batch_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def insert_external_prediction(self, payload: dict) -> int | None:
+        """已采用快照；同 (source, model, issue, fingerprint) 幂等。返回行 id（已存在时返回既有 id）。"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT id FROM external_predictions
+            WHERE source_id = ? AND model_key = ? AND issue_no = ? AND fingerprint = ?
+            ''',
+            (payload['source_id'], payload['model_key'], payload['issue_no'], payload['fingerprint'])
+        )
+        existing = cursor.fetchone()
+        if existing:
+            conn.close()
+            return int(existing['id'])
+        cursor.execute(
+            '''
+            INSERT INTO external_predictions (
+                batch_id, source_id, model_key, lottery_type, issue_no,
+                upstream_published_at, fetched_at,
+                prediction_big_small, prediction_odd_even, prediction_combo,
+                confidence, model_payload, fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                payload['batch_id'],
+                payload['source_id'],
+                payload['model_key'],
+                payload.get('lottery_type', 'pc28'),
+                payload['issue_no'],
+                payload.get('upstream_published_at'),
+                payload['fetched_at'],
+                payload.get('prediction_big_small'),
+                payload.get('prediction_odd_even'),
+                payload.get('prediction_combo'),
+                payload.get('confidence'),
+                payload.get('model_payload', '{}'),
+                payload['fingerprint']
+            )
+        )
+        row_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return row_id
+
+    def get_external_prediction(self, source_id: int, model_key: str, issue_no: str) -> dict | None:
+        """该 (来源, 模型, 期号) 已采用的首个有效版本快照。"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM external_predictions
+            WHERE source_id = ? AND model_key = ? AND issue_no = ?
+            ORDER BY fetched_at ASC, id ASC LIMIT 1
+            ''',
+            (source_id, str(model_key or '').strip(), str(issue_no))
+        )
+        row = cursor.fetchone()
+        result = dict(row) if row else None
+        conn.close()
+        return result
+
+    def count_predictors_bound_to_external_source(self, source_id: int) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM predictors WHERE external_source_id = ? AND engine_type = 'external'",
+            (source_id,)
+        )
+        count = int(cursor.fetchone()['n'])
+        conn.close()
+        return count
+
+    def count_external_predictions_by_source(self, source_id: int) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) AS n FROM external_predictions WHERE source_id = ?', (source_id,))
+        count = int(cursor.fetchone()['n'])
+        conn.close()
+        return count
+
+    def cleanup_external_batches_before(self, cutoff_iso: str) -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM external_prediction_batches WHERE fetched_at < ?', (cutoff_iso,))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+
+    # ============ 方案导出授权 Token ============
+
+    def create_predictor_export_token(self, predictor_id: int, token_hash: str, token_prefix: str, label: str = '') -> int:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO predictor_export_tokens (predictor_id, token_hash, token_prefix, label) VALUES (?, ?, ?, ?)',
+            (predictor_id, token_hash, token_prefix, str(label or '').strip())
+        )
+        token_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return token_id
+
+    def list_predictor_export_tokens(self, predictor_id: int) -> list[dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT id, predictor_id, token_prefix, label, created_at, last_used_at, revoked_at
+            FROM predictor_export_tokens
+            WHERE predictor_id = ?
+            ORDER BY created_at DESC, id DESC
+            ''',
+            (predictor_id,)
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def find_predictor_export_token(self, token_hash: str) -> dict | None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM predictor_export_tokens WHERE token_hash = ? LIMIT 1', (token_hash,))
+        row = cursor.fetchone()
+        result = dict(row) if row else None
+        conn.close()
+        return result
+
+    def revoke_predictor_export_token(self, predictor_id: int, token_id: int) -> bool:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE predictor_export_tokens SET revoked_at = CURRENT_TIMESTAMP WHERE id = ? AND predictor_id = ? AND revoked_at IS NULL',
+            (token_id, predictor_id)
+        )
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return affected > 0
+
+    def touch_predictor_export_token(self, token_id: int, used_at: str):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE predictor_export_tokens SET last_used_at = ? WHERE id = ?', (used_at, token_id))
+        conn.commit()
+        conn.close()
+
+    def delete_predictor_export_tokens(self, predictor_id: int):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM predictor_export_tokens WHERE predictor_id = ?', (predictor_id,))
+        conn.commit()
+        conn.close()
 
     def _prepare_prediction(self, row) -> dict:
         data = dict(row)

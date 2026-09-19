@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -31,6 +33,9 @@ from lotteries.registry import (
 from services.jingcai_football_service import JingcaiFootballService
 from services.algorithm_backtester import backtest_jingcai_user_algorithm
 from services.algorithm_chat_service import generate_algorithm_draft
+from services import external_prediction_service
+from services.external_sources import get_plugin as get_external_source_plugin
+from services.external_sources import list_plugins as list_external_source_plugins
 from services.consensus_analysis_service import (
     build_consensus_analysis,
     build_export_envelope,
@@ -85,7 +90,7 @@ from utils.predictor_engine import (
     resolve_execution_description,
     resolve_execution_label
 )
-from utils.timezone import get_current_beijing_time_str, utc_to_beijing
+from utils.timezone import get_current_beijing_time_str, get_current_utc_time_str, utc_to_beijing
 from utils.logger import get_logger
 
 
@@ -139,10 +144,14 @@ _app_initialized = False
 _scheduler_started = False
 _jingcai_backfill_worker_started = False
 _notification_worker_started = False
+_external_collector_started = False
+_external_collector_stop_event = threading.Event()
+_external_collector_thread = None
 _scheduler_owner_id = f'{os.getpid()}-{uuid.uuid4().hex}'
 AUTO_PREDICTION_SCHEDULER = 'lottery-auto-prediction'
 JINGCAI_HISTORY_BACKFILL_SCHEDULER = 'jingcai-history-backfill'
 NOTIFICATION_DELIVERY_SCHEDULER = 'notification-delivery-worker'
+EXTERNAL_SOURCE_COLLECTOR_SCHEDULER = 'external-source-collector'
 NOTIFICATION_CHANNEL_LABELS = {
     'telegram': 'Telegram'
 }
@@ -186,6 +195,7 @@ def after_request(response):
 
 def initialize_application():
     global _app_initialized, _scheduler_started, _jingcai_backfill_worker_started, _notification_worker_started
+    global _external_collector_started, _external_collector_thread
 
     with _init_lock:
         if not _app_initialized:
@@ -210,6 +220,14 @@ def initialize_application():
             notification_thread = threading.Thread(target=notification_delivery_loop, daemon=True)
             notification_thread.start()
             _notification_worker_started = True
+
+        if (
+            bool(getattr(config, 'EXTERNAL_COLLECTOR_ENABLED', True))
+            and not _external_collector_started
+        ):
+            _external_collector_thread = threading.Thread(target=external_source_loop, daemon=True)
+            _external_collector_thread.start()
+            _external_collector_started = True
 
 
 def _log_runtime_event(level: str, event: str, **fields):
@@ -322,6 +340,108 @@ def jingcai_history_backfill_loop():
                 )
             )
             time.sleep(60)
+
+
+def _run_external_source_collect_cycle() -> dict:
+    """对每个启用来源按各自间隔执行一次采集（含失败退避）。"""
+    summary = {'checked': 0, 'collected': 0, 'failed': 0}
+    for source in db.list_external_sources():
+        if not source.get('enabled'):
+            continue
+        summary['checked'] += 1
+        try:
+            interval_seconds = max(
+                int(getattr(config, 'EXTERNAL_SOURCE_MIN_INTERVAL_SECONDS', 30)),
+                int(source.get('interval_seconds') or config.EXTERNAL_SOURCE_DEFAULT_INTERVAL_SECONDS)
+            )
+            failures = int(source.get('consecutive_failures') or 0)
+            backoff_seconds = min(
+                int(getattr(config, 'EXTERNAL_SOURCE_FAILURE_BACKOFF_MAX_SECONDS', 300)),
+                int(getattr(config, 'EXTERNAL_SOURCE_MIN_INTERVAL_SECONDS', 30)) * (2 ** min(failures, 5))
+            )
+            effective_interval = interval_seconds if failures == 0 else max(interval_seconds, backoff_seconds)
+            last_attempt = external_prediction_service.parse_time_or_none(source.get('last_attempt_at'))
+            if last_attempt is not None:
+                now_utc = external_prediction_service.parse_time_or_none(get_current_utc_time_str())
+                elapsed = now_utc - last_attempt
+                if elapsed.total_seconds() < effective_interval:
+                    continue
+            result = external_prediction_service.collect_source(db, source)
+            if result.get('ok'):
+                summary['collected'] += 1
+            else:
+                summary['failed'] += 1
+                _log_runtime_event(
+                    'warning',
+                    'external_source_collect_failed',
+                    source_id=source['id'],
+                    source_name=source.get('name'),
+                    error=result.get('error')
+                )
+        except Exception as exc:
+            summary['failed'] += 1
+            _log_runtime_event(
+                'warning',
+                'external_source_collect_error',
+                source_id=source.get('id'),
+                error=str(exc)
+            )
+    return summary
+
+
+def stop_external_source_collector():
+    """通知外部采集线程退出（供测试与优雅停机使用）。"""
+    _external_collector_stop_event.set()
+
+
+def external_source_loop():
+    """外部预测源共享采集线程：与 AI 预测请求隔离，用户页面刷新不触发外部请求。"""
+    _log_runtime_event(
+        'info',
+        'external_source_loop_started',
+        process_id=os.getpid(),
+        scheduler_name=EXTERNAL_SOURCE_COLLECTOR_SCHEDULER
+    )
+    last_cleanup_at = 0.0
+    poll_interval = max(5, int(getattr(config, 'EXTERNAL_COLLECTOR_POLL_INTERVAL', 5)))
+    while not _external_collector_stop_event.is_set():
+        try:
+            lock_result = db.try_acquire_scheduler_with_details(
+                EXTERNAL_SOURCE_COLLECTOR_SCHEDULER,
+                _scheduler_owner_id,
+                stale_after_seconds=max(poll_interval * 6, 60)
+            )
+            if lock_result.get('acquired'):
+                db.heartbeat_scheduler(EXTERNAL_SOURCE_COLLECTOR_SCHEDULER, _scheduler_owner_id)
+                summary = _run_external_source_collect_cycle()
+                if summary.get('checked'):
+                    db.heartbeat_scheduler(EXTERNAL_SOURCE_COLLECTOR_SCHEDULER, _scheduler_owner_id)
+                now_monotonic = time.monotonic()
+                if now_monotonic - last_cleanup_at >= 3600:
+                    try:
+                        cleaned = external_prediction_service.cleanup_expired_batches(db)
+                        if cleaned:
+                            _log_runtime_event('info', 'external_source_batches_cleaned', deleted=cleaned)
+                    except Exception as exc:
+                        _log_runtime_event('warning', 'external_source_cleanup_failed', error=str(exc))
+                    finally:
+                        last_cleanup_at = now_monotonic
+            _external_collector_stop_event.wait(poll_interval)
+        except Exception as exc:
+            runtime_logger.exception(
+                json.dumps(
+                    {
+                        'event': 'external_source_loop_error',
+                        'time_beijing': get_current_beijing_time_str(),
+                        'scheduler_name': EXTERNAL_SOURCE_COLLECTOR_SCHEDULER,
+                        'owner_id': _scheduler_owner_id,
+                        'error': str(exc)
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True
+                )
+            )
+            _external_collector_stop_event.wait(30)
 
 
 def prediction_loop():
@@ -651,7 +771,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'system_prompt': predictor.get('system_prompt') or '',
         'data_injection_mode': predictor.get('data_injection_mode') or 'summary',
         'user_algorithm_fallback_strategy': predictor.get('user_algorithm_fallback_strategy') or 'fail',
-        'prediction_targets': normalize_prediction_targets(lottery_type, predictor.get('prediction_targets')),
+        'prediction_targets': _serialize_prediction_targets(lottery_type, engine_type, predictor.get('prediction_targets')),
         'target_options': lottery_definition.to_catalog_item()['target_options'],
         'primary_metric_options': lottery_definition.to_catalog_item()['primary_metric_options'],
         'capabilities': lottery_definition.to_catalog_item()['capabilities'],
@@ -680,9 +800,53 @@ def _serialize_predictor(predictor: dict) -> dict:
         'has_api_key': bool(predictor.get('api_key')),
         'public_path': public_links['path'],
         'public_url': public_links['url'],
-        'public_page_available': _is_predictor_publicly_available(predictor)
+        'public_page_available': _is_predictor_publicly_available(predictor),
+        **_serialize_external_binding(predictor)
     }
     return data
+
+
+def _serialize_external_binding(predictor: dict) -> dict:
+    """外部预测方案的绑定信息与状态（普通用户可见；不含连接配置）。"""
+    engine_type = normalize_engine_type(predictor.get('engine_type'))
+    if engine_type != 'external':
+        return {'external_binding': None}
+    source_id = int(predictor.get('external_source_id') or 0)
+    model_key = str(predictor.get('external_model_key') or '').strip()
+    source = db.get_external_source(source_id) if source_id else None
+    model = db.get_external_model(source_id, model_key) if source_id and model_key else None
+    binding = {
+        'external_source_id': source_id,
+        'external_model_key': model_key,
+        'source_name': (source or {}).get('name') or '',
+        'model_name': (model or {}).get('display_name') or model_key,
+        'status': 'ok',
+        'status_message': ''
+    }
+    if not source:
+        binding['status'] = 'source_missing'
+        binding['status_message'] = '绑定的外部来源不存在，请联系管理员。'
+    elif not source.get('enabled'):
+        binding['status'] = 'source_disabled'
+        binding['status_message'] = '外部来源已停用，等待管理员恢复后才会产生新预测。'
+    elif not model:
+        binding['status'] = 'model_unavailable'
+        binding['status_message'] = '绑定的模型未收录或已下架，可改绑其他模型。'
+    elif not model.get('enabled'):
+        binding['status'] = 'model_unavailable'
+        binding['status_message'] = '该模型未开放，可改绑其他模型或联系管理员。'
+    return {
+        'external_binding': binding,
+        'external_source_name': binding['source_name'],
+        'external_model_name': binding['model_name']
+    }
+
+
+def _serialize_prediction_targets(lottery_type: str, engine_type: str, raw_targets) -> list[str]:
+    normalized = normalize_prediction_targets(lottery_type, raw_targets)
+    if normalize_engine_type(engine_type) == 'external':
+        normalized = [target for target in normalized if target in ('big_small', 'odd_even', 'combo')]
+    return normalized
 
 
 def _serialize_prediction(prediction: dict, include_raw: bool = True) -> dict:
@@ -840,7 +1004,13 @@ def _build_pc28_execution_signal_view(predictor: dict, prediction: dict) -> dict
     if normalize_lottery_type(prediction.get('lottery_type')) != 'pc28':
         return None
 
-    published_at = prediction.get('updated_at') or prediction.get('created_at')
+    is_external_row = external_prediction_service.is_external_prediction_row(prediction)
+    # 外部方案以本地采集时间为发布时间：同一期号内稳定，轮询不会制造重复信号
+    published_at = (
+        prediction.get('external_fetched_at')
+        or prediction.get('updated_at')
+        or prediction.get('created_at')
+    ) if is_external_row else (prediction.get('updated_at') or prediction.get('created_at'))
     predictor_name = str(predictor.get('name') or '').strip() or f"predictor-{predictor.get('id')}"
     share_level = predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')
 
@@ -878,16 +1048,30 @@ def _build_pc28_execution_signal_view(predictor: dict, prediction: dict) -> dict
 
     issue_no = str(prediction.get('issue_no') or '').strip()
     signal_id = f"pc28-predictor-{predictor.get('id')}-{issue_no}"
+    source_ref = {
+        'platform': 'AITradingSimulator',
+        'predictor_id': predictor.get('id'),
+        'predictor_name': predictor_name,
+        'share_level': share_level
+    }
+    if is_external_row:
+        external_source = db.get_external_source(int(prediction.get('external_source_id') or 0))
+        external_model = db.get_external_model(
+            int(prediction.get('external_source_id') or 0),
+            str(prediction.get('external_model_key') or '')
+        ) if prediction.get('external_source_id') else None
+        source_ref.update({
+            'engine_type': 'external',
+            'source_name': (external_source or {}).get('name') or '',
+            'model_key': str(prediction.get('external_model_key') or ''),
+            'model_name': (external_model or {}).get('display_name') or str(prediction.get('external_model_key') or ''),
+            'fetched_at': prediction.get('external_fetched_at')
+        })
     return {
         'schema_version': '1.0',
         'signal_id': signal_id,
         'source_type': 'ai_trading_simulator',
-        'source_ref': {
-            'platform': 'AITradingSimulator',
-            'predictor_id': predictor.get('id'),
-            'predictor_name': predictor_name,
-            'share_level': share_level
-        },
+        'source_ref': source_ref,
         'lottery_type': 'pc28',
         'issue_no': issue_no,
         'published_at': published_at,
@@ -901,7 +1085,12 @@ def _build_pc28_analysis_signal_view(predictor: dict, prediction: dict) -> dict 
     if normalize_lottery_type(prediction.get('lottery_type')) != 'pc28':
         return None
 
-    published_at = prediction.get('updated_at') or prediction.get('created_at')
+    is_external_row = external_prediction_service.is_external_prediction_row(prediction)
+    published_at = (
+        prediction.get('external_fetched_at')
+        or prediction.get('updated_at')
+        or prediction.get('created_at')
+    ) if is_external_row else (prediction.get('updated_at') or prediction.get('created_at'))
     predictor_name = str(predictor.get('name') or '').strip() or f"predictor-{predictor.get('id')}"
     issue_no = str(prediction.get('issue_no') or '').strip()
     signal_id = f"pc28-predictor-{predictor.get('id')}-{issue_no}"
@@ -1399,6 +1588,21 @@ def _build_admin_dashboard_data() -> dict:
         except Exception:
             backfill_scheduler_data['seconds_since_heartbeat'] = None
 
+    external_scheduler = db.get_scheduler_snapshot(EXTERNAL_SOURCE_COLLECTOR_SCHEDULER)
+    external_scheduler_data = {
+        'name': EXTERNAL_SOURCE_COLLECTOR_SCHEDULER,
+        'enabled': bool(getattr(config, 'EXTERNAL_COLLECTOR_ENABLED', True)),
+        'owner_id': external_scheduler.get('owner_id') if external_scheduler else None,
+        'heartbeat_at': utc_to_beijing(external_scheduler['heartbeat_at']) if external_scheduler and external_scheduler.get('heartbeat_at') else None,
+        'seconds_since_heartbeat': None
+    }
+    if external_scheduler and external_scheduler.get('heartbeat_at'):
+        try:
+            heartbeat_at = datetime.strptime(str(external_scheduler['heartbeat_at']), '%Y-%m-%d %H:%M:%S')
+            external_scheduler_data['seconds_since_heartbeat'] = max(0, int((datetime.utcnow() - heartbeat_at).total_seconds()))
+        except Exception:
+            external_scheduler_data['seconds_since_heartbeat'] = None
+
     return {
         'summary': {
             'total_users': int(summary.get('total_users') or 0),
@@ -1426,8 +1630,63 @@ def _build_admin_dashboard_data() -> dict:
         },
         'users': [_serialize_admin_user(item) for item in users],
         'predictors': [_serialize_admin_predictor(item) for item in predictors],
-        'recent_failures': [_serialize_admin_failure(item) for item in failed_predictions]
+        'recent_failures': [_serialize_admin_failure(item) for item in failed_predictions],
+        'external_sources': {
+            'scheduler': external_scheduler_data,
+            'sources': [_serialize_external_source(item) for item in db.list_external_sources()]
+        }
     }
+
+
+def _serialize_external_source(source: dict) -> dict:
+    source_id = int(source.get('id') or 0)
+    models = db.list_external_models(source_id)
+    enabled_models = [model for model in models if model.get('enabled')]
+    recent_batches = db.get_external_batches(source_id, limit=5)
+    status = 'disabled'
+    if source.get('enabled'):
+        if source.get('last_error') and (not source.get('last_success_at') or str(source.get('last_error_at') or '') > str(source.get('last_success_at') or '')):
+            status = 'error'
+        else:
+            status = 'ok'
+    return {
+        'id': source_id,
+        'plugin_key': source.get('plugin_key'),
+        'plugin_display_name': _external_plugin_display_name(source.get('plugin_key')),
+        'name': source.get('name'),
+        'base_url': source.get('base_url'),
+        'enabled': bool(source.get('enabled')),
+        'interval_seconds': int(source.get('interval_seconds') or 0),
+        'status': status,
+        'last_attempt_at': utc_to_beijing(source.get('last_attempt_at')) if source.get('last_attempt_at') else None,
+        'last_success_at': utc_to_beijing(source.get('last_success_at')) if source.get('last_success_at') else None,
+        'last_error': source.get('last_error'),
+        'last_error_at': utc_to_beijing(source.get('last_error_at')) if source.get('last_error_at') else None,
+        'last_target_issue': source.get('last_target_issue'),
+        'last_model_count': source.get('last_model_count'),
+        'model_total': len(models),
+        'model_enabled_count': len(enabled_models),
+        'adopted_prediction_count': db.count_external_predictions_by_source(source_id),
+        'bound_predictor_count': db.count_predictors_bound_to_external_source(source_id),
+        'recent_batches': [
+            {
+                'id': batch.get('id'),
+                'target_issue_no': batch.get('target_issue_no'),
+                'batch_version': batch.get('batch_version'),
+                'fetched_at': utc_to_beijing(batch.get('fetched_at')) if batch.get('fetched_at') else None,
+                'model_count': batch.get('model_count'),
+                'invalid_model_count': batch.get('invalid_model_count')
+            }
+            for batch in recent_batches
+        ]
+    }
+
+
+def _external_plugin_display_name(plugin_key) -> str:
+    for plugin in list_external_source_plugins():
+        if plugin.get('plugin_key') == str(plugin_key or '').strip():
+            return plugin.get('display_name') or plugin_key
+    return str(plugin_key or '')
 
 
 def _serialize_bet_profile(item: dict) -> dict:
@@ -2092,6 +2351,42 @@ def _validate_predictor_payload(
         data.get('prediction_targets', existing_predictor.get('prediction_targets') if existing_predictor else None)
     )
 
+    external_source_id = None
+    external_model_key = ''
+    if engine_type == 'external':
+        if lottery_type != 'pc28':
+            errors.append('外部预测目前仅支持加拿大28')
+        fallback_external_source_id = existing_predictor.get('external_source_id') if existing_predictor else None
+        fallback_external_model_key = existing_predictor.get('external_model_key') if existing_predictor else ''
+        raw_external_source_id = data.get('external_source_id', fallback_external_source_id)
+        try:
+            external_source_id = int(raw_external_source_id) if raw_external_source_id not in (None, '') else None
+        except (TypeError, ValueError):
+            external_source_id = None
+        external_model_key = str(data.get('external_model_key') or fallback_external_model_key or '').strip()
+        if external_source_id is None:
+            errors.append('请选择外部预测来源')
+        if not external_model_key:
+            errors.append('请选择外部预测模型')
+        if external_source_id is not None and external_model_key:
+            external_source = db.get_external_source(external_source_id)
+            if not external_source:
+                errors.append('外部预测来源不存在')
+            else:
+                if not external_source.get('enabled'):
+                    errors.append(f"外部预测来源「{external_source.get('name')}」已停用，请联系管理员")
+                external_model = db.get_external_model(external_source_id, external_model_key)
+                if not external_model:
+                    errors.append('外部预测模型不存在或尚未收录')
+                elif not external_model.get('enabled'):
+                    errors.append(f"外部预测模型「{external_model.get('display_name')}」未开放，请联系管理员")
+        prediction_targets = [
+            target for target in prediction_targets
+            if target in ('big_small', 'odd_even', 'combo')
+        ]
+        if not prediction_targets:
+            errors.append('外部预测至少选择一个目标：大小 / 单双 / 组合')
+
     if not name:
         errors.append('方案名称不能为空')
 
@@ -2167,7 +2462,9 @@ def _validate_predictor_payload(
         'history_window': history_window,
         'temperature': temperature,
         'enabled': enabled,
-        'lottery_type': lottery_type
+        'lottery_type': lottery_type,
+        'external_source_id': external_source_id,
+        'external_model_key': external_model_key
     }
     return payload, errors
 
@@ -2889,6 +3186,8 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
     fallback_injection_mode = existing.get('data_injection_mode') if existing else 'summary'
     fallback_targets = existing.get('prediction_targets') if existing else None
     fallback_history_window = existing.get('history_window') if existing else config.DEFAULT_HISTORY_WINDOW
+    fallback_external_source_id = existing.get('external_source_id') if existing else None
+    fallback_external_model_key = existing.get('external_model_key') if existing else ''
 
     history_window = data.get('history_window', fallback_history_window)
     try:
@@ -2918,7 +3217,9 @@ def _resolve_predictor_form_context(user_id: int, data: dict) -> tuple[dict | No
         'system_prompt': str(data.get('system_prompt') or fallback_prompt).strip(),
         'data_injection_mode': normalize_injection_mode(data.get('data_injection_mode') or fallback_injection_mode),
         'prediction_targets': normalize_prediction_targets(lottery_type, data.get('prediction_targets', fallback_targets)),
-        'history_window': history_window
+        'history_window': history_window,
+        'external_source_id': data.get('external_source_id', fallback_external_source_id),
+        'external_model_key': str(data.get('external_model_key') or fallback_external_model_key or '').strip()
     }
     if resolved['engine_type'] == 'machine' and is_user_algorithm_key(resolved['algorithm_key']):
         user_algorithm_id = get_user_algorithm_id(resolved['algorithm_key'])
@@ -3938,6 +4239,243 @@ def resume_admin_predictor_auto_pause(predictor_id: int):
     })
 
 
+# ============ 管理端：外部预测源 ============
+
+EXTERNAL_SOURCE_ALLOWED_INTERVAL_RANGE = (30, 3600)
+
+
+def _normalize_external_source_interval(value) -> int:
+    try:
+        interval = int(value)
+    except (TypeError, ValueError):
+        interval = int(getattr(config, 'EXTERNAL_SOURCE_DEFAULT_INTERVAL_SECONDS', 60))
+    return max(EXTERNAL_SOURCE_ALLOWED_INTERVAL_RANGE[0], min(interval, EXTERNAL_SOURCE_ALLOWED_INTERVAL_RANGE[1]))
+
+
+@app.route('/api/admin/external-sources', methods=['GET'])
+@admin_required
+def list_admin_external_sources():
+    return jsonify({
+        'sources': [_serialize_external_source(item) for item in db.list_external_sources()],
+        'plugins': list_external_source_plugins()
+    })
+
+
+@app.route('/api/admin/external-sources', methods=['POST'])
+@admin_required
+def create_admin_external_source():
+    data = request.get_json() or {}
+    plugin_key = str(data.get('plugin_key') or '').strip()
+    name = str(data.get('name') or '').strip()
+    base_url = str(data.get('base_url') or '').strip().rstrip('/')
+    interval_seconds = _normalize_external_source_interval(data.get('interval_seconds'))
+    enabled = bool(data.get('enabled'))
+
+    if not plugin_key:
+        return jsonify({'error': '请选择接入插件'}), 400
+    try:
+        plugin = get_external_source_plugin(plugin_key)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 400
+    if not name:
+        name = plugin.display_name
+    if not base_url:
+        base_url = getattr(config, 'EXTERNAL_SOURCE_JND_DEFAULT_BASE_URL', '') if plugin_key == 'jnd28' else ''
+    if not base_url:
+        return jsonify({'error': '来源基址不能为空'}), 400
+    if not plugin.validate_base_url(base_url):
+        return jsonify({'error': '来源基址必须使用 HTTPS'}), 400
+
+    source_id = db.create_external_source(
+        plugin_key=plugin.plugin_key,
+        name=name,
+        base_url=base_url,
+        interval_seconds=interval_seconds,
+        enabled=enabled
+    )
+    return jsonify({
+        'message': '外部预测来源已创建，默认停用；请先测试连接并开放模型后再启用。',
+        'source': _serialize_external_source(db.get_external_source(source_id))
+    }), 201
+
+
+@app.route('/api/admin/external-sources/<int:source_id>', methods=['PUT'])
+@admin_required
+def update_admin_external_source(source_id: int):
+    source = db.get_external_source(source_id)
+    if not source:
+        return jsonify({'error': '外部预测来源不存在'}), 404
+    data = request.get_json() or {}
+    plugin = get_external_source_plugin(source.get('plugin_key'))
+
+    fields = {}
+    if 'name' in data:
+        name = str(data.get('name') or '').strip()
+        if not name:
+            return jsonify({'error': '来源名称不能为空'}), 400
+        fields['name'] = name
+    if 'base_url' in data:
+        base_url = str(data.get('base_url') or '').strip().rstrip('/')
+        if not base_url or not plugin.validate_base_url(base_url):
+            return jsonify({'error': '来源基址必须使用 HTTPS'}), 400
+        fields['base_url'] = base_url
+    if 'interval_seconds' in data:
+        fields['interval_seconds'] = _normalize_external_source_interval(data.get('interval_seconds'))
+    if 'enabled' in data:
+        fields['enabled'] = bool(data.get('enabled'))
+    db.update_external_source(source_id, fields)
+    return jsonify({
+        'message': '外部预测来源已更新',
+        'source': _serialize_external_source(db.get_external_source(source_id))
+    })
+
+
+@app.route('/api/admin/external-sources/<int:source_id>', methods=['DELETE'])
+@admin_required
+def delete_admin_external_source(source_id: int):
+    source = db.get_external_source(source_id)
+    if not source:
+        return jsonify({'error': '外部预测来源不存在'}), 404
+    bound_count = db.count_predictors_bound_to_external_source(source_id)
+    db.delete_external_source(source_id)
+    return jsonify({
+        'message': (
+            f'来源「{source.get("name")}」已删除：模型目录、采集批次与共享快照一并清除。'
+            f'{f"绑定的 {bound_count} 个用户方案将停止产出新预测（历史记录与来源标识保留）。" if bound_count else ""}'
+        ),
+        'affected_predictors': bound_count
+    })
+
+
+@app.route('/api/admin/external-sources/<int:source_id>/test', methods=['POST'])
+@admin_required
+def test_admin_external_source(source_id: int):
+    source = db.get_external_source(source_id)
+    if not source:
+        return jsonify({'error': '外部预测来源不存在'}), 404
+    started = time.monotonic()
+    try:
+        plugin = get_external_source_plugin(source.get('plugin_key'))
+        snapshot = plugin.fetch_snapshot(source.get('base_url'))
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc), 'elapsed_ms': int((time.monotonic() - started) * 1000)}), 200
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    return jsonify({
+        'ok': True,
+        'target_issue_no': snapshot.target_issue_no,
+        'upstream_published_at': snapshot.upstream_published_at,
+        'model_count': len(snapshot.models),
+        'invalid_model_count': snapshot.invalid_model_count,
+        'elapsed_ms': elapsed_ms
+    })
+
+
+@app.route('/api/admin/external-sources/<int:source_id>/refresh-catalog', methods=['POST'])
+@admin_required
+def refresh_admin_external_source_catalog(source_id: int):
+    source = db.get_external_source(source_id)
+    if not source:
+        return jsonify({'error': '外部预测来源不存在'}), 404
+    try:
+        result = external_prediction_service.refresh_catalog(db, source)
+    except Exception as exc:
+        return jsonify({'error': f'刷新目录失败：{exc}'}), 502
+    if not result.get('ok'):
+        return jsonify({'error': result.get('error') or '刷新目录失败'}), 502
+    return jsonify({
+        'message': "目录已刷新：新增 {added} 个模型，共 {total} 个。新模型默认不开放，请在模型目录中手动开放。".format(
+            added=(result.get('catalog') or {}).get('added', 0),
+            total=(result.get('catalog') or {}).get('total', 0)
+        ),
+        'target_issue_no': result.get('target_issue_no'),
+        'model_count': result.get('model_count'),
+        'invalid_model_count': result.get('invalid_model_count'),
+        'catalog': result.get('catalog'),
+        'source': _serialize_external_source(db.get_external_source(source_id))
+    })
+
+
+@app.route('/api/admin/external-sources/<int:source_id>/models', methods=['GET'])
+@admin_required
+def list_admin_external_source_models(source_id: int):
+    source = db.get_external_source(source_id)
+    if not source:
+        return jsonify({'error': '外部预测来源不存在'}), 404
+    models = db.list_external_models(source_id)
+    now_iso = get_current_utc_time_str()
+    def _seen_recently(model):
+        last_seen = external_prediction_service.parse_time_or_none(model.get('last_seen_at'))
+        if not last_seen:
+            return False
+        now_utc = external_prediction_service.parse_time_or_none(get_current_utc_time_str())
+        return (now_utc - last_seen).total_seconds() <= 6 * 3600
+    return jsonify({
+        'models': [
+            {
+                'id': model.get('id'),
+                'model_key': model.get('model_key'),
+                'display_name': model.get('display_name'),
+                'enabled': bool(model.get('enabled')),
+                'supported_targets': model.get('supported_targets'),
+                'first_seen_at': utc_to_beijing(model.get('first_seen_at')) if model.get('first_seen_at') else None,
+                'last_seen_at': utc_to_beijing(model.get('last_seen_at')) if model.get('last_seen_at') else None,
+                'seen_recently': _seen_recently(model)
+            }
+            for model in models
+        ],
+        'server_time': now_iso
+    })
+
+
+@app.route('/api/admin/external-sources/<int:source_id>/models', methods=['PUT'])
+@admin_required
+def update_admin_external_source_models(source_id: int):
+    source = db.get_external_source(source_id)
+    if not source:
+        return jsonify({'error': '外部预测来源不存在'}), 404
+    data = request.get_json() or {}
+    enabled = data.get('enabled')
+    if enabled is None:
+        return jsonify({'error': '缺少 enabled 字段'}), 400
+    model_keys = data.get('model_keys')
+    if model_keys == 'all':
+        model_keys = [model['model_key'] for model in db.list_external_models(source_id)]
+    if not isinstance(model_keys, list) or not model_keys:
+        return jsonify({'error': '请提供要更新的模型列表'}), 400
+    affected = db.set_external_models_enabled(source_id, model_keys, bool(enabled))
+    return jsonify({
+        'message': f'已{"开放" if enabled else "关闭"} {affected} 个模型',
+        'source': _serialize_external_source(db.get_external_source(source_id))
+    })
+
+
+@app.route('/api/admin/external-sources/<int:source_id>/batches', methods=['GET'])
+@admin_required
+def list_admin_external_source_batches(source_id: int):
+    source = db.get_external_source(source_id)
+    if not source:
+        return jsonify({'error': '外部预测来源不存在'}), 404
+    try:
+        limit = max(1, min(int(request.args.get('limit', 10)), 50))
+    except (TypeError, ValueError):
+        limit = 10
+    batches = db.get_external_batches(source_id, limit=limit)
+    return jsonify({
+        'batches': [
+            {
+                'id': batch.get('id'),
+                'target_issue_no': batch.get('target_issue_no'),
+                'batch_version': batch.get('batch_version'),
+                'fetched_at': utc_to_beijing(batch.get('fetched_at')) if batch.get('fetched_at') else None,
+                'upstream_published_at': batch.get('upstream_published_at'),
+                'model_count': batch.get('model_count'),
+                'invalid_model_count': batch.get('invalid_model_count')
+            }
+            for batch in batches
+        ]
+    })
+
+
 @app.route('/api/user-algorithms', methods=['GET'])
 @login_required
 def get_user_algorithms():
@@ -4611,7 +5149,9 @@ def create_predictor():
         lottery_type=payload['lottery_type'],
         engine_type=payload['engine_type'],
         algorithm_key=payload['algorithm_key'],
-        user_algorithm_fallback_strategy=payload['user_algorithm_fallback_strategy']
+        user_algorithm_fallback_strategy=payload['user_algorithm_fallback_strategy'],
+        external_source_id=payload['external_source_id'],
+        external_model_key=payload['external_model_key']
     )
 
     predictor = db.get_predictor(predictor_id, include_secret=True)
@@ -4637,6 +5177,20 @@ def test_predictor():
     model_name = resolved['model_name']
     api_mode = resolved['api_mode']
     engine_type = normalize_engine_type(resolved.get('engine_type'))
+
+    if engine_type == 'external':
+        binding = _serialize_external_binding({
+            **resolved,
+            'engine_type': 'external',
+            'external_source_id': resolved.get('external_source_id'),
+            'external_model_key': resolved.get('external_model_key')
+        }).get('external_binding') or {}
+        if binding.get('status') == 'ok':
+            return jsonify({
+                'success': True,
+                'message': f"外部预测来源「{binding.get('source_name')}」可用，模型「{binding.get('model_name')}」已开放。"
+            })
+        return jsonify({'error': binding.get('status_message') or '外部预测绑定不可用'}), 400
 
     if engine_type == 'machine':
         user_algorithm = resolved.get('user_algorithm') if is_user_algorithm_key(resolved.get('algorithm_key')) else None
@@ -4894,7 +5448,9 @@ def update_predictor(predictor_id: int):
         'prediction_targets': payload['prediction_targets'],
         'history_window': payload['history_window'],
         'temperature': payload['temperature'],
-        'enabled': payload['enabled']
+        'enabled': payload['enabled'],
+        'external_source_id': payload['external_source_id'],
+        'external_model_key': payload['external_model_key']
     }
     db.update_predictor(predictor_id, updates)
 
@@ -5089,6 +5645,129 @@ def get_jingcai_data_health():
     return jsonify(db.build_jingcai_data_health())
 
 
+def _extract_export_token() -> str:
+    """从请求头提取方案导出 Token：Authorization: Bearer <token> 或 X-Export-Token: <token>。"""
+    auth_header = str(request.headers.get('Authorization') or '')
+    if auth_header.lower().startswith('bearer '):
+        return auth_header[7:].strip()
+    return str(request.headers.get('X-Export-Token') or '').strip()
+
+
+def _hash_export_token(token: str) -> str:
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def _validate_predictor_export_token(predictor_id: int, token: str) -> bool:
+    if not token:
+        return False
+    record = db.find_predictor_export_token(_hash_export_token(token))
+    if not record or record.get('revoked_at'):
+        return False
+    if int(record.get('predictor_id') or 0) != int(predictor_id):
+        return False
+    db.touch_predictor_export_token(int(record['id']), get_current_utc_time_str())
+    return True
+
+
+def _resolve_signal_export_access(predictor: dict) -> dict:
+    """决定当前访问者能否读取该方案的信号导出。
+
+    - 所有者/管理员会话，或本方案的有效导出 Token：完整读取。
+    - 匿名：仅显式公开分享（share_level records/analysis）可读，且不返回原始响应与提示词。
+    """
+    token = _extract_export_token()
+    if token:
+        if _validate_predictor_export_token(predictor['id'], token):
+            return {'allowed': True, 'include_raw': True, 'via': 'token'}
+        return {'allowed': False, 'include_raw': False, 'via': 'token_invalid'}
+    user_id = get_current_user_id() if has_request_context() else None
+    if user_id and (int(user_id) == int(predictor.get('user_id') or 0) or get_current_user_is_admin()):
+        return {'allowed': True, 'include_raw': True, 'via': 'session'}
+    share_level = predictor.get('share_level') or ('records' if predictor.get('share_predictions') else 'stats_only')
+    if share_level in {'records', 'analysis'}:
+        return {'allowed': True, 'include_raw': False, 'via': 'anonymous'}
+    return {'allowed': False, 'include_raw': False, 'via': 'anonymous'}
+
+
+def _serialize_export_token_record(record: dict) -> dict:
+    return {
+        'id': record.get('id'),
+        'token_prefix': record.get('token_prefix'),
+        'label': record.get('label'),
+        'created_at': utc_to_beijing(record.get('created_at')) if record.get('created_at') else None,
+        'last_used_at': utc_to_beijing(record.get('last_used_at')) if record.get('last_used_at') else None,
+        'revoked': bool(record.get('revoked_at'))
+    }
+
+
+@app.route('/api/external/options', methods=['GET'])
+@login_required
+def list_external_source_options():
+    """方案表单可用的外部来源与开放模型（不含连接配置）。"""
+    options = []
+    for source in db.list_external_sources():
+        if not source.get('enabled'):
+            continue
+        models = [
+            {
+                'model_key': model.get('model_key'),
+                'display_name': model.get('display_name'),
+                'supported_targets': model.get('supported_targets')
+            }
+            for model in db.list_external_models(int(source['id']), enabled_only=True)
+        ]
+        if not models:
+            continue
+        options.append({
+            'source_id': int(source['id']),
+            'name': source.get('name'),
+            'plugin_key': source.get('plugin_key'),
+            'models': models
+        })
+    return jsonify({'sources': options})
+
+
+@app.route('/api/predictors/<int:predictor_id>/export-tokens', methods=['GET'])
+@login_required
+def list_predictor_export_tokens(predictor_id: int):
+    if not db.predictor_exists_for_user(predictor_id, get_current_user_id()) and not get_current_user_is_admin():
+        return jsonify({'error': '无权操作此预测方案'}), 403
+    return jsonify({'tokens': [_serialize_export_token_record(item) for item in db.list_predictor_export_tokens(predictor_id)]})
+
+
+@app.route('/api/predictors/<int:predictor_id>/export-tokens', methods=['POST'])
+@login_required
+def create_predictor_export_token(predictor_id: int):
+    if not db.predictor_exists_for_user(predictor_id, get_current_user_id()) and not get_current_user_is_admin():
+        return jsonify({'error': '无权操作此预测方案'}), 403
+    if not db.get_predictor(predictor_id, include_secret=False):
+        return jsonify({'error': '预测方案不存在'}), 404
+    data = request.get_json() or {}
+    label = str(data.get('label') or '').strip()[:50]
+    raw_token = f"pts_{secrets.token_hex(16)}"
+    token_id = db.create_predictor_export_token(
+        predictor_id=predictor_id,
+        token_hash=_hash_export_token(raw_token),
+        token_prefix=raw_token[:8],
+        label=label
+    )
+    return jsonify({
+        'message': 'Token 已生成，仅此一次展示，请立即保存。',
+        'token': raw_token,
+        'token_record': _serialize_export_token_record(db.find_predictor_export_token(_hash_export_token(raw_token)) or {'id': token_id})
+    }), 201
+
+
+@app.route('/api/predictors/<int:predictor_id>/export-tokens/<int:token_id>', methods=['DELETE'])
+@login_required
+def revoke_predictor_export_token(predictor_id: int, token_id: int):
+    if not db.predictor_exists_for_user(predictor_id, get_current_user_id()) and not get_current_user_is_admin():
+        return jsonify({'error': '无权操作此预测方案'}), 403
+    if not db.revoke_predictor_export_token(predictor_id, token_id):
+        return jsonify({'error': 'Token 不存在或已撤销'}), 404
+    return jsonify({'message': 'Token 已撤销'})
+
+
 @app.route('/api/export/predictors/<int:predictor_id>/signals', methods=['GET'])
 def export_predictor_signals(predictor_id: int):
     predictor = db.get_predictor(predictor_id, include_secret=False)
@@ -5103,6 +5782,10 @@ def export_predictor_signals(predictor_id: int):
     if view not in {'execution', 'analysis'}:
         return jsonify({'error': 'view 仅支持 execution 或 analysis'}), 400
 
+    access = _resolve_signal_export_access(predictor)
+    if not access.get('allowed'):
+        return jsonify({'error': '该方案未公开分享信号导出；请使用方案所有者会话或导出授权 Token'}), 403
+
     latest_prediction = db.get_latest_prediction(predictor_id)
     if not latest_prediction:
         return jsonify({
@@ -5112,11 +5795,20 @@ def export_predictor_signals(predictor_id: int):
             'items': []
         })
 
-    item = (
-        _build_pc28_execution_signal_view(predictor, latest_prediction)
-        if view == 'execution'
-        else _build_pc28_analysis_signal_view(predictor, latest_prediction)
-    )
+    if view == 'execution' and normalize_engine_type(predictor.get('engine_type')) == 'external':
+        # 外部方案只导出当前有效、目标匹配的已采用预测；其余情况一律 items: []
+        if not external_prediction_service.evaluate_external_export_validity(db, predictor, latest_prediction):
+            latest_prediction = None
+
+    item = None
+    if latest_prediction:
+        item = (
+            _build_pc28_execution_signal_view(predictor, latest_prediction)
+            if view == 'execution'
+            else _build_pc28_analysis_signal_view(predictor, latest_prediction)
+        )
+        if item and view == 'analysis' and not access.get('include_raw'):
+            item = {**item, 'raw': {'prompt_snapshot': '', 'raw_response': ''}}
     return jsonify({
         'predictor_id': predictor_id,
         'lottery_type': lottery_type,

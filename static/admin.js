@@ -88,6 +88,65 @@ class AdminPage {
                 this.runJingcaiBackfill();
             });
         }
+        const addToggle = document.getElementById('adminExternalAddToggle');
+        if (addToggle) {
+            addToggle.addEventListener('click', () => {
+                const block = document.getElementById('adminExternalSourceCreate');
+                if (block) {
+                    block.style.display = block.style.display === 'none' ? '' : 'none';
+                }
+            });
+        }
+        const createButton = document.querySelector('[data-action="create-external-source"]');
+        if (createButton) {
+            createButton.addEventListener('click', () => this.createExternalSource());
+        }
+        const externalPanel = document.getElementById('adminExternalSourcesPanel');
+        if (externalPanel) {
+            externalPanel.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-ext-action]');
+                if (!button) {
+                    return;
+                }
+                const action = button.dataset.extAction;
+                const sourceId = button.dataset.sourceId;
+                if (action === 'test-source') {
+                    this.testExternalSource(sourceId, button);
+                    return;
+                }
+                if (action === 'refresh-catalog') {
+                    this.refreshExternalCatalog(sourceId, button);
+                    return;
+                }
+                if (action === 'toggle-source') {
+                    this.toggleExternalSource(sourceId, button.dataset.enabled === '1');
+                    return;
+                }
+                if (action === 'save-source') {
+                    this.saveExternalSourceSettings(sourceId);
+                    return;
+                }
+                if (action === 'toggle-models') {
+                    this.toggleExternalModelsView(sourceId);
+                    return;
+                }
+                if (action === 'models-enable') {
+                    this.setExternalModelsEnabled(sourceId, 'all', true);
+                    return;
+                }
+                if (action === 'models-disable') {
+                    this.setExternalModelsEnabled(sourceId, 'all', false);
+                    return;
+                }
+                if (action === 'delete-source') {
+                    this.deleteExternalSource(sourceId);
+                    return;
+                }
+                if (action === 'toggle-model') {
+                    this.setExternalModelsEnabled(sourceId, [button.dataset.modelKey], button.dataset.enabled !== '1');
+                }
+            });
+        }
     }
 
     async checkAuth() {
@@ -132,6 +191,7 @@ class AdminPage {
             this.renderUsers(data.users || []);
             this.renderPredictors(data.predictors || []);
             this.renderFailures(data.recent_failures || []);
+            this.renderExternalSources(data.external_sources || {});
         } catch (error) {
             console.error('Failed to load admin dashboard:', error);
             document.getElementById('adminSchedulerPanel').innerHTML = `<div class="warning-banner">${this.escapeHtml(error.message)}</div>`;
@@ -703,6 +763,332 @@ class AdminPage {
         this.darkMode = !this.darkMode;
         localStorage.setItem('pc28Theme', this.darkMode ? 'dark' : 'light');
         this.applyTheme();
+    }
+
+    externalSourceStatusChip(source) {
+        const map = {
+            ok: '<span class="tag">正常</span>',
+            error: `<span class="status-chip paused" title="${this.escapeHtml(source.last_error || '')}">异常</span>`,
+            disabled: '<span class="hint-text">已停用</span>'
+        };
+        return map[source.status] || '<span class="hint-text">未知</span>';
+    }
+
+    syncExternalPluginOptions(plugins) {
+        const select = document.getElementById('adminExternalPluginKey');
+        if (!select || !Array.isArray(plugins) || !plugins.length) {
+            return;
+        }
+        const current = select.value;
+        select.innerHTML = plugins.map((plugin) => `
+            <option value="${this.escapeHtml(plugin.plugin_key)}">${this.escapeHtml(plugin.display_name || plugin.plugin_key)}</option>
+        `).join('');
+        if (plugins.some((plugin) => plugin.plugin_key === current)) {
+            select.value = current;
+        }
+    }
+
+    renderExternalSources(payload) {
+        const container = document.getElementById('adminExternalSourcesPanel');
+        if (!container) {
+            return;
+        }
+        this.syncExternalPluginOptions(payload.plugins);
+        const scheduler = payload.scheduler || {};
+        const sources = payload.sources || [];
+        this.externalSources = sources;
+        const schedulerRow = `
+            <div class="metric-hint">
+                <div class="metric-hint-head">
+                    <div><strong>外部采集线程</strong></div>
+                    <span class="tag">${scheduler.enabled ? '已启用' : '未启用'}</span>
+                </div>
+                <p>最近心跳：${this.escapeHtml(scheduler.heartbeat_at || '--')}${scheduler.seconds_since_heartbeat !== null && scheduler.seconds_since_heartbeat !== undefined ? `（${this.escapeHtml(String(scheduler.seconds_since_heartbeat))} 秒前）` : ''}</p>
+            </div>
+        `;
+        if (!sources.length) {
+            container.className = 'prediction-summary';
+            container.innerHTML = `
+                ${schedulerRow}
+                <div class="warning-banner">还没有外部预测来源。点击右上角「添加来源」接入第一个 API；创建后请先测试连接、刷新目录并开放模型，再启用来源。</div>
+            `;
+            return;
+        }
+        container.className = 'prediction-summary';
+        container.innerHTML = [schedulerRow].concat(sources.map((source) => {
+            const statusLine = source.last_error
+                ? `<p class="hint-text">最近错误：${this.escapeHtml(source.last_error || '--')}（${this.escapeHtml(source.last_error_at || '--')}）</p>`
+                : '<p class="hint-text">最近没有错误。</p>';
+            const batches = (source.recent_batches || []).map((batch) => `
+                <li>
+                    期号 ${this.escapeHtml(batch.target_issue_no || '--')}
+                    · v${this.escapeHtml(String(batch.batch_version || 1))}
+                    ${Number(batch.batch_version) > 1 ? '<span class="tag">上游修订</span>' : ''}
+                    · ${this.escapeHtml(batch.fetched_at || '--')}
+                    · 模型 ${this.escapeHtml(String(batch.model_count || 0))}${Number(batch.invalid_model_count) > 0 ? ` / 异常 ${this.escapeHtml(String(batch.invalid_model_count))}` : ''}
+                </li>
+            `).join('');
+            return `
+            <div class="metric-hint" data-ext-source="${this.escapeHtml(String(source.id))}">
+                <div class="metric-hint-head">
+                    <div>
+                        <strong>${this.escapeHtml(source.name || `来源 #${source.id}`)}</strong>
+                        <span class="tag">${this.escapeHtml(source.plugin_display_name || source.plugin_key || '')}</span>
+                        ${this.externalSourceStatusChip(source)}
+                    </div>
+                    <span class="hint-text">模型 ${source.model_enabled_count}/${source.model_total} 开放 · 已采用快照 ${source.adopted_prediction_count} 条${source.bound_predictor_count ? ` · ${source.bound_predictor_count} 个方案绑定` : ''}</span>
+                </div>
+                <div class="form-grid">
+                    <label class="form-field">
+                        <span>来源名称</span>
+                        <input type="text" id="extSourceName-${source.id}" value="${this.escapeHtml(source.name || '')}">
+                    </label>
+                    <label class="form-field">
+                        <span>采集间隔（秒）</span>
+                        <input type="number" id="extSourceInterval-${source.id}" min="30" max="3600" value="${this.escapeHtml(String(source.interval_seconds || 60))}">
+                    </label>
+                    <label class="form-field span-2">
+                        <span>来源基址</span>
+                        <input type="text" id="extSourceBaseUrl-${source.id}" value="${this.escapeHtml(source.base_url || '')}">
+                        <small class="field-hint">最近目标期号：${this.escapeHtml(source.last_target_issue || '--')} · 最近成功：${this.escapeHtml(source.last_success_at || '--')} · 最近尝试：${this.escapeHtml(source.last_attempt_at || '--')}</small>
+                    </label>
+                </div>
+                ${statusLine}
+                <div class="panel-actions">
+                    <button class="btn ghost" data-ext-action="test-source" data-source-id="${source.id}"><i class="bi bi-plug"></i> 测试连接</button>
+                    <button class="btn ghost" data-ext-action="refresh-catalog" data-source-id="${source.id}"><i class="bi bi-arrow-repeat"></i> 刷新目录</button>
+                    <button class="btn ghost" data-ext-action="toggle-models" data-source-id="${source.id}"><i class="bi bi-list-check"></i> 模型目录</button>
+                    <button class="btn ghost" data-ext-action="save-source" data-source-id="${source.id}"><i class="bi bi-save"></i> 保存修改</button>
+                    <button class="btn ${source.enabled ? 'ghost' : 'primary'}" data-ext-action="toggle-source" data-source-id="${source.id}" data-enabled="${source.enabled ? '1' : '0'}">
+                        <i class="bi ${source.enabled ? 'bi-pause-circle' : 'bi-play-circle'}"></i> ${source.enabled ? '停用采集' : '启用采集'}
+                    </button>
+                    <button class="btn danger" data-ext-action="delete-source" data-source-id="${source.id}">
+                        <i class="bi bi-trash"></i> 删除来源
+                    </button>
+                </div>
+                <div id="extTestResult-${source.id}" class="hint-text"></div>
+                <div id="extModels-${source.id}" style="display: none;">
+                    <div class="panel-actions">
+                        <button class="btn ghost" data-ext-action="models-enable" data-source-id="${source.id}">全部开放</button>
+                        <button class="btn ghost" data-ext-action="models-disable" data-source-id="${source.id}">全部关闭</button>
+                        <span class="hint-text">开放后用户方可绑定该模型；关闭不影响已有历史。</span>
+                    </div>
+                    <div id="extModelsBody-${source.id}" class="hint-text">加载中...</div>
+                </div>
+                <div class="metric-hint">
+                    <div class="metric-hint-head"><div><strong>最近采集批次</strong></div></div>
+                    <ul class="hint-text">${batches || '<li>暂无批次，等待采集线程运行或手动刷新目录。</li>'}</ul>
+                </div>
+            </div>
+            `;
+        }).join(''));
+    }
+
+    async createExternalSource() {
+        const payload = {
+            plugin_key: document.getElementById('adminExternalPluginKey')?.value || 'jnd28',
+            name: document.getElementById('adminExternalSourceName')?.value || '',
+            base_url: document.getElementById('adminExternalSourceBaseUrl')?.value || '',
+            interval_seconds: Number(document.getElementById('adminExternalSourceInterval')?.value || 60)
+        };
+        try {
+            const response = await fetch('/api/admin/external-sources', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '创建外部预测来源失败');
+            }
+            const block = document.getElementById('adminExternalSourceCreate');
+            if (block) {
+                block.style.display = 'none';
+            }
+            await this.loadDashboard();
+            alert(data.message || '已创建');
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async testExternalSource(sourceId, button) {
+        const resultNode = document.getElementById(`extTestResult-${sourceId}`);
+        if (button) {
+            button.disabled = true;
+        }
+        if (resultNode) {
+            resultNode.textContent = '测试中...';
+        }
+        try {
+            const response = await fetch(`/api/admin/external-sources/${sourceId}/test`, { method: 'POST', credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '测试失败');
+            }
+            if (!data.ok) {
+                if (resultNode) {
+                    resultNode.textContent = `测试失败：${data.error}`;
+                }
+                return;
+            }
+            if (resultNode) {
+                resultNode.textContent = `连接正常：目标期号 ${data.target_issue_no}，模型 ${data.model_count} 个${data.invalid_model_count ? `（${data.invalid_model_count} 个无法解析）` : ''}，耗时 ${data.elapsed_ms}ms，上游发布时间 ${data.upstream_published_at || '--'}。`;
+            }
+        } catch (error) {
+            if (resultNode) {
+                resultNode.textContent = `测试失败：${error.message}`;
+            }
+        } finally {
+            if (button) {
+                button.disabled = false;
+            }
+        }
+    }
+
+    async refreshExternalCatalog(sourceId, button) {
+        if (button) {
+            button.disabled = true;
+        }
+        try {
+            const response = await fetch(`/api/admin/external-sources/${sourceId}/refresh-catalog`, { method: 'POST', credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '刷新目录失败');
+            }
+            await this.loadDashboard();
+            alert(data.message || '目录已刷新');
+        } catch (error) {
+            alert(error.message);
+        } finally {
+            if (button) {
+                button.disabled = false;
+            }
+        }
+    }
+
+    async toggleExternalSource(sourceId, currentlyEnabled) {
+        try {
+            const response = await fetch(`/api/admin/external-sources/${sourceId}`, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: !currentlyEnabled })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '更新来源状态失败');
+            }
+            await this.loadDashboard();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async deleteExternalSource(sourceId) {
+        const source = (this.externalSources || []).find((item) => Number(item.id) === Number(sourceId));
+        const sourceName = source ? (source.name || `来源 #${sourceId}`) : `来源 #${sourceId}`;
+        const boundCount = source ? Number(source.bound_predictor_count || 0) : 0;
+        const warning = boundCount
+            ? `该来源下有 ${boundCount} 个用户方案绑定：删除后这些方案将停止产出新预测（历史记录与来源标识保留）。`
+            : '当前没有用户方案绑定该来源。';
+        if (!window.confirm(`确定删除来源「${sourceName}」？\n\n${warning}\n\n模型目录、采集批次与共享快照将一并删除，此操作不可恢复。`)) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/admin/external-sources/${sourceId}`, { method: 'DELETE', credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '删除来源失败');
+            }
+            await this.loadDashboard();
+            alert(data.message || '来源已删除');
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async saveExternalSourceSettings(sourceId) {
+        const payload = {
+            name: document.getElementById(`extSourceName-${sourceId}`)?.value || '',
+            base_url: document.getElementById(`extSourceBaseUrl-${sourceId}`)?.value || '',
+            interval_seconds: Number(document.getElementById(`extSourceInterval-${sourceId}`)?.value || 60)
+        };
+        try {
+            const response = await fetch(`/api/admin/external-sources/${sourceId}`, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '保存来源设置失败');
+            }
+            await this.loadDashboard();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async toggleExternalModelsView(sourceId) {
+        const wrapper = document.getElementById(`extModels-${sourceId}`);
+        if (!wrapper) {
+            return;
+        }
+        const show = wrapper.style.display === 'none';
+        wrapper.style.display = show ? '' : 'none';
+        if (!show) {
+            return;
+        }
+        await this.loadExternalModels(sourceId);
+    }
+
+    async loadExternalModels(sourceId) {
+        const body = document.getElementById(`extModelsBody-${sourceId}`);
+        if (!body) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/admin/external-sources/${sourceId}/models`, { credentials: 'include' });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '加载模型目录失败');
+            }
+            const models = data.models || [];
+            if (!models.length) {
+                body.innerHTML = '<div class="warning-banner">模型目录为空，请先「刷新目录」。</div>';
+                return;
+            }
+            body.innerHTML = models.map((model) => `
+                <label class="toggle-row">
+                    <span>${this.escapeHtml(model.display_name)} <small class="hint-text">${this.escapeHtml(model.model_key)}${model.seen_recently ? '' : ' · 最近未见'}</small></span>
+                    <input type="checkbox" data-ext-action="toggle-model" data-source-id="${sourceId}" data-model-key="${this.escapeHtml(model.model_key)}" data-enabled="${model.enabled ? '1' : '0'}" ${model.enabled ? 'checked' : ''}>
+                </label>
+            `).join('');
+        } catch (error) {
+            body.innerHTML = `<div class="warning-banner">${this.escapeHtml(error.message)}</div>`;
+        }
+    }
+
+    async setExternalModelsEnabled(sourceId, modelKeys, enabled) {
+        try {
+            const response = await fetch(`/api/admin/external-sources/${sourceId}/models`, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_keys: modelKeys, enabled })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || '更新模型开放状态失败');
+            }
+            await this.loadExternalModels(sourceId);
+            await this.loadDashboard();
+        } catch (error) {
+            alert(error.message);
+        }
     }
 
     escapeHtml(text) {

@@ -1,0 +1,819 @@
+{
+ "draw_number": 3483593,
+ "predict_time": "2026-09-18T23:13:35.313074695+08:00",
+ "models": [
+  {
+   "model_name": "理论概率偏差",
+   "model_type": "quantum",
+   "predicted_big": true,
+   "predicted_odd": true,
+   "predicted_group": "大单",
+   "predicted_numbers": [
+    0,
+    1,
+    2,
+    13,
+    15,
+    18,
+    23,
+    24
+   ],
+   "confidence": 72.49408897649067,
+   "items": [
+    {
+     "key": "sum_number",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "number",
+     "category_label": "数字",
+     "value": "0,1,2,13,15,18,23,24",
+     "numbers": [
+      0,
+      1,
+      2,
+      13,
+      15,
+      18,
+      23,
+      24
+     ],
+     "confidence": 72.49408897649067,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_big",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 72.49408897649067,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_odd",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "单",
+     "confidence": 72.49408897649067,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_group",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大单",
+     "confidence": 72.49408897649067,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_kill_group",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "大双,小双",
+     "confidence": 72.49408897649067,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_number",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "number",
+     "category_label": "数字",
+     "value": "2,5,7,8,9",
+     "numbers": [
+      2,
+      5,
+      7,
+      8,
+      9
+     ],
+     "confidence": 67.62428736423509,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_big",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 67.62428736423509,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_odd",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "单",
+     "confidence": 67.62428736423509,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_group",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大单",
+     "confidence": 67.62428736423509,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_kill_group",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "小单,大双",
+     "confidence": 67.62428736423509,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_number",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "number",
+     "category_label": "数字",
+     "value": "2,6,7,8,9",
+     "numbers": [
+      2,
+      6,
+      7,
+      8,
+      9
+     ],
+     "confidence": 68.13378401222931,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_big",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 68.13378401222931,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_odd",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "双",
+     "confidence": 68.13378401222931,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_group",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大双",
+     "confidence": 68.13378401222931,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_kill_group",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "小单,小双",
+     "confidence": 68.13378401222931,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_number",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "number",
+     "category_label": "数字",
+     "value": "5,6,7,8,9",
+     "numbers": [
+      5,
+      6,
+      7,
+      8,
+      9
+     ],
+     "confidence": 69.27852000245232,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_big",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 69.27852000245232,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_odd",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "单",
+     "confidence": 69.27852000245232,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_group",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大单",
+     "confidence": 69.27852000245232,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_kill_group",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "小单,小双",
+     "confidence": 69.27852000245232,
+     "is_drawn": false,
+     "correct": false
+    }
+   ]
+  },
+  {
+   "model_name": "二阶转移模型",
+   "model_type": "markov",
+   "predicted_big": true,
+   "predicted_odd": false,
+   "predicted_group": "大双",
+   "predicted_numbers": [
+    9,
+    10,
+    11,
+    13,
+    16,
+    17,
+    19,
+    24
+   ],
+   "confidence": 63.67424242424242,
+   "items": [
+    {
+     "key": "sum_number",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "number",
+     "category_label": "数字",
+     "value": "9,10,11,13,16,17,19,24",
+     "numbers": [
+      9,
+      10,
+      11,
+      13,
+      16,
+      17,
+      19,
+      24
+     ],
+     "confidence": 63.67424242424242,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_big",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 63.67424242424242,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_odd",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "双",
+     "confidence": 63.67424242424242,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_group",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大双",
+     "confidence": 63.67424242424242,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_kill_group",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "小双,大双",
+     "confidence": 63.67424242424242,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_number",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "number",
+     "category_label": "数字",
+     "value": "3,5,6,7,8",
+     "numbers": [
+      3,
+      5,
+      6,
+      7,
+      8
+     ],
+     "confidence": 66.28301274457561,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_big",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 66.28301274457561,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_odd",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "双",
+     "confidence": 66.28301274457561,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_group",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大双",
+     "confidence": 66.28301274457561,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_kill_group",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "小单,小双",
+     "confidence": 66.28301274457561,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_number",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "number",
+     "category_label": "数字",
+     "value": "2,3,4,5,6",
+     "numbers": [
+      2,
+      3,
+      4,
+      5,
+      6
+     ],
+     "confidence": 66.70616645878539,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_big",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "big",
+     "category_label": "大小",
+     "value": "小",
+     "confidence": 66.70616645878539,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_odd",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "单",
+     "confidence": 66.70616645878539,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_group",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "group",
+     "category_label": "组合",
+     "value": "小单",
+     "confidence": 66.70616645878539,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_kill_group",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "大双,小单",
+     "confidence": 66.70616645878539,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_number",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "number",
+     "category_label": "数字",
+     "value": "1,3,4,5,7",
+     "numbers": [
+      1,
+      3,
+      4,
+      5,
+      7
+     ],
+     "confidence": 66.47645173085603,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_big",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 66.47645173085603,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_odd",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "单",
+     "confidence": 66.47645173085603,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_group",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大单",
+     "confidence": 66.47645173085603,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_kill_group",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "大双,小单",
+     "confidence": 66.47645173085603,
+     "is_drawn": false,
+     "correct": false
+    }
+   ]
+  },
+  {
+   "model_name": "长短窗记忆模型",
+   "model_type": "lstm",
+   "predicted_big": true,
+   "predicted_odd": true,
+   "predicted_group": "大单",
+   "predicted_numbers": [
+    1,
+    2,
+    5,
+    23,
+    24,
+    25,
+    26,
+    27
+   ],
+   "confidence": 71.64265135699374,
+   "items": [
+    {
+     "key": "sum_number",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "number",
+     "category_label": "数字",
+     "value": "1,2,5,23,24,25,26,27",
+     "numbers": [
+      1,
+      2,
+      5,
+      23,
+      24,
+      25,
+      26,
+      27
+     ],
+     "confidence": 71.64265135699374,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_big",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 71.64265135699374,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_odd",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "单",
+     "confidence": 71.64265135699374,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_group",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大单",
+     "confidence": 71.64265135699374,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "sum_kill_group",
+     "scope": "sum",
+     "scope_label": "和值",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "小双,小单",
+     "confidence": 71.64265135699374,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_number",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "number",
+     "category_label": "数字",
+     "value": "0,1,3,8,9",
+     "numbers": [
+      0,
+      1,
+      3,
+      8,
+      9
+     ],
+     "confidence": 70.069849171784,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_big",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "big",
+     "category_label": "大小",
+     "value": "小",
+     "confidence": 70.069849171784,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_odd",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "单",
+     "confidence": 70.069849171784,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_group",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "group",
+     "category_label": "组合",
+     "value": "小单",
+     "confidence": 70.069849171784,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball1_kill_group",
+     "scope": "ball1",
+     "scope_label": "第一球",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "大双,大单",
+     "confidence": 70.069849171784,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_number",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "number",
+     "category_label": "数字",
+     "value": "0,1,7,8,9",
+     "numbers": [
+      0,
+      1,
+      7,
+      8,
+      9
+     ],
+     "confidence": 71.13142692455415,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_big",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 71.13142692455415,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_odd",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "单",
+     "confidence": 71.13142692455415,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_group",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大单",
+     "confidence": 71.13142692455415,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball2_kill_group",
+     "scope": "ball2",
+     "scope_label": "第二球",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "大双,小单",
+     "confidence": 71.13142692455415,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_number",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "number",
+     "category_label": "数字",
+     "value": "0,1,7,8,9",
+     "numbers": [
+      0,
+      1,
+      7,
+      8,
+      9
+     ],
+     "confidence": 73.31312966231417,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_big",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "big",
+     "category_label": "大小",
+     "value": "大",
+     "confidence": 73.31312966231417,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_odd",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "odd",
+     "category_label": "单双",
+     "value": "单",
+     "confidence": 73.31312966231417,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_group",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "group",
+     "category_label": "组合",
+     "value": "大单",
+     "confidence": 73.31312966231417,
+     "is_drawn": false,
+     "correct": false
+    },
+    {
+     "key": "ball3_kill_group",
+     "scope": "ball3",
+     "scope_label": "第三球",
+     "category": "kill_group",
+     "category_label": "杀组合",
+     "value": "大双,小单",
+     "confidence": 73.31312966231417,
+     "is_drawn": false,
+     "correct": false
+    }
+   ]
+  }
+ ]
+}
