@@ -64,3 +64,6 @@ Thumbs.db
 # Local agent tooling
 .boss/
 .spec-workflow/
+
+# Dixon-Coles 模型参数缓存
+data/football_models/

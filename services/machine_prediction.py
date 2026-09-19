@@ -4,6 +4,10 @@
 from __future__ import annotations
 
 import json
+import re
+import tempfile
+from collections import defaultdict
+from pathlib import Path
 
 from services.algorithm_executor import predict_jingcai_with_user_algorithm
 from utils import jingcai_football as football_utils
@@ -29,7 +33,7 @@ def predict_pc28(context: dict, predictor: dict) -> tuple[dict, str, str]:
     return prediction, json.dumps(debug_payload, ensure_ascii=False), f'机器算法：{algorithm_label}'
 
 
-def predict_jingcai(run_key: str, matches: list[dict], predictor: dict) -> tuple[list[dict], str, str]:
+def predict_jingcai(run_key: str, matches: list[dict], predictor: dict, db=None) -> tuple[list[dict], str, str]:
     algorithm_key = normalize_algorithm_key(
         'jingcai_football',
         predictor.get('engine_type'),
@@ -45,6 +49,10 @@ def predict_jingcai(run_key: str, matches: list[dict], predictor: dict) -> tuple
         items_payload, debug_payload = _predict_jingcai_handicap_consistency_v1(run_key, matches)
     elif algorithm_key == 'football_value_edge_v1':
         items_payload, debug_payload = _predict_jingcai_value_edge_v1(run_key, matches)
+    elif algorithm_key == 'football_pirating_v1':
+        items_payload, debug_payload = _predict_jingcai_pirating_v1(run_key, matches, db=db)
+    elif algorithm_key == 'football_dixon_coles_v1':
+        items_payload, debug_payload = _predict_jingcai_dixon_coles_v1(run_key, matches, db=db)
     else:
         raise ValueError(f'暂不支持的 竞彩足球机器算法: {algorithm_key}')
     algorithm_label = (predictor.get('user_algorithm') or {}).get('name') or get_algorithm_label('jingcai_football', 'machine', algorithm_key)
@@ -752,6 +760,359 @@ def _predict_jingcai_value_edge_v1(run_key: str, matches: list[dict]) -> tuple[l
     return items_payload, {
         'algorithm': 'football_value_edge_v1',
         'run_key': run_key,
+        'items': debug_rows
+    }
+
+
+FOOTBALL_MODEL_MIN_HISTORY = 100
+DIXON_COLES_MIN_LEAGUE_MATCHES = 60
+DIXON_COLES_MIN_LEAGUE_TEAMS = 6
+
+
+def _load_football_history_matches(db, before_date: str) -> list[dict]:
+    """读取结算日早于 before_date 的竞彩比赛比分（按日期升序），供评级/进球模型训练。"""
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT event_date, league, home_team, away_team, result_payload
+            FROM lottery_events
+            WHERE lottery_type = 'jingcai_football'
+              AND source_provider = 'sina'
+              AND event_date IS NOT NULL AND event_date < ?
+            ORDER BY event_date ASC, event_time ASC
+            """,
+            (str(before_date or '').strip(),)
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    history: list[dict] = []
+    for row in rows:
+        try:
+            result = json.loads(row['result_payload'] or '{}')
+        except (TypeError, ValueError):
+            continue
+        score1 = football_utils.parse_int(result.get('score1'))
+        score2 = football_utils.parse_int(result.get('score2'))
+        if score1 is None or score2 is None:
+            continue
+        history.append({
+            'date': str(row['event_date'] or ''),
+            'league': str(row['league'] or '').strip(),
+            'home': str(row['home_team'] or '').strip(),
+            'away': str(row['away_team'] or '').strip(),
+            'score1': int(score1),
+            'score2': int(score2)
+        })
+    return history
+
+
+def _spf_probs_to_expected_margin(probabilities: dict[str, float]) -> float:
+    """无评级信息时，用赔率隐含概率近似主队预期净胜球。"""
+    p_sheng = float(probabilities.get('胜') or 0.0)
+    p_fu = float(probabilities.get('负') or 0.0)
+    return round((p_sheng - p_fu) * 2.6, 4)
+
+
+def _dixon_coles_score_matrix(model, home: str, away: str, max_goals: int = 14):
+    """用模型参数构建 Dixon-Coles 比分概率矩阵。
+
+    不走 penaltyblog 的 FootballProbabilityGrid 构造器：rho 修正在小样本联赛上
+    偶发产出负概率单元格并触发其内部校验异常，这里自行截断负值后归一化。
+    """
+    import math
+
+    import numpy as np
+    from scipy.stats import poisson
+
+    params = model.params
+    lam = math.exp(float(params[f'attack_{home}']) + float(params[f'defence_{away}']) + float(params['home_advantage']))
+    mu = math.exp(float(params[f'attack_{away}']) + float(params[f'defence_{home}']))
+    rho = float(params['rho'])
+
+    goals = np.arange(max_goals + 1)
+    matrix = np.outer(poisson.pmf(goals, lam), poisson.pmf(goals, mu))
+    matrix[0, 0] *= max(0.0, 1 - lam * mu * rho)
+    matrix[0, 1] *= max(0.0, 1 + lam * rho)
+    matrix[1, 0] *= max(0.0, 1 + mu * rho)
+    matrix[1, 1] *= max(0.0, 1 - rho)
+    matrix[matrix < 0] = 0.0
+    total = float(matrix.sum())
+    if total <= 0:
+        raise ValueError('Dixon-Coles 比分矩阵全为负值，无法归一化')
+    return matrix / total
+
+
+def _probs_from_score_matrix(matrix, handicap=None) -> dict[str, list[float]]:
+    """从比分矩阵按净胜球聚合胜平负概率；handicap 非空时同时聚合让球三向。"""
+    import numpy as np
+
+    size = matrix.shape[0]
+    margins = np.arange(size)[:, None] - np.arange(size)[None, :]
+    result = {
+        'spf': [float(matrix[margins > 0].sum()), float(matrix[margins == 0].sum()), float(matrix[margins < 0].sum())]
+    }
+    if handicap is not None:
+        adjusted = margins + float(handicap)
+        result['rqspf'] = [
+            float(matrix[adjusted > 0].sum()),
+            float(matrix[adjusted == 0].sum()),
+            float(matrix[adjusted < 0].sum())
+        ]
+    return result
+
+
+def _predict_jingcai_pirating_v1(run_key: str, matches: list[dict], db=None) -> tuple[list[dict], dict]:
+    try:
+        from penaltyblog.ratings import PiRatingSystem
+    except ImportError as exc:
+        raise ValueError('Pi 评级算法依赖 penaltyblog，请先安装 requirements.txt 中的依赖') from exc
+    if db is None:
+        raise ValueError('Pi 评级算法需要数据库连接以读取历史比分')
+
+    history = _load_football_history_matches(db, run_key)
+    ratings = PiRatingSystem()
+    known_teams: set[str] = set()
+    for item in history:
+        ratings.update_ratings(item['home'], item['away'], item['score1'] - item['score2'])
+        known_teams.add(item['home'])
+        known_teams.add(item['away'])
+
+    items_payload = []
+    debug_rows = []
+    for match in matches:
+        home = str(match.get('home_team') or '').strip()
+        away = str(match.get('away_team') or '').strip()
+        market = _pick_odds_outcome(match.get('spf_odds') or {})
+        has_rating = bool(history) and home in known_teams and away in known_teams
+        if has_rating:
+            probs = ratings.calculate_match_probabilities(home, away)
+            spf_probabilities = {
+                '胜': round(float(probs['home_win']), 4),
+                '平': round(float(probs['draw']), 4),
+                '负': round(float(probs['away_win']), 4)
+            }
+            expected_margin = round(float(ratings.expected_goal_difference(home, away)), 4)
+            prob_source = 'pi_rating'
+        else:
+            spf_probabilities = dict(market.get('probabilities') or {})
+            expected_margin = _spf_probs_to_expected_margin(spf_probabilities)
+            prob_source = 'odds_fallback'
+
+        predicted_spf, spf_confidence = _select_spf_outcome(spf_probabilities)
+
+        rqspf = match.get('rqspf') or {}
+        predicted_rqspf = None
+        rqspf_confidence = None
+        if (rqspf.get('odds') or {}) and football_utils.parse_int(rqspf.get('handicap')) is not None:
+            predicted_rqspf, rqspf_confidence = _select_rqspf_outcome(expected_margin, rqspf.get('handicap'))
+
+        confidence_values = [value for value in (spf_confidence, rqspf_confidence) if value is not None]
+        confidence = round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else None
+
+        handicap_text = str(rqspf.get('handicap_text') or '').strip() or '--'
+        reasoning_bits = []
+        if predicted_spf:
+            reasoning_bits.append(f"评级主向{predicted_spf}，预期净胜{expected_margin:+.2f}")
+        if predicted_rqspf:
+            reasoning_bits.append(f"让{handicap_text}主向{predicted_rqspf}")
+        if prob_source == 'odds_fallback':
+            reasoning_bits.append('球队缺少历史样本，退回赔率隐含概率')
+        reasoning_summary = '；'.join(reasoning_bits) or '按 Pi 评级生成默认预测'
+
+        items_payload.append({
+            'event_key': match.get('event_key') or '',
+            'match_no': match.get('match_no') or '',
+            'predicted_spf': predicted_spf,
+            'predicted_rqspf': predicted_rqspf,
+            'confidence': confidence,
+            'reasoning_summary': reasoning_summary
+        })
+        debug_rows.append({
+            'event_key': match.get('event_key') or '',
+            'match_no': match.get('match_no') or '',
+            'predicted_spf': predicted_spf,
+            'predicted_rqspf': predicted_rqspf,
+            'confidence': confidence,
+            'spf_probabilities': spf_probabilities,
+            'expected_margin': expected_margin,
+            'prob_source': prob_source
+        })
+
+    return items_payload, {
+        'algorithm': 'football_pirating_v1',
+        'run_key': run_key,
+        'trained_matches': len(history),
+        'items': debug_rows
+    }
+
+
+def _football_model_cache_dir(run_key: str, trained_matches: int) -> Path:
+    """按 (预测日, 训练样本数) 组织的模型参数缓存目录；同日同数据只拟合一次。"""
+    digest = f'dc_v1_{str(run_key or "").strip()}_{trained_matches}'
+    candidates = [
+        Path(__file__).resolve().parents[1] / 'data' / 'football_models' / digest,
+        Path(tempfile.gettempdir()) / 'aitrading_football_models' / digest
+    ]
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        except OSError:
+            continue
+    raise ValueError('Dixon-Coles 模型缓存目录不可写')
+
+
+def _league_cache_filename(league: str) -> str:
+    safe = re.sub(r'[^\w\u4e00-\u9fff-]+', '_', str(league or 'league').strip())
+    return f'{safe or "league"}.json'
+
+
+def _load_or_fit_league_model(model_cls, league_matches: list[dict], cache_dir: Path, league: str):
+    """优先加载当日缓存的联赛模型参数，未命中则拟合并落盘。
+
+    penaltyblog 的 load 是 classmethod，返回反序列化的新实例（pickle），不改动调用者。
+    """
+    cache_path = cache_dir / _league_cache_filename(league)
+    if cache_path.exists():
+        try:
+            return model_cls.load(str(cache_path))
+        except Exception:  # noqa: BLE001
+            pass
+
+    model = model_cls(
+        goals_home=[item['score1'] for item in league_matches],
+        goals_away=[item['score2'] for item in league_matches],
+        teams_home=[item['home'] for item in league_matches],
+        teams_away=[item['away'] for item in league_matches]
+    )
+    model.fit()
+    try:
+        model.save(str(cache_path))
+    except OSError:
+        pass
+    return model
+
+
+def _predict_jingcai_dixon_coles_v1(run_key: str, matches: list[dict], db=None) -> tuple[list[dict], dict]:
+    try:
+        from penaltyblog.models import DixonColesGoalModel
+    except ImportError as exc:
+        raise ValueError('Dixon-Coles 算法依赖 penaltyblog，请先安装 requirements.txt 中的依赖') from exc
+    if db is None:
+        raise ValueError('Dixon-Coles 算法需要数据库连接以读取历史比分')
+
+    history = _load_football_history_matches(db, run_key)
+    if len(history) < FOOTBALL_MODEL_MIN_HISTORY:
+        raise ValueError(f'历史比分仅 {len(history)} 场（至少 {FOOTBALL_MODEL_MIN_HISTORY}），Dixon-Coles 暂无法拟合')
+
+    by_league: dict[str, list[dict]] = defaultdict(list)
+    for item in history:
+        by_league[item['league']].append(item)
+    trainable: dict[str, list[dict]] = {
+        league: items
+        for league, items in by_league.items()
+        if len(items) >= DIXON_COLES_MIN_LEAGUE_MATCHES
+        and len({m['home'] for m in items} | {m['away'] for m in items}) >= DIXON_COLES_MIN_LEAGUE_TEAMS
+    }
+    known_teams = {
+        league: {m['home'] for m in items} | {m['away'] for m in items}
+        for league, items in trainable.items()
+    }
+    cache_dir = _football_model_cache_dir(run_key, len(history))
+
+    league_models: dict[str, object | None] = {}
+
+    def league_model(league: str):
+        if league not in league_models:
+            if league in trainable:
+                league_models[league] = _load_or_fit_league_model(
+                    DixonColesGoalModel, trainable[league], cache_dir, league
+                )
+            else:
+                league_models[league] = None
+        return league_models[league]
+
+    items_payload = []
+    debug_rows = []
+    for match in matches:
+        home = str(match.get('home_team') or '').strip()
+        away = str(match.get('away_team') or '').strip()
+        league = str(match.get('league') or '').strip()
+        market = _pick_odds_outcome(match.get('spf_odds') or {})
+        rqspf = match.get('rqspf') or {}
+        handicap = football_utils.parse_int(rqspf.get('handicap'))
+
+        model = league_model(league)
+        has_model = model is not None and home in known_teams[league] and away in known_teams[league]
+        rqspf_probabilities = None
+        if has_model:
+            try:
+                matrix = _dixon_coles_score_matrix(model, home, away)
+                market_probs = _probs_from_score_matrix(matrix, handicap)
+                spf_probabilities = {
+                    outcome: round(value, 4)
+                    for outcome, value in zip(('胜', '平', '负'), market_probs['spf'])
+                }
+                if handicap is not None and 'rqspf' in market_probs:
+                    rqspf_probabilities = {
+                        outcome: round(value, 4)
+                        for outcome, value in zip(('胜', '平', '负'), market_probs['rqspf'])
+                    }
+            except Exception:  # noqa: BLE001
+                # 参数异常（如 rho 失稳）时该场退回赔率隐含概率
+                has_model = False
+        if not has_model:
+            spf_probabilities = dict(market.get('probabilities') or {})
+
+        predicted_spf, spf_confidence = _select_spf_outcome(spf_probabilities)
+
+        predicted_rqspf = None
+        rqspf_confidence = None
+        if rqspf_probabilities and (rqspf.get('odds') or {}):
+            predicted_rqspf, rqspf_confidence = _select_spf_outcome(rqspf_probabilities)
+
+        confidence_values = [value for value in (spf_confidence, rqspf_confidence) if value is not None]
+        confidence = round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else None
+
+        handicap_text = str(rqspf.get('handicap_text') or '').strip() or '--'
+        reasoning_bits = []
+        if predicted_spf:
+            reasoning_bits.append(f"进球模型主向{predicted_spf}，概率{max(spf_probabilities.values()):.2f}")
+        if predicted_rqspf:
+            reasoning_bits.append(f"让{handicap_text}主向{predicted_rqspf}")
+        if not has_model:
+            reasoning_bits.append('联赛样本不足或球队缺历史，退回赔率隐含概率')
+        reasoning_summary = '；'.join(reasoning_bits) or '按 Dixon-Coles 进球模型生成默认预测'
+
+        items_payload.append({
+            'event_key': match.get('event_key') or '',
+            'match_no': match.get('match_no') or '',
+            'predicted_spf': predicted_spf,
+            'predicted_rqspf': predicted_rqspf,
+            'confidence': confidence,
+            'reasoning_summary': reasoning_summary
+        })
+        debug_rows.append({
+            'event_key': match.get('event_key') or '',
+            'match_no': match.get('match_no') or '',
+            'predicted_spf': predicted_spf,
+            'predicted_rqspf': predicted_rqspf,
+            'confidence': confidence,
+            'spf_probabilities': spf_probabilities,
+            'rqspf_probabilities': rqspf_probabilities,
+            'league_model': league if has_model else '',
+            'prob_source': 'dixon_coles' if has_model else 'odds_fallback'
+        })
+
+    return items_payload, {
+        'algorithm': 'football_dixon_coles_v1',
+        'run_key': run_key,
+        'trained_matches': len(history),
+        'fitted_leagues': sorted(trainable.keys()),
         'items': debug_rows
     }
 

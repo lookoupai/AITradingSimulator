@@ -934,7 +934,8 @@ class JingcaiFootballService:
             items_payload, raw_response, prompt_snapshot = machine_prediction.predict_jingcai(
                 run_key,
                 matches,
-                predictor
+                predictor,
+                db=db
             )
             return items_payload, raw_response, prompt_snapshot, None
 
@@ -947,7 +948,8 @@ class JingcaiFootballService:
             items_payload, raw_response, prompt_snapshot = machine_prediction.predict_jingcai(
                 run_key,
                 matches,
-                predictor
+                predictor,
+                db=db
             )
             log_payload = self._record_user_algorithm_execution_log(
                 db=db,
@@ -974,7 +976,8 @@ class JingcaiFootballService:
                     items_payload, raw_response, prompt_snapshot = machine_prediction.predict_jingcai(
                         run_key,
                         matches,
-                        fallback_predictor
+                        fallback_predictor,
+                        db=db
                     )
                     log_payload = self._record_user_algorithm_execution_log(
                         db=db,

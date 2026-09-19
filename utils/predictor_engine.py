@@ -57,6 +57,16 @@ MACHINE_ALGORITHM_CATALOG = {
             'label': '价值优势 V1',
             'description': '按模型概率相对赔率隐含概率的 edge/EV 筛选，过滤低赔率热门。'
         },
+        {
+            'key': 'football_pirating_v1',
+            'label': 'Pi评级 V1',
+            'description': 'Pi Ratings 动态评级从历史比分学习球队攻防水平，按预期净胜球给出胜平负与让球方向，新队退回赔率概率。'
+        },
+        {
+            'key': 'football_dixon_coles_v1',
+            'label': '进球分布DC V1',
+            'description': 'Dixon-Coles 进球分布模型拟合历史比分，输出胜平负概率并按让球线聚合让球三向概率，新队退回赔率概率。'
+        },
     )
 }
 DEFAULT_MACHINE_ALGORITHMS = {
