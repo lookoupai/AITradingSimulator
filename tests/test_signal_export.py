@@ -353,6 +353,45 @@ class SignalExportTests(unittest.TestCase):
             self.assertEqual(data['items'][0]['signals'][0]['normalized_payload']['profit_rule_id'], 'pc28_netdisk')
             self.assertEqual(data['items'][0]['signals'][0]['normalized_payload']['odds_profile'], 'regular')
 
+    def test_export_execution_view_maps_fullpay_rule_to_legacy_id(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_id = create_predictor(harness, user_id, 'pc28', profit_rule_id='pc28_fullpay_2_8')
+            harness.db.upsert_prediction({
+                'predictor_id': predictor_id,
+                'lottery_type': 'pc28',
+                'issue_no': '20260408003',
+                'requested_targets': ['big_small'],
+                'prediction_number': None,
+                'prediction_big_small': '大',
+                'prediction_odd_even': None,
+                'prediction_combo': None,
+                'confidence': 0.7,
+                'reasoning_summary': '满赔导出映射',
+                'raw_response': 'raw',
+                'prompt_snapshot': 'prompt',
+                'status': 'pending',
+                'error_message': None,
+                'actual_number': None,
+                'actual_big_small': None,
+                'actual_odd_even': None,
+                'actual_combo': None,
+                'hit_number': None,
+                'hit_big_small': None,
+                'hit_odd_even': None,
+                'hit_combo': None,
+                'settled_at': None
+            })
+
+            execution = client.get(f'/api/export/predictors/{predictor_id}/signals?view=execution').get_json()
+            analysis = client.get(f'/api/export/predictors/{predictor_id}/signals?view=analysis').get_json()
+
+            self.assertEqual(
+                execution['items'][0]['signals'][0]['normalized_payload']['profit_rule_id'],
+                'pc28_high'
+            )
+            self.assertEqual(analysis['items'][0]['predictor']['profit_rule_id'], 'pc28_fullpay_2_8')
+
     def test_export_analysis_view_contains_predictor_context(self):
         with fresh_app_harness() as harness:
             client, user_id = harness.make_client()

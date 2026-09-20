@@ -747,10 +747,14 @@
                 <label class="form-field span-2" id="profitRuleField">
                     <span>默认收益规则</span>
                     <select id="profitRuleId" class="form-input">
-                        <option value="pc28_netdisk">加拿大28网盘：默认规则更直，13/14 正常赔付</option>
+                        <option value="pc28_netdisk">OK游戏网盘：无回本，13/14 正常赔付</option>
                         <option value="pc28_high">加拿大28高倍：大小单双/组合命中且遇特殊号时退本金</option>
+                        <option value="pc28_fullpay_netdisk">彩28网盘：大小单双中奖遇 0/27 退本，未中全亏；组合不退</option>
+                        <option value="pc28_fullpay_2_0">满赔2.0：大小单双中奖遇 0/27 退本，未中全亏；组合中奖 13/14 退本；大小单双注>2001 遇 13/14 降赔 1.98</option>
+                        <option value="pc28_fullpay_2_8">满赔2.8：赔率 2.84/6.79/6.33，中奖遇 13/14+对子+顺子+豹子退本</option>
+                        <option value="pc28_fullpay_3_2">满赔3.2：中奖遇 13/14 或 ABC 含 0/9 退本</option>
                     </select>
-                    <small class="field-hint">这个字段决定收益模拟使用哪套赔率和中奖规则，不影响预测主流程。</small>
+                    <small class="field-hint">仅用于本仓收益模拟。执行信号仍导出旧网盘/高倍，真正庄家在跟单端选择。</small>
                 </label>
                 <label class="form-field span-2" id="profitMetricField">
                     <span>默认收益玩法</span>

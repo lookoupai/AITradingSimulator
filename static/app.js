@@ -134,8 +134,12 @@ const LOTTERY_UI_CONFIG = {
             { key: 'kill_group', label: '排除统计：按预测组合结果的对角组合做排除统计' }
         ],
         profitRuleOptions: [
-            { key: 'pc28_netdisk', label: '加拿大28网盘：默认规则更直，13/14 正常赔付' },
-            { key: 'pc28_high', label: '加拿大28高倍：大小单双/组合命中且遇特殊号时退本金' }
+            { key: 'pc28_netdisk', label: 'OK游戏网盘：无回本，13/14 正常赔付' },
+            { key: 'pc28_high', label: '加拿大28高倍：大小单双/组合命中且遇特殊号时退本金' },
+            { key: 'pc28_fullpay_netdisk', label: '彩28网盘：大小单双中奖遇 0/27 退本，未中全亏；组合不退' },
+            { key: 'pc28_fullpay_2_0', label: '满赔2.0：大小单双中奖遇 0/27 退本，未中全亏；组合中奖 13/14 退本；大小单双注>2001 遇 13/14 降赔 1.98' },
+            { key: 'pc28_fullpay_2_8', label: '满赔2.8：赔率 2.84/6.79/6.33，中奖遇 13/14+对子+顺子+豹子退本' },
+            { key: 'pc28_fullpay_3_2', label: '满赔3.2：中奖遇 13/14 或 ABC 含 0/9 退本' }
         ],
         machineAlgorithms: [
             {

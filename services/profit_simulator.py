@@ -21,6 +21,7 @@ from utils import jingcai_football as football_utils
 from utils.pc28 import (
     DEFAULT_PROFIT_RULE_ID as PC28_DEFAULT_PROFIT_RULE_ID,
     TARGET_LABELS as PC28_TARGET_LABELS,
+    has_abc_zero_or_nine,
     is_pc28_baozi,
     is_pc28_pair,
     is_pc28_straight,
@@ -120,27 +121,128 @@ NETDISK_NUMBER_ODDS = {
     27: 888.0
 }
 
+FULLPAY_NUMBER_ODDS = {
+    0: 1000.0,
+    1: 320.0,
+    2: 160.0,
+    3: 97.0,
+    4: 64.5,
+    5: 46.0,
+    6: 35.0,
+    7: 27.2,
+    8: 22.0,
+    9: 18.0,
+    10: 15.8,
+    11: 14.4,
+    12: 13.6,
+    13: 13.3,
+    14: 13.3,
+    15: 13.6,
+    16: 14.4,
+    17: 15.8,
+    18: 18.0,
+    19: 22.0,
+    20: 27.2,
+    21: 35.0,
+    22: 46.0,
+    23: 64.5,
+    24: 97.0,
+    25: 160.0,
+    26: 320.0,
+    27: 1000.0
+}
+
+
+def _pc28_refund_fields(
+    *,
+    wraparound: bool = True,
+    always_sums: tuple[int, ...] = (),
+    on_hit_sums: tuple[int, ...] = (),
+    pair: bool = False,
+    straight: bool = False,
+    baozi: bool = False,
+    abc_09: bool = False,
+    odds_tiers: Optional[list] = None,
+    refund_policy: str = 'none'
+) -> dict:
+    return {
+        'refund_policy': refund_policy,
+        'straight_wraparound': wraparound,
+        'always_refund_sum_values': list(always_sums),
+        'on_hit_refund_sum_values': list(on_hit_sums),
+        'on_hit_refund_pair': pair,
+        'on_hit_refund_straight': straight,
+        'on_hit_refund_baozi': baozi,
+        'on_hit_refund_abc_zero_or_nine': abc_09,
+        'on_hit_odds_tiers': list(odds_tiers or [])
+    }
+
+
+def _pc28_basic(odds: float, **refund) -> dict:
+    return {'kind': 'basic', 'odds': odds, **_pc28_refund_fields(**refund)}
+
+
+def _pc28_combo(small_odd_big_even: float, big_odd_small_even: float, **refund) -> dict:
+    return {
+        'kind': 'combo_group',
+        'group_odds': {
+            '小单 / 大双': small_odd_big_even,
+            '大单 / 小双': big_odd_small_even
+        },
+        **_pc28_refund_fields(**refund)
+    }
+
+
+def _pc28_number_map(odds_map: dict, **refund) -> dict:
+    return {'kind': 'number_map', 'odds_map': odds_map, **_pc28_refund_fields(**refund)}
+
+
+_NONE_REFUND = dict(refund_policy='none', wraparound=False)
+_HIGH_SPECIAL_REFUND = dict(
+    refund_policy='special_on_hit',
+    wraparound=True,
+    on_hit_sums=(13, 14),
+    pair=True,
+    straight=True,
+    baozi=True
+)
+_FULLPAY_NETDISK_BS = dict(refund_policy='special_sum_on_hit', wraparound=False, on_hit_sums=(0, 27))
+_FULLPAY_2_0_BS = dict(
+    refund_policy='special_sum_on_hit',
+    wraparound=False,
+    on_hit_sums=(0, 27),
+    odds_tiers=[{'sum_values': [13, 14], 'stake_gt': 2001, 'odds': 1.98}]
+)
+_FULLPAY_2_0_COMBO = dict(refund_policy='special_sum_on_hit', wraparound=False, on_hit_sums=(13, 14))
+_FULLPAY_2_8 = dict(
+    refund_policy='special_on_hit',
+    wraparound=True,
+    on_hit_sums=(13, 14),
+    pair=True,
+    straight=True,
+    baozi=True
+)
+_FULLPAY_3_2 = dict(
+    refund_policy='special_sum_or_edge_on_hit',
+    wraparound=True,
+    on_hit_sums=(13, 14),
+    abc_09=True
+)
+
 PC28_PROFIT_RULES = {
     'pc28_netdisk': {
-        'label': '加拿大28网盘',
+        'label': 'OK游戏网盘：无回本，13/14 正常赔付',
         'metrics': {
             'big_small': {
-                'regular': {'kind': 'basic', 'odds': 1.98, 'refund_policy': 'none'},
+                'regular': _pc28_basic(1.98, **_NONE_REFUND),
                 'abc': {'kind': 'basic', 'odds': 1.98, 'refund_policy': 'none'}
             },
             'odd_even': {
-                'regular': {'kind': 'basic', 'odds': 1.98, 'refund_policy': 'none'},
+                'regular': _pc28_basic(1.98, **_NONE_REFUND),
                 'abc': {'kind': 'basic', 'odds': 1.98, 'refund_policy': 'none'}
             },
             'combo': {
-                'regular': {
-                    'kind': 'combo_group',
-                    'refund_policy': 'none',
-                    'group_odds': {
-                        '小单 / 大双': 3.6,
-                        '大单 / 小双': 4.2
-                    }
-                },
+                'regular': _pc28_combo(3.6, 4.2, **_NONE_REFUND),
                 'abc': {
                     'kind': 'combo_group',
                     'refund_policy': 'none',
@@ -151,31 +253,24 @@ PC28_PROFIT_RULES = {
                 }
             },
             'number': {
-                'regular': {'kind': 'number_map', 'odds_map': NETDISK_NUMBER_ODDS},
+                'regular': _pc28_number_map(NETDISK_NUMBER_ODDS, **_NONE_REFUND),
                 'abc': {'kind': 'fixed_number', 'odds': 9.8}
             }
         }
     },
     'pc28_high': {
-        'label': '加拿大28高倍',
+        'label': '加拿大28高倍：大小单双/组合命中且遇特殊号时退本金',
         'metrics': {
             'big_small': {
-                'regular': {'kind': 'basic', 'odds': 2.846, 'refund_policy': 'special_on_hit'},
+                'regular': _pc28_basic(2.846, **_HIGH_SPECIAL_REFUND),
                 'abc': {'kind': 'basic', 'odds': 1.98, 'refund_policy': 'none'}
             },
             'odd_even': {
-                'regular': {'kind': 'basic', 'odds': 2.846, 'refund_policy': 'special_on_hit'},
+                'regular': _pc28_basic(2.846, **_HIGH_SPECIAL_REFUND),
                 'abc': {'kind': 'basic', 'odds': 1.98, 'refund_policy': 'none'}
             },
             'combo': {
-                'regular': {
-                    'kind': 'combo_group',
-                    'refund_policy': 'special_on_hit',
-                    'group_odds': {
-                        '小单 / 大双': 6.78,
-                        '大单 / 小双': 6.33
-                    }
-                },
+                'regular': _pc28_combo(6.78, 6.33, **_HIGH_SPECIAL_REFUND),
                 'abc': {
                     'kind': 'combo_group',
                     'refund_policy': 'none',
@@ -186,9 +281,45 @@ PC28_PROFIT_RULES = {
                 }
             },
             'number': {
-                'regular': {'kind': 'number_map', 'odds_map': HIGH_NUMBER_ODDS},
+                'regular': _pc28_number_map(HIGH_NUMBER_ODDS, **_NONE_REFUND),
                 'abc': {'kind': 'fixed_number', 'odds': 9.9}
             }
+        }
+    },
+    'pc28_fullpay_netdisk': {
+        'label': '彩28网盘：大小单双中奖遇 0/27 退本，未中全亏；组合不退',
+        'metrics': {
+            'big_small': {'regular': _pc28_basic(1.99, **_FULLPAY_NETDISK_BS)},
+            'odd_even': {'regular': _pc28_basic(1.99, **_FULLPAY_NETDISK_BS)},
+            'combo': {'regular': _pc28_combo(3.71, 4.32, **_NONE_REFUND)},
+            'number': {'regular': _pc28_number_map(FULLPAY_NUMBER_ODDS, **_NONE_REFUND)}
+        }
+    },
+    'pc28_fullpay_2_0': {
+        'label': '满赔2.0：大小单双中奖遇 0/27 退本，未中全亏；组合中奖 13/14 退本；大小单双注>2001 遇 13/14 降赔 1.98',
+        'metrics': {
+            'big_small': {'regular': _pc28_basic(2.0, **_FULLPAY_2_0_BS)},
+            'odd_even': {'regular': _pc28_basic(2.0, **_FULLPAY_2_0_BS)},
+            'combo': {'regular': _pc28_combo(4.76, 4.32, **_FULLPAY_2_0_COMBO)},
+            'number': {'regular': _pc28_number_map(FULLPAY_NUMBER_ODDS, **_NONE_REFUND)}
+        }
+    },
+    'pc28_fullpay_2_8': {
+        'label': '满赔2.8：赔率 2.84/6.79/6.33，中奖遇 13/14+对子+顺子+豹子退本',
+        'metrics': {
+            'big_small': {'regular': _pc28_basic(2.84, **_FULLPAY_2_8)},
+            'odd_even': {'regular': _pc28_basic(2.84, **_FULLPAY_2_8)},
+            'combo': {'regular': _pc28_combo(6.79, 6.33, **_FULLPAY_2_8)},
+            'number': {'regular': _pc28_number_map(FULLPAY_NUMBER_ODDS, **_NONE_REFUND)}
+        }
+    },
+    'pc28_fullpay_3_2': {
+        'label': '满赔3.2：中奖遇 13/14 或 ABC 含 0/9 退本',
+        'metrics': {
+            'big_small': {'regular': _pc28_basic(3.2, **_FULLPAY_3_2)},
+            'odd_even': {'regular': _pc28_basic(3.2, **_FULLPAY_3_2)},
+            'combo': {'regular': _pc28_combo(7.0, 6.5, **_FULLPAY_3_2)},
+            'number': {'regular': _pc28_number_map(FULLPAY_NUMBER_ODDS, **_NONE_REFUND)}
         }
     }
 }
@@ -223,6 +354,128 @@ FOOTBALL_PERIOD_OPTIONS = {
 DEFAULT_FOOTBALL_PERIOD_KEY = '30d'
 PC28_PERIOD_KEY = 'day'
 PC28_PERIOD_LABEL = '按 PC28 盘日'
+
+
+def _coerce_pc28_triplet(value) -> Optional[tuple[int, int, int]]:
+    if not value:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        try:
+            digits = tuple(int(item) for item in value)
+        except (TypeError, ValueError):
+            return None
+        if any(digit < 0 or digit > 9 for digit in digits):
+            return None
+        return digits
+    return None
+
+
+def build_pc28_special_flags(draw: dict, *, wraparound: bool = True) -> dict:
+    source_payload = {}
+    try:
+        source_payload = json.loads(draw.get('source_payload') or '{}')
+    except Exception:
+        source_payload = {}
+
+    triplet = _coerce_pc28_triplet(parse_pc28_triplet(source_payload.get('number')))
+    result_number = int(draw.get('result_number') or 0)
+    return {
+        'sum_value': result_number,
+        'is_special_sum': result_number in {13, 14},
+        'is_extreme_sum': result_number in {0, 27},
+        'is_pair': is_pc28_pair(triplet),
+        'is_straight': is_pc28_straight(triplet, wraparound=wraparound),
+        'is_baozi': is_pc28_baozi(triplet),
+        'has_abc_zero_or_nine': has_abc_zero_or_nine(triplet)
+    }
+
+
+def _sum_refund_reason(values) -> str:
+    numbers = [str(item) for item in values or []]
+    if not numbers:
+        return '退本金'
+    return '/'.join(numbers) + ' 退本金'
+
+
+def _expand_legacy_refund_profile(profile: dict) -> dict:
+    if any(
+        key in profile
+        for key in (
+            'always_refund_sum_values',
+            'on_hit_refund_sum_values',
+            'on_hit_refund_pair',
+            'on_hit_refund_straight',
+            'on_hit_refund_baozi',
+            'on_hit_refund_abc_zero_or_nine',
+            'on_hit_odds_tiers'
+        )
+    ):
+        return profile
+    if profile.get('refund_policy') == 'special_on_hit':
+        return {
+            **profile,
+            'on_hit_refund_sum_values': [13, 14],
+            'on_hit_refund_pair': True,
+            'on_hit_refund_straight': True,
+            'on_hit_refund_baozi': True
+        }
+    return profile
+
+
+def settle_pc28_metric(
+    *,
+    hit: bool,
+    odds: float,
+    stake_amount: float,
+    sum_value: Optional[int],
+    special_flags: dict,
+    profile: dict
+) -> tuple[str, Optional[str], float]:
+    spec = _expand_legacy_refund_profile(profile or {})
+    always_sums = {
+        int(item)
+        for item in (spec.get('always_refund_sum_values') or [])
+        if item is not None and str(item).lstrip('-').isdigit()
+    }
+    if sum_value is not None and int(sum_value) in always_sums:
+        return 'refund', _sum_refund_reason(sorted(always_sums)), float(odds)
+    if special_flags.get('is_extreme_sum') and (0 in always_sums or 27 in always_sums):
+        return 'refund', _sum_refund_reason(sorted(always_sums)), float(odds)
+    if not hit:
+        return 'miss', None, float(odds)
+
+    on_hit_sums = {
+        int(item)
+        for item in (spec.get('on_hit_refund_sum_values') or [])
+        if item is not None and str(item).lstrip('-').isdigit()
+    }
+    if sum_value is not None and int(sum_value) in on_hit_sums:
+        return 'refund', _sum_refund_reason(sorted(on_hit_sums)), float(odds)
+    if special_flags.get('is_special_sum') and (13 in on_hit_sums or 14 in on_hit_sums):
+        return 'refund', _sum_refund_reason(sorted(on_hit_sums)), float(odds)
+    if spec.get('on_hit_refund_baozi') and special_flags.get('is_baozi'):
+        return 'refund', '豹子退本金', float(odds)
+    if spec.get('on_hit_refund_straight') and special_flags.get('is_straight'):
+        return 'refund', '顺子退本金', float(odds)
+    if spec.get('on_hit_refund_pair') and special_flags.get('is_pair'):
+        return 'refund', '对子退本金', float(odds)
+    if spec.get('on_hit_refund_abc_zero_or_nine') and special_flags.get('has_abc_zero_or_nine'):
+        return 'refund', 'ABC 含 0/9 退本金', float(odds)
+
+    effective_odds = float(odds)
+    for tier in spec.get('on_hit_odds_tiers') or []:
+        sums = {int(item) for item in (tier.get('sum_values') or []) if str(item).lstrip('-').isdigit()}
+        try:
+            stake_gt = float(tier.get('stake_gt') or 0)
+        except (TypeError, ValueError):
+            stake_gt = 0.0
+        if sum_value is not None and int(sum_value) in sums and float(stake_amount) > stake_gt:
+            try:
+                effective_odds = float(tier.get('odds') or effective_odds)
+            except (TypeError, ValueError):
+                pass
+            break
+    return 'hit', None, effective_odds
 
 
 class ProfitSimulator:
@@ -879,7 +1132,10 @@ class ProfitSimulator:
         if not profile:
             return None
 
-        special_flags = self._build_special_flags(draw)
+        special_flags = self._build_special_flags(
+            draw,
+            wraparound=bool(profile.get('straight_wraparound', True))
+        )
         open_time = parse_beijing_time(draw.get('open_time'))
         if not open_time:
             return None
@@ -891,6 +1147,8 @@ class ProfitSimulator:
         refund_reason = None
         odds = 0.0
         stake_amount = self._resolve_stake_amount(bet_strategy, bet_step)
+        sum_value = draw.get('result_number')
+        parsed_sum = int(sum_value) if sum_value is not None and str(sum_value).lstrip('-').isdigit() else None
 
         if metric == 'big_small':
             predicted_value = prediction.get('prediction_big_small')
@@ -899,10 +1157,13 @@ class ProfitSimulator:
                 return None
             odds = float(profile['odds'])
             ticket_label = predicted_value
-            result_type, refund_reason = self._resolve_refund_aware_result(
-                predicted_value == actual_value,
-                special_flags,
-                profile.get('refund_policy', 'none')
+            result_type, refund_reason, odds = settle_pc28_metric(
+                hit=predicted_value == actual_value,
+                odds=odds,
+                stake_amount=stake_amount,
+                sum_value=parsed_sum,
+                special_flags=special_flags,
+                profile=profile
             )
         elif metric == 'odd_even':
             predicted_value = prediction.get('prediction_odd_even')
@@ -911,10 +1172,13 @@ class ProfitSimulator:
                 return None
             odds = float(profile['odds'])
             ticket_label = predicted_value
-            result_type, refund_reason = self._resolve_refund_aware_result(
-                predicted_value == actual_value,
-                special_flags,
-                profile.get('refund_policy', 'none')
+            result_type, refund_reason, odds = settle_pc28_metric(
+                hit=predicted_value == actual_value,
+                odds=odds,
+                stake_amount=stake_amount,
+                sum_value=parsed_sum,
+                special_flags=special_flags,
+                profile=profile
             )
         elif metric == 'combo':
             predicted_value = prediction.get('prediction_combo')
@@ -925,10 +1189,13 @@ class ProfitSimulator:
             if odds is None:
                 return None
             ticket_label = predicted_value
-            result_type, refund_reason = self._resolve_refund_aware_result(
-                predicted_value == actual_value,
-                special_flags,
-                profile.get('refund_policy', 'none')
+            result_type, refund_reason, odds = settle_pc28_metric(
+                hit=predicted_value == actual_value,
+                odds=float(odds),
+                stake_amount=stake_amount,
+                sum_value=parsed_sum,
+                special_flags=special_flags,
+                profile=profile
             )
         elif metric == 'number':
             predicted_value = prediction.get('prediction_number')
@@ -1178,21 +1445,8 @@ class ProfitSimulator:
         default_odds_profile = FOOTBALL_DEFAULT_ODDS_PROFILE if lottery_type == 'jingcai_football' else DEFAULT_ODDS_PROFILE
         return metric_profiles.get(odds_profile) or metric_profiles.get(default_odds_profile)
 
-    def _build_special_flags(self, draw: dict) -> dict:
-        source_payload = {}
-        try:
-            source_payload = json.loads(draw.get('source_payload') or '{}')
-        except Exception:
-            source_payload = {}
-
-        triplet = parse_pc28_triplet(source_payload.get('number'))
-        result_number = int(draw.get('result_number') or 0)
-        return {
-            'is_special_sum': result_number in {13, 14},
-            'is_pair': is_pc28_pair(triplet),
-            'is_straight': is_pc28_straight(triplet),
-            'is_baozi': is_pc28_baozi(triplet)
-        }
+    def _build_special_flags(self, draw: dict, *, wraparound: bool = True) -> dict:
+        return build_pc28_special_flags(draw, wraparound=wraparound)
 
     def _resolve_refund_aware_result(
         self,
@@ -1200,21 +1454,15 @@ class ProfitSimulator:
         special_flags: dict,
         refund_policy: str
     ) -> tuple[str, Optional[str]]:
-        if not hit:
-            return 'miss', None
-
-        if refund_policy != 'special_on_hit':
-            return 'hit', None
-
-        if special_flags.get('is_special_sum'):
-            return 'refund', '13/14 退本金'
-        if special_flags.get('is_baozi'):
-            return 'refund', '豹子退本金'
-        if special_flags.get('is_straight'):
-            return 'refund', '顺子退本金'
-        if special_flags.get('is_pair'):
-            return 'refund', '对子退本金'
-        return 'hit', None
+        result_type, refund_reason, _odds = settle_pc28_metric(
+            hit=hit,
+            odds=1.0,
+            stake_amount=0.0,
+            sum_value=special_flags.get('sum_value'),
+            special_flags=special_flags,
+            profile={'refund_policy': refund_policy}
+        )
+        return result_type, refund_reason
 
     def _combo_odds_for_value(self, combo_value: str, group_odds: dict[str, float]) -> Optional[float]:
         for group_label, config in COMBO_GROUPS.items():

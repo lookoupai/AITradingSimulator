@@ -77,7 +77,8 @@ from utils.pc28 import (
     mask_api_key,
     normalize_api_mode,
     normalize_injection_mode,
-    normalize_share_level
+    normalize_share_level,
+    to_export_profit_rule_id
 )
 from utils.predictor_engine import (
     get_user_algorithm_id,
@@ -1035,7 +1036,7 @@ def _build_pc28_execution_signal_view(predictor: dict, prediction: dict) -> dict
                 'predictor_id': predictor.get('id'),
                 'primary_metric': predictor.get('primary_metric'),
                 'share_level': share_level,
-                'profit_rule_id': predictor.get('profit_rule_id') or DEFAULT_PROFIT_RULE_ID,
+                'profit_rule_id': to_export_profit_rule_id(predictor.get('profit_rule_id') or DEFAULT_PROFIT_RULE_ID),
                 'odds_profile': DEFAULT_ODDS_PROFILE
             }
         }

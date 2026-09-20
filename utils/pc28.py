@@ -12,7 +12,23 @@ ALLOWED_INJECTION_MODES = ('summary', 'raw')
 ALLOWED_API_MODES = ('auto', 'chat_completions', 'chat_completions_no_thinking', 'responses')
 ALLOWED_PRIMARY_METRICS = ('combo', 'number', 'big_small', 'odd_even', 'double_group', 'kill_group')
 ALLOWED_PROFIT_METRICS = ('combo', 'number', 'big_small', 'odd_even')
-ALLOWED_PROFIT_RULES = ('pc28_netdisk', 'pc28_high')
+ALLOWED_PROFIT_RULES = (
+    'pc28_netdisk',
+    'pc28_high',
+    'pc28_fullpay_netdisk',
+    'pc28_fullpay_2_0',
+    'pc28_fullpay_2_8',
+    'pc28_fullpay_3_2',
+)
+EXPORT_PROFIT_RULES = ('pc28_netdisk', 'pc28_high')
+EXPORT_PROFIT_RULE_MAP = {
+    'pc28_netdisk': 'pc28_netdisk',
+    'pc28_high': 'pc28_high',
+    'pc28_fullpay_netdisk': 'pc28_netdisk',
+    'pc28_fullpay_2_0': 'pc28_netdisk',
+    'pc28_fullpay_2_8': 'pc28_high',
+    'pc28_fullpay_3_2': 'pc28_high',
+}
 ALLOWED_SHARE_LEVELS = ('stats_only', 'records', 'analysis')
 DEFAULT_PROFIT_RULE_ID = 'pc28_netdisk'
 
@@ -97,6 +113,14 @@ def normalize_profit_rule(value: Optional[str], default: str = DEFAULT_PROFIT_RU
     text = str(value or '').strip().lower()
     if text in ALLOWED_PROFIT_RULES:
         return text
+    return default
+
+
+def to_export_profit_rule_id(value: Optional[str], default: str = DEFAULT_PROFIT_RULE_ID) -> str:
+    """执行信号只导出旧网盘/高倍，满赔四套映射到最接近的旧 ID。"""
+    mapped = EXPORT_PROFIT_RULE_MAP.get(normalize_profit_rule(value, default=default), default)
+    if mapped in EXPORT_PROFIT_RULES:
+        return mapped
     return default
 
 
@@ -313,21 +337,22 @@ def is_pc28_pair(triplet: Optional[tuple[int, int, int]]) -> bool:
     return bool(triplet and not is_pc28_baozi(triplet) and len(set(triplet)) == 2)
 
 
-def is_pc28_straight(triplet: Optional[tuple[int, int, int]]) -> bool:
-    """判断是否顺子，支持 890 / 901 / 012 这类循环顺子"""
+def is_pc28_straight(triplet: Optional[tuple[int, int, int]], *, wraparound: bool = True) -> bool:
+    """判断是否顺子。wraparound=True 时 890 / 190 也算顺子。"""
     if not triplet or len(set(triplet)) != 3:
         return False
 
-    values = set(triplet)
-    for start in range(10):
-        sequence = {
-            start % 10,
-            (start + 1) % 10,
-            (start + 2) % 10
-        }
-        if values == sequence:
-            return True
-    return False
+    ordered = sorted(int(item) for item in triplet)
+    if ordered[0] + 1 == ordered[1] and ordered[1] + 1 == ordered[2]:
+        return True
+    if not wraparound:
+        return False
+    return set(ordered) in ({0, 8, 9}, {0, 1, 9})
+
+
+def has_abc_zero_or_nine(triplet: Optional[tuple[int, int, int]]) -> bool:
+    """ABC 任球为 0 或 9。"""
+    return bool(triplet) and any(int(item) in {0, 9} for item in triplet)
 
 
 def parse_pc28_triplet(value) -> list[int]:
