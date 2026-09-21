@@ -135,11 +135,11 @@ const LOTTERY_UI_CONFIG = {
         ],
         profitRuleOptions: [
             { key: 'pc28_netdisk', label: 'OK游戏网盘：无回本，13/14 正常赔付' },
-            { key: 'pc28_high', label: '加拿大28高倍：大小单双/组合命中且遇特殊号时退本金' },
+            { key: 'pc28_high', label: 'OK游戏高赔常规：大小单双/组合命中且遇特殊号时退本金' },
             { key: 'pc28_fullpay_netdisk', label: '彩28网盘：大小单双中奖遇 0/27 退本，未中全亏；组合不退' },
-            { key: 'pc28_fullpay_2_0', label: '满赔2.0：大小单双中奖遇 0/27 退本，未中全亏；组合中奖 13/14 退本；大小单双注>2001 遇 13/14 降赔 1.98' },
-            { key: 'pc28_fullpay_2_8', label: '满赔2.8：赔率 2.84/6.79/6.33，中奖遇 13/14+对子+顺子+豹子退本' },
-            { key: 'pc28_fullpay_3_2', label: '满赔3.2：中奖遇 13/14 或 ABC 含 0/9 退本' }
+            { key: 'pc28_fullpay_2_0', label: '彩28满赔2.0：大小单双中奖遇 0/27 退本，未中全亏；组合中奖 13/14 退本；大小单双注>2001 遇 13/14 降赔 1.98' },
+            { key: 'pc28_fullpay_2_8', label: '彩28满赔2.8：赔率 2.84/6.79/6.33，中奖遇 13/14+对子+顺子+豹子退本' },
+            { key: 'pc28_fullpay_3_2', label: '彩28满赔3.2：中奖遇 13/14 或 ABC 含 0/9 退本' }
         ],
         machineAlgorithms: [
             {
@@ -160,7 +160,7 @@ const LOTTERY_UI_CONFIG = {
             {
                 key: 'pc28_high_ev_combo_v1',
                 label: '高赔组合期望值 V1',
-                description: '按高赔常规结算的全量历史分布固定选择正期望组合，不依赖 AI 模型。'
+                description: '按 OK游戏高赔常规结算的全量历史分布固定选择正期望组合，不依赖 AI 模型。'
             }
         ],
         defaultPrimaryMetric: 'big_small',

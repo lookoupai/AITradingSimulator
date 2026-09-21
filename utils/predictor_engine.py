@@ -33,7 +33,7 @@ MACHINE_ALGORITHM_CATALOG = {
         {
             'key': 'pc28_high_ev_combo_v1',
             'label': '高赔组合期望值 V1',
-            'description': '按高赔常规结算的全量历史分布固定选择正期望组合，不依赖 AI 模型。'
+            'description': '按 OK游戏高赔常规结算的全量历史分布固定选择正期望组合，不依赖 AI 模型。'
         },
     ),
     'jingcai_football': (

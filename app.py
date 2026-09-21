@@ -2436,7 +2436,7 @@ def _validate_predictor_payload(
         and algorithm_key == 'pc28_high_ev_combo_v1'
         and profit_rule_id != 'pc28_high'
     ):
-        errors.append('高赔组合期望值 V1 仅支持加拿大28高倍结算规则')
+        errors.append('高赔组合期望值 V1 仅支持OK游戏高赔常规结算规则')
     if engine_type == 'machine' and is_user_algorithm_key(algorithm_key):
         user_algorithm_id = get_user_algorithm_id(algorithm_key)
         user_algorithm = db.get_user_algorithm_for_user(user_algorithm_id, user_id) if user_id and user_algorithm_id else None

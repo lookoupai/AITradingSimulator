@@ -156,7 +156,6 @@ FULLPAY_NUMBER_ODDS = {
 def _pc28_refund_fields(
     *,
     wraparound: bool = True,
-    always_sums: tuple[int, ...] = (),
     on_hit_sums: tuple[int, ...] = (),
     pair: bool = False,
     straight: bool = False,
@@ -168,7 +167,6 @@ def _pc28_refund_fields(
     return {
         'refund_policy': refund_policy,
         'straight_wraparound': wraparound,
-        'always_refund_sum_values': list(always_sums),
         'on_hit_refund_sum_values': list(on_hit_sums),
         'on_hit_refund_pair': pair,
         'on_hit_refund_straight': straight,
@@ -259,7 +257,7 @@ PC28_PROFIT_RULES = {
         }
     },
     'pc28_high': {
-        'label': '加拿大28高倍：大小单双/组合命中且遇特殊号时退本金',
+        'label': 'OK游戏高赔常规：大小单双/组合命中且遇特殊号时退本金',
         'metrics': {
             'big_small': {
                 'regular': _pc28_basic(2.846, **_HIGH_SPECIAL_REFUND),
@@ -296,7 +294,7 @@ PC28_PROFIT_RULES = {
         }
     },
     'pc28_fullpay_2_0': {
-        'label': '满赔2.0：大小单双中奖遇 0/27 退本，未中全亏；组合中奖 13/14 退本；大小单双注>2001 遇 13/14 降赔 1.98',
+        'label': '彩28满赔2.0：大小单双中奖遇 0/27 退本，未中全亏；组合中奖 13/14 退本；大小单双注>2001 遇 13/14 降赔 1.98',
         'metrics': {
             'big_small': {'regular': _pc28_basic(2.0, **_FULLPAY_2_0_BS)},
             'odd_even': {'regular': _pc28_basic(2.0, **_FULLPAY_2_0_BS)},
@@ -305,7 +303,7 @@ PC28_PROFIT_RULES = {
         }
     },
     'pc28_fullpay_2_8': {
-        'label': '满赔2.8：赔率 2.84/6.79/6.33，中奖遇 13/14+对子+顺子+豹子退本',
+        'label': '彩28满赔2.8：赔率 2.84/6.79/6.33，中奖遇 13/14+对子+顺子+豹子退本',
         'metrics': {
             'big_small': {'regular': _pc28_basic(2.84, **_FULLPAY_2_8)},
             'odd_even': {'regular': _pc28_basic(2.84, **_FULLPAY_2_8)},
@@ -314,7 +312,7 @@ PC28_PROFIT_RULES = {
         }
     },
     'pc28_fullpay_3_2': {
-        'label': '满赔3.2：中奖遇 13/14 或 ABC 含 0/9 退本',
+        'label': '彩28满赔3.2：中奖遇 13/14 或 ABC 含 0/9 退本',
         'metrics': {
             'big_small': {'regular': _pc28_basic(3.2, **_FULLPAY_3_2)},
             'odd_even': {'regular': _pc28_basic(3.2, **_FULLPAY_3_2)},
@@ -382,7 +380,6 @@ def build_pc28_special_flags(draw: dict, *, wraparound: bool = True) -> dict:
     return {
         'sum_value': result_number,
         'is_special_sum': result_number in {13, 14},
-        'is_extreme_sum': result_number in {0, 27},
         'is_pair': is_pc28_pair(triplet),
         'is_straight': is_pc28_straight(triplet, wraparound=wraparound),
         'is_baozi': is_pc28_baozi(triplet),
@@ -401,7 +398,6 @@ def _expand_legacy_refund_profile(profile: dict) -> dict:
     if any(
         key in profile
         for key in (
-            'always_refund_sum_values',
             'on_hit_refund_sum_values',
             'on_hit_refund_pair',
             'on_hit_refund_straight',
@@ -432,15 +428,6 @@ def settle_pc28_metric(
     profile: dict
 ) -> tuple[str, Optional[str], float]:
     spec = _expand_legacy_refund_profile(profile or {})
-    always_sums = {
-        int(item)
-        for item in (spec.get('always_refund_sum_values') or [])
-        if item is not None and str(item).lstrip('-').isdigit()
-    }
-    if sum_value is not None and int(sum_value) in always_sums:
-        return 'refund', _sum_refund_reason(sorted(always_sums)), float(odds)
-    if special_flags.get('is_extreme_sum') and (0 in always_sums or 27 in always_sums):
-        return 'refund', _sum_refund_reason(sorted(always_sums)), float(odds)
     if not hit:
         return 'miss', None, float(odds)
 

@@ -403,7 +403,7 @@ def _predict_pc28_combo_markov_v1(context: dict, predictor: dict) -> tuple[dict,
 
 def _predict_pc28_high_ev_combo_v1(context: dict, predictor: dict) -> tuple[dict, dict]:
     if str(predictor.get('profit_rule_id') or '').strip() != 'pc28_high':
-        raise ValueError('高赔组合期望值 V1 仅支持加拿大28高倍结算规则')
+        raise ValueError('高赔组合期望值 V1 仅支持OK游戏高赔常规结算规则')
 
     normal_hit_rate = 0.150
     refund_rate = 0.081
@@ -419,7 +419,7 @@ def _predict_pc28_high_ev_combo_v1(context: dict, predictor: dict) -> tuple[dict
         'prediction_odd_even': '单',
         'prediction_combo': '大单',
         'confidence': round(normal_hit_rate + refund_rate, 3),
-        'reasoning_summary': '高赔常规结算下，大单的全量历史期望值为正，固定执行1单位基线'
+        'reasoning_summary': 'OK游戏高赔常规结算下，大单的全量历史期望值为正，固定执行1单位基线'
     }
     debug_payload = {
         'algorithm': 'pc28_high_ev_combo_v1',

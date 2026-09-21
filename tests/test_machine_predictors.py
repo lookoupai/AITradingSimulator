@@ -464,7 +464,7 @@ class MachinePredictorRouteTests(unittest.TestCase):
             })
 
             self.assertEqual(response.status_code, 400)
-            self.assertIn('仅支持加拿大28高倍结算规则', response.get_json()['error'])
+            self.assertIn('仅支持OK游戏高赔常规结算规则', response.get_json()['error'])
 
     def test_predict_now_runs_football_machine_algorithm(self):
         with fresh_app_harness() as harness:
