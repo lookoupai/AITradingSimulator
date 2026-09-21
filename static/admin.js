@@ -188,7 +188,7 @@ class AdminPage {
             }
 
             this.renderSummary(data.summary || {});
-            this.renderScheduler(data.scheduler || {});
+            this.renderScheduler(data.scheduler || {}, data.jingcai_prediction_scheduler || {});
             this.renderJingcaiDataHealth(data.jingcai_data_health || {});
             this.renderPredictionGuard(data.prediction_guard || {});
             this.renderNotificationSettings(data.notification_settings || {});
@@ -304,19 +304,24 @@ class AdminPage {
         `;
     }
 
-    renderScheduler(scheduler) {
+    renderScheduler(scheduler, jingcaiScheduler) {
         const container = document.getElementById('adminSchedulerPanel');
         const heartbeatText = scheduler.heartbeat_at || '--';
         const ageText = scheduler.seconds_since_heartbeat === null || scheduler.seconds_since_heartbeat === undefined
             ? '--'
             : `${scheduler.seconds_since_heartbeat} 秒前`;
         const statusText = scheduler.auto_prediction_enabled ? '自动预测已启用' : '自动预测已关闭';
+        const jingcaiHeartbeatText = jingcaiScheduler.heartbeat_at || '--';
+        const jingcaiAgeText = jingcaiScheduler.seconds_since_heartbeat === null || jingcaiScheduler.seconds_since_heartbeat === undefined
+            ? '--'
+            : `${jingcaiScheduler.seconds_since_heartbeat} 秒前`;
+        const jingcaiStatusText = jingcaiScheduler.auto_prediction_enabled ? '自动预测已启用' : '自动预测已关闭';
 
         container.className = 'prediction-summary';
         container.innerHTML = `
             <div class="prediction-grid prediction-grid-compact">
                 <div class="prediction-card">
-                    <span class="mini-label">调度任务</span>
+                    <span class="mini-label">PC28 调度</span>
                     <strong>${this.escapeHtml(scheduler.name || '--')}</strong>
                 </div>
                 <div class="prediction-card">
@@ -335,6 +340,27 @@ class AdminPage {
                 <div class="prediction-card">
                     <span class="mini-label">持有者</span>
                     <strong class="share-link-text">${this.escapeHtml(scheduler.owner_id || '--')}</strong>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">竞彩调度</span>
+                    <strong>${this.escapeHtml(jingcaiScheduler.name || '--')}</strong>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">运行状态</span>
+                    <strong>${this.escapeHtml(jingcaiStatusText)}</strong>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">锁过期</span>
+                    <strong>${this.escapeHtml(String(jingcaiScheduler.stale_after_seconds || '--'))} 秒</strong>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">最近心跳</span>
+                    <strong>${this.escapeHtml(jingcaiHeartbeatText)}</strong>
+                    <span class="card-hint">${this.escapeHtml(jingcaiAgeText)}</span>
+                </div>
+                <div class="prediction-card">
+                    <span class="mini-label">持有者</span>
+                    <strong class="share-link-text">${this.escapeHtml(jingcaiScheduler.owner_id || '--')}</strong>
                 </div>
             </div>
         `;

@@ -54,7 +54,7 @@ class LotteryRuntime:
     def run_pc28_cycle(self) -> dict:
         return self.pc28_engine.run_auto_cycle()
 
-    def run_lottery_cycle(self, lottery_type: str) -> dict:
+    def run_lottery_cycle(self, lottery_type: str, on_progress=None) -> dict:
         if lottery_type == 'pc28':
             return self.run_pc28_cycle()
 
@@ -63,7 +63,7 @@ class LotteryRuntime:
             raise ValueError(f'暂不支持的彩种: {lottery_type}')
 
         if hasattr(handler, 'run_auto_cycle'):
-            return handler.run_auto_cycle(self.db)
+            return handler.run_auto_cycle(self.db, on_progress=on_progress)
 
         settled_items = handler.settle_pending_predictions(self.db)
         prediction_results = []

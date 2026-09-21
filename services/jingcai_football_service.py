@@ -789,7 +789,15 @@ class JingcaiFootballService:
 
         return [item for item in settled_items if item.get('status') == 'settled']
 
-    def run_auto_cycle(self, db) -> dict:
+    def run_auto_cycle(self, db, on_progress=None) -> dict:
+        def _beat():
+            if on_progress is None:
+                return
+            try:
+                on_progress()
+            except Exception:
+                return
+
         now = get_current_beijing_time()
         if self._next_auto_run_at and now < self._next_auto_run_at:
             return {
@@ -798,6 +806,7 @@ class JingcaiFootballService:
             }
 
         settled_items = self.settle_pending_predictions(db)
+        _beat()
         predictors = db.get_enabled_predictors(
             lottery_type=self.lottery_type,
             include_secret=True,
@@ -820,53 +829,58 @@ class JingcaiFootballService:
         except Exception as exc:
             interval = config.JINGCAI_SETTLEMENT_POLL_INTERVAL if pending_runs else config.JINGCAI_IDLE_POLL_INTERVAL
             self._set_next_auto_run(now, interval, f'overview unavailable: {exc}')
+            _beat()
             return {
                 'settled_count': len(settled_items),
                 'predictions': []
             }
+        _beat()
 
         prediction_results = []
         batch_key = batch_payload.get('batch_key') or ''
         if open_matches and batch_key:
             for predictor in predictors:
-                existing_run = db.get_prediction_run_by_key(predictor['id'], batch_key)
-                if existing_run and existing_run.get('status') == 'settled':
-                    prediction_results.append({
-                        'predictor_id': predictor['id'],
-                        'lottery_type': self.lottery_type,
-                        'issue_no': existing_run.get('run_key'),
-                        'status': existing_run.get('status')
-                    })
-                    continue
-                if existing_run and existing_run.get('status') in {'pending', 'failed'} and not self._run_has_retryable_failed_items(
-                    db,
-                    existing_run,
-                    open_matches,
-                    auto_mode=True
-                ):
-                    prediction_results.append({
-                        'predictor_id': predictor['id'],
-                        'lottery_type': self.lottery_type,
-                        'issue_no': existing_run.get('run_key'),
-                        'status': existing_run.get('status')
-                    })
-                    continue
-
                 try:
-                    result = self.generate_prediction(db, predictor, auto_mode=True, batch_payload=batch_payload)
-                    prediction_results.append({
-                        'predictor_id': predictor['id'],
-                        'lottery_type': self.lottery_type,
-                        'issue_no': result.get('run_key'),
-                        'status': result.get('status', 'pending')
-                    })
-                except Exception as exc:
-                    prediction_results.append({
-                        'predictor_id': predictor['id'],
-                        'lottery_type': self.lottery_type,
-                        'status': 'failed',
-                        'error': str(exc)
-                    })
+                    existing_run = db.get_prediction_run_by_key(predictor['id'], batch_key)
+                    if existing_run and existing_run.get('status') == 'settled':
+                        prediction_results.append({
+                            'predictor_id': predictor['id'],
+                            'lottery_type': self.lottery_type,
+                            'issue_no': existing_run.get('run_key'),
+                            'status': existing_run.get('status')
+                        })
+                        continue
+                    if existing_run and existing_run.get('status') in {'pending', 'failed'} and not self._run_has_retryable_failed_items(
+                        db,
+                        existing_run,
+                        open_matches,
+                        auto_mode=True
+                    ):
+                        prediction_results.append({
+                            'predictor_id': predictor['id'],
+                            'lottery_type': self.lottery_type,
+                            'issue_no': existing_run.get('run_key'),
+                            'status': existing_run.get('status')
+                        })
+                        continue
+
+                    try:
+                        result = self.generate_prediction(db, predictor, auto_mode=True, batch_payload=batch_payload)
+                        prediction_results.append({
+                            'predictor_id': predictor['id'],
+                            'lottery_type': self.lottery_type,
+                            'issue_no': result.get('run_key'),
+                            'status': result.get('status', 'pending')
+                        })
+                    except Exception as exc:
+                        prediction_results.append({
+                            'predictor_id': predictor['id'],
+                            'lottery_type': self.lottery_type,
+                            'status': 'failed',
+                            'error': str(exc)
+                        })
+                finally:
+                    _beat()
 
         interval = self._compute_next_poll_seconds(
             next_match_time=next_match_time,

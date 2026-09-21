@@ -150,6 +150,8 @@ _external_collector_stop_event = threading.Event()
 _external_collector_thread = None
 _scheduler_owner_id = f'{os.getpid()}-{uuid.uuid4().hex}'
 AUTO_PREDICTION_SCHEDULER = 'lottery-auto-prediction'
+JINGCAI_PREDICTION_SCHEDULER = 'jingcai-auto-prediction'
+JINGCAI_PREDICTION_STALE_AFTER_SECONDS = 40 * 60
 JINGCAI_HISTORY_BACKFILL_SCHEDULER = 'jingcai-history-backfill'
 NOTIFICATION_DELIVERY_SCHEDULER = 'notification-delivery-worker'
 EXTERNAL_SOURCE_COLLECTOR_SCHEDULER = 'external-source-collector'
@@ -204,8 +206,8 @@ def initialize_application():
             _app_initialized = True
 
         if config.AUTO_PREDICTION and not _scheduler_started:
-            scheduler_thread = threading.Thread(target=prediction_loop, daemon=True)
-            scheduler_thread.start()
+            threading.Thread(target=pc28_prediction_loop, name='pc28-prediction', daemon=True).start()
+            threading.Thread(target=jingcai_prediction_loop, name='jingcai-prediction', daemon=True).start()
             _scheduler_started = True
 
         if (
@@ -445,22 +447,18 @@ def external_source_loop():
             _external_collector_stop_event.wait(30)
 
 
-def prediction_loop():
+def pc28_prediction_loop():
     _log_runtime_event(
         'info',
-        'prediction_loop_started',
+        'pc28_prediction_loop_started',
         process_id=os.getpid(),
         scheduler_name=AUTO_PREDICTION_SCHEDULER
     )
     scheduler_name = AUTO_PREDICTION_SCHEDULER
     stale_after_seconds = max(config.PREDICTION_POLL_INTERVAL * 3, 60)
-    last_cycle_at = {
-        'pc28': 0.0,
-        'jingcai_football': 0.0
-    }
+    last_cycle_at = 0.0
     last_retention_maintenance_at = 0.0
     last_vacuum_at = 0.0
-    last_jingcai_retention_maintenance_at = 0.0
 
     while config.AUTO_PREDICTION:
         try:
@@ -474,33 +472,27 @@ def prediction_loop():
             if acquired:
                 db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
                 now_monotonic = time.monotonic()
-                total_settled = 0
-                total_predictions = []
                 pc28_cycle_summary = {
                     'ran': False,
                     'duration_ms': 0,
                     'settled_count': 0,
                     'prediction_count': 0
                 }
-                jingcai_cycle_summary = {
-                    'ran': False,
-                    'duration_ms': 0,
-                    'settled_count': 0,
-                    'prediction_count': 0
-                }
+                settled_count = 0
+                prediction_count = 0
 
-                if now_monotonic - last_cycle_at['pc28'] >= max(config.PREDICTION_POLL_INTERVAL, 5):
+                if now_monotonic - last_cycle_at >= max(config.PREDICTION_POLL_INTERVAL, 5):
                     pc28_started_at = time.monotonic()
                     pc28_result = lottery_runtime.run_pc28_cycle()
                     pc28_snapshot = _snapshot_pc28_draw_state()
-                    total_settled += int(pc28_result.get('settled_count') or 0)
-                    total_predictions.extend(pc28_result.get('predictions') or [])
-                    last_cycle_at['pc28'] = now_monotonic
+                    settled_count = int(pc28_result.get('settled_count') or 0)
+                    prediction_count = len(pc28_result.get('predictions') or [])
+                    last_cycle_at = now_monotonic
                     pc28_cycle_summary = {
                         'ran': True,
                         'duration_ms': int((time.monotonic() - pc28_started_at) * 1000),
-                        'settled_count': int(pc28_result.get('settled_count') or 0),
-                        'prediction_count': len(pc28_result.get('predictions') or []),
+                        'settled_count': settled_count,
+                        'prediction_count': prediction_count,
                         **pc28_snapshot
                     }
                     _log_runtime_event(
@@ -510,34 +502,6 @@ def prediction_loop():
                         owner_id=_scheduler_owner_id,
                         **pc28_cycle_summary
                     )
-
-                jingcai_plan = jingcai_football_service.get_scheduler_plan(db)
-                if now_monotonic - last_cycle_at['jingcai_football'] >= max(int(jingcai_plan.get('interval_seconds') or 0), 5):
-                    jingcai_started_at = time.monotonic()
-                    jingcai_result = lottery_runtime.run_lottery_cycle('jingcai_football')
-                    total_settled += int(jingcai_result.get('settled_count') or 0)
-                    total_predictions.extend(jingcai_result.get('predictions') or [])
-                    last_cycle_at['jingcai_football'] = now_monotonic
-                    jingcai_cycle_summary = {
-                        'ran': True,
-                        'duration_ms': int((time.monotonic() - jingcai_started_at) * 1000),
-                        'settled_count': int(jingcai_result.get('settled_count') or 0),
-                        'prediction_count': len(jingcai_result.get('predictions') or []),
-                        'mode': jingcai_plan.get('mode'),
-                        'interval_seconds': int(jingcai_plan.get('interval_seconds') or 0)
-                    }
-                    _log_runtime_event(
-                        'info',
-                        'jingcai_cycle_completed',
-                        scheduler_name=scheduler_name,
-                        owner_id=_scheduler_owner_id,
-                        **jingcai_cycle_summary
-                    )
-
-                result = {
-                    'settled_count': total_settled,
-                    'predictions': total_predictions
-                }
 
                 maintenance_interval = max(300, int(config.PC28_ARCHIVE_MAINTENANCE_INTERVAL))
                 if now_monotonic - last_retention_maintenance_at >= maintenance_interval:
@@ -571,7 +535,152 @@ def prediction_loop():
                                 owner_id=_scheduler_owner_id
                             )
 
-                # 竞彩足球 retention 维护：复用 PC28 的 maintenance_interval，避免引入新调度配置
+                db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
+                total_duration_ms = int((time.monotonic() - loop_started_at) * 1000)
+                cycle_level = 'warning' if total_duration_ms >= config.PREDICTION_POLL_INTERVAL * 1000 else 'info'
+                _log_runtime_event(
+                    cycle_level,
+                    'scheduler_cycle_completed',
+                    scheduler_name=scheduler_name,
+                    owner_id=_scheduler_owner_id,
+                    settled_count=settled_count,
+                    prediction_count=prediction_count,
+                    total_duration_ms=total_duration_ms,
+                    pc28_ran=pc28_cycle_summary.get('ran'),
+                    pc28_duration_ms=pc28_cycle_summary.get('duration_ms'),
+                    pc28_latest_draw_issue_no=pc28_cycle_summary.get('latest_draw_issue_no'),
+                    pc28_next_issue_guess=pc28_cycle_summary.get('next_issue_guess')
+                )
+            else:
+                log_level = 'warning' if lock_result.get('error') else 'debug'
+                _log_runtime_event(
+                    log_level,
+                    'scheduler_lock_skipped',
+                    scheduler_name=scheduler_name,
+                    owner_id=_scheduler_owner_id,
+                    current_owner_id=lock_result.get('current_owner_id'),
+                    current_heartbeat_at=lock_result.get('current_heartbeat_at'),
+                    is_stale=lock_result.get('is_stale'),
+                    error=lock_result.get('error')
+                )
+
+            time.sleep(max(5, config.PREDICTION_POLL_INTERVAL))
+        except Exception as exc:
+            runtime_logger.exception(
+                json.dumps(
+                    {
+                        'event': 'pc28_prediction_loop_error',
+                        'time_beijing': get_current_beijing_time_str(),
+                        'scheduler_name': scheduler_name,
+                        'owner_id': _scheduler_owner_id,
+                        'error': str(exc)
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True
+                )
+            )
+            time.sleep(10)
+
+
+def _scheduler_owner_pid(owner_id: str | None) -> int | None:
+    text = str(owner_id or '').split('-', 1)[0]
+    if not text.isdigit():
+        return None
+    return int(text)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    else:
+        return True
+
+
+def _jingcai_lock_stale_after_seconds(current_owner_id: str | None) -> int:
+    owner_pid = _scheduler_owner_pid(current_owner_id)
+    if owner_pid and owner_pid != os.getpid() and not _pid_is_alive(owner_pid):
+        return 0
+    return JINGCAI_PREDICTION_STALE_AFTER_SECONDS
+
+
+def _heartbeat_jingcai_scheduler():
+    db.heartbeat_scheduler(JINGCAI_PREDICTION_SCHEDULER, _scheduler_owner_id)
+
+
+def jingcai_prediction_loop():
+    _log_runtime_event(
+        'info',
+        'jingcai_prediction_loop_started',
+        process_id=os.getpid(),
+        scheduler_name=JINGCAI_PREDICTION_SCHEDULER
+    )
+    scheduler_name = JINGCAI_PREDICTION_SCHEDULER
+    stale_after_seconds = JINGCAI_PREDICTION_STALE_AFTER_SECONDS
+    last_cycle_at = 0.0
+    last_jingcai_retention_maintenance_at = 0.0
+
+    while config.AUTO_PREDICTION:
+        try:
+            loop_started_at = time.monotonic()
+            lock_result = db.try_acquire_scheduler_with_details(
+                scheduler_name,
+                _scheduler_owner_id,
+                stale_after_seconds=stale_after_seconds
+            )
+            acquired = bool(lock_result.get('acquired'))
+            if not acquired and _jingcai_lock_stale_after_seconds(lock_result.get('current_owner_id')) == 0:
+                lock_result = db.try_acquire_scheduler_with_details(
+                    scheduler_name,
+                    _scheduler_owner_id,
+                    stale_after_seconds=0
+                )
+                acquired = bool(lock_result.get('acquired'))
+            jingcai_plan = {'mode': None, 'interval_seconds': 60}
+            if acquired:
+                db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
+                now_monotonic = time.monotonic()
+                jingcai_plan = jingcai_football_service.get_scheduler_plan(db)
+                jingcai_cycle_summary = {
+                    'ran': False,
+                    'duration_ms': 0,
+                    'settled_count': 0,
+                    'prediction_count': 0
+                }
+                settled_count = 0
+                prediction_count = 0
+
+                if now_monotonic - last_cycle_at >= max(int(jingcai_plan.get('interval_seconds') or 0), 5):
+                    jingcai_started_at = time.monotonic()
+                    jingcai_result = lottery_runtime.run_lottery_cycle(
+                        'jingcai_football',
+                        on_progress=_heartbeat_jingcai_scheduler
+                    )
+                    settled_count = int(jingcai_result.get('settled_count') or 0)
+                    prediction_count = len(jingcai_result.get('predictions') or [])
+                    last_cycle_at = now_monotonic
+                    jingcai_cycle_summary = {
+                        'ran': True,
+                        'duration_ms': int((time.monotonic() - jingcai_started_at) * 1000),
+                        'settled_count': settled_count,
+                        'prediction_count': prediction_count,
+                        'mode': jingcai_plan.get('mode'),
+                        'interval_seconds': int(jingcai_plan.get('interval_seconds') or 0)
+                    }
+                    _log_runtime_event(
+                        'info',
+                        'jingcai_cycle_completed',
+                        scheduler_name=scheduler_name,
+                        owner_id=_scheduler_owner_id,
+                        **jingcai_cycle_summary
+                    )
+
+                maintenance_interval = max(300, int(config.PC28_ARCHIVE_MAINTENANCE_INTERVAL))
                 if now_monotonic - last_jingcai_retention_maintenance_at >= maintenance_interval:
                     try:
                         jingcai_maintenance_result = db.run_jingcai_data_retention_maintenance(
@@ -602,19 +711,14 @@ def prediction_loop():
 
                 db.heartbeat_scheduler(scheduler_name, _scheduler_owner_id)
                 total_duration_ms = int((time.monotonic() - loop_started_at) * 1000)
-                cycle_level = 'warning' if total_duration_ms >= config.PREDICTION_POLL_INTERVAL * 1000 else 'info'
                 _log_runtime_event(
-                    cycle_level,
+                    'info',
                     'scheduler_cycle_completed',
                     scheduler_name=scheduler_name,
                     owner_id=_scheduler_owner_id,
-                    settled_count=result['settled_count'],
-                    prediction_count=len(result['predictions']),
+                    settled_count=settled_count,
+                    prediction_count=prediction_count,
                     total_duration_ms=total_duration_ms,
-                    pc28_ran=pc28_cycle_summary.get('ran'),
-                    pc28_duration_ms=pc28_cycle_summary.get('duration_ms'),
-                    pc28_latest_draw_issue_no=pc28_cycle_summary.get('latest_draw_issue_no'),
-                    pc28_next_issue_guess=pc28_cycle_summary.get('next_issue_guess'),
                     jingcai_ran=jingcai_cycle_summary.get('ran'),
                     jingcai_duration_ms=jingcai_cycle_summary.get('duration_ms'),
                     jingcai_mode=jingcai_plan.get('mode'),
@@ -633,13 +737,13 @@ def prediction_loop():
                     error=lock_result.get('error')
                 )
 
-            loop_tick_seconds = max(5, min(config.PREDICTION_POLL_INTERVAL, config.JINGCAI_NEAR_MATCH_INTERVAL))
-            time.sleep(loop_tick_seconds)
+            plan_interval = max(int(jingcai_plan.get('interval_seconds') or 0), 5)
+            time.sleep(max(5, min(plan_interval, 60)))
         except Exception as exc:
             runtime_logger.exception(
                 json.dumps(
                     {
-                        'event': 'prediction_loop_error',
+                        'event': 'jingcai_prediction_loop_error',
                         'time_beijing': get_current_beijing_time_str(),
                         'scheduler_name': scheduler_name,
                         'owner_id': _scheduler_owner_id,
@@ -1572,6 +1676,22 @@ def _build_admin_dashboard_data() -> dict:
         except Exception:
             scheduler_data['seconds_since_heartbeat'] = None
 
+    jingcai_prediction_scheduler = db.get_scheduler_snapshot(JINGCAI_PREDICTION_SCHEDULER)
+    jingcai_prediction_scheduler_data = {
+        'name': JINGCAI_PREDICTION_SCHEDULER,
+        'auto_prediction_enabled': config.AUTO_PREDICTION,
+        'stale_after_seconds': JINGCAI_PREDICTION_STALE_AFTER_SECONDS,
+        'owner_id': jingcai_prediction_scheduler.get('owner_id') if jingcai_prediction_scheduler else None,
+        'heartbeat_at': utc_to_beijing(jingcai_prediction_scheduler['heartbeat_at']) if jingcai_prediction_scheduler and jingcai_prediction_scheduler.get('heartbeat_at') else None,
+        'seconds_since_heartbeat': None
+    }
+    if jingcai_prediction_scheduler and jingcai_prediction_scheduler.get('heartbeat_at'):
+        try:
+            heartbeat_at = datetime.strptime(str(jingcai_prediction_scheduler['heartbeat_at']), '%Y-%m-%d %H:%M:%S')
+            jingcai_prediction_scheduler_data['seconds_since_heartbeat'] = max(0, int((datetime.utcnow() - heartbeat_at).total_seconds()))
+        except Exception:
+            jingcai_prediction_scheduler_data['seconds_since_heartbeat'] = None
+
     backfill_scheduler_data = {
         'name': JINGCAI_HISTORY_BACKFILL_SCHEDULER,
         'enabled': bool(getattr(config, 'JINGCAI_HISTORY_BACKFILL_ENABLED', True)),
@@ -1619,6 +1739,7 @@ def _build_admin_dashboard_data() -> dict:
             'total_draws': int(summary.get('total_draws') or 0)
         },
         'scheduler': scheduler_data,
+        'jingcai_prediction_scheduler': jingcai_prediction_scheduler_data,
         'jingcai_data_health': {
             **jingcai_data_health,
             'recent_jobs': [_serialize_jingcai_backfill_job(item) for item in jingcai_data_health.get('recent_jobs', [])],

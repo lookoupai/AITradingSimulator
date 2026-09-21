@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import unittest
 from datetime import datetime
 from unittest import mock
@@ -612,6 +613,94 @@ class JingcaiFootballServicePromptTests(unittest.TestCase):
 
             self.assertEqual(generate_prediction.call_count, 1)
             self.assertEqual(result['predictions'][0]['status'], 'pending')
+
+    def test_run_auto_cycle_heartbeats_after_each_predictor(self):
+        with fresh_app_harness() as harness:
+            _, user_id = harness.make_client()
+            predictor_id = create_predictor(
+                harness,
+                user_id,
+                'jingcai_football',
+                data_injection_mode='summary'
+            )
+            matches = self._build_matches(harness, 1)
+            run_id = self._create_existing_run(harness, predictor_id, matches, status='pending')
+            harness.db.upsert_prediction_items([
+                {
+                    'run_id': run_id,
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'jingcai_football',
+                    'run_key': '2026-04-16',
+                    'event_key': matches[0]['event_key'],
+                    'item_order': 0,
+                    'issue_no': matches[0]['match_no'],
+                    'title': matches[0]['event_name'],
+                    'requested_targets': ['spf', 'rqspf'],
+                    'prediction_payload': {},
+                    'actual_payload': {},
+                    'hit_payload': {},
+                    'confidence': None,
+                    'reasoning_summary': '',
+                    'raw_response': '{}',
+                    'status': 'failed',
+                    'error_message': '旧失败',
+                    'retry_count': 0,
+                    'last_retry_at': '2026-04-15 00:00:00',
+                    'last_retry_error': None,
+                    'settled_at': None
+                }
+            ])
+            batch_payload = {
+                'batch_key': '2026-04-16',
+                'dates': ['2026-04-16'],
+                'matches': matches
+            }
+            events = []
+
+            def on_progress():
+                events.append('beat')
+
+            def generate_prediction(*_args, **_kwargs):
+                events.append('generate')
+                return {'run_key': '2026-04-16', 'status': 'pending'}
+
+            with mock.patch.object(harness.module.jingcai_football_service, 'settle_pending_predictions', return_value=[]), \
+                 mock.patch.object(harness.module.jingcai_football_service, 'sync_matches', return_value=batch_payload), \
+                 mock.patch.object(harness.module.jingcai_football_service, 'generate_prediction', side_effect=generate_prediction):
+                result = harness.module.jingcai_football_service.run_auto_cycle(
+                    harness.db,
+                    on_progress=on_progress
+                )
+
+            self.assertEqual(result['predictions'][0]['status'], 'pending')
+            self.assertEqual(events, ['beat', 'beat', 'generate', 'beat'])
+
+            harness.module.jingcai_football_service._next_auto_run_at = None
+
+            def failing_progress():
+                raise RuntimeError('heartbeat failed')
+
+            with mock.patch.object(harness.module.jingcai_football_service, 'settle_pending_predictions', return_value=[]), \
+                 mock.patch.object(harness.module.jingcai_football_service, 'sync_matches', return_value=batch_payload), \
+                 mock.patch.object(harness.module.jingcai_football_service, 'generate_prediction', return_value={'run_key': '2026-04-16', 'status': 'pending'}):
+                result = harness.module.jingcai_football_service.run_auto_cycle(
+                    harness.db,
+                    on_progress=failing_progress
+                )
+            self.assertEqual(result['predictions'][0]['status'], 'pending')
+
+    def test_jingcai_lock_is_taken_immediately_when_owner_process_is_dead(self):
+        with fresh_app_harness() as harness:
+            module = harness.module
+            self.assertEqual(
+                module._jingcai_lock_stale_after_seconds(None),
+                module.JINGCAI_PREDICTION_STALE_AFTER_SECONDS
+            )
+            self.assertEqual(
+                module._jingcai_lock_stale_after_seconds(f'{os.getpid()}-abc'),
+                module.JINGCAI_PREDICTION_STALE_AFTER_SECONDS
+            )
+            self.assertEqual(module._jingcai_lock_stale_after_seconds('2147483647-abc'), 0)
 
     def test_sync_matches_best_effort_retries_history_batch_with_cache_bust_for_overdue_pending_matches(self):
         with fresh_app_harness() as harness, \
