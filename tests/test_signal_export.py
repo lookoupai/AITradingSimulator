@@ -176,6 +176,132 @@ class SignalExportTests(unittest.TestCase):
             self.assertEqual(data['qualified_pairs'], [])
             self.assertEqual(data['items'], [])
 
+    def _seed_big_small_consensus_fixture(self, harness, predictor_ids):
+        for index in range(10):
+            actual_combo = '大双' if index < 3 else '小单'
+            for position, predictor_id in enumerate(predictor_ids):
+                prediction_combo = '大双'
+                if position == 2 and index >= 5:
+                    prediction_combo = '小双'
+                harness.db.upsert_prediction({
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'pc28',
+                    'issue_no': f'202604090{index}',
+                    'requested_targets': ['combo'],
+                    'prediction_number': None,
+                    'prediction_big_small': prediction_combo[0],
+                    'prediction_odd_even': prediction_combo[1],
+                    'prediction_combo': prediction_combo,
+                    'confidence': 0.7,
+                    'reasoning_summary': '字段共识历史样本',
+                    'raw_response': '',
+                    'prompt_snapshot': '',
+                    'status': 'settled',
+                    'error_message': None,
+                    'actual_number': None,
+                    'actual_big_small': actual_combo[0],
+                    'actual_odd_even': actual_combo[1],
+                    'actual_combo': actual_combo,
+                    'hit_number': None,
+                    'hit_big_small': int(prediction_combo[0] == actual_combo[0]),
+                    'hit_odd_even': int(prediction_combo[1] == actual_combo[1]),
+                    'hit_combo': int(prediction_combo == actual_combo),
+                    'settled_at': '2026-07-29T00:00:00Z',
+                })
+
+        for predictor_id in predictor_ids:
+            harness.db.upsert_prediction({
+                'predictor_id': predictor_id,
+                'lottery_type': 'pc28',
+                'issue_no': '20260730002',
+                'requested_targets': ['combo'],
+                'prediction_number': None,
+                'prediction_big_small': '大',
+                'prediction_odd_even': '双',
+                'prediction_combo': '大双',
+                'confidence': 0.7,
+                'reasoning_summary': '字段共识待发信号',
+                'raw_response': '',
+                'prompt_snapshot': '',
+                'status': 'pending',
+                'error_message': None,
+                'actual_number': None,
+                'actual_big_small': None,
+                'actual_odd_even': None,
+                'actual_combo': None,
+                'hit_number': None,
+                'hit_big_small': None,
+                'hit_odd_even': None,
+                'hit_combo': None,
+                'settled_at': None,
+            })
+
+    def test_export_pc28_best_pair_supports_big_small_field(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_ids = [
+                create_predictor(harness, user_id, 'pc28', name=name)
+                for name in ('大小方案甲', '大小方案乙', '大小方案丙')
+            ]
+            self._seed_big_small_consensus_fixture(harness, predictor_ids)
+
+            response = client.get(
+                '/api/export/consensus/pc28/best-pair-signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}'
+                '&field=big_small&min_historical_rate=35&min_historical_sample=5&window=30'
+            )
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(data['field'], 'big_small')
+            self.assertEqual(
+                data['selected_pair']['predictor_ids'],
+                [predictor_ids[0], predictor_ids[2]],
+            )
+            self.assertEqual(data['selected_pair']['historical_rate'], 60.0)
+            signal = data['items'][0]['signals'][0]
+            self.assertEqual(signal['bet_type'], 'big_small')
+            self.assertEqual(signal['bet_value'], '大')
+            self.assertEqual(signal['normalized_payload']['primary_metric'], 'big_small')
+
+    def test_export_pc28_best_pair_supports_odd_even_field(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_ids = [
+                create_predictor(harness, user_id, 'pc28', name=name)
+                for name in ('单双方案甲', '单双方案乙', '单双方案丙')
+            ]
+            self._seed_big_small_consensus_fixture(harness, predictor_ids)
+
+            response = client.get(
+                '/api/export/consensus/pc28/best-pair-signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}'
+                '&field=odd_even&min_historical_rate=25&min_historical_sample=5&window=30'
+            )
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(data['field'], 'odd_even')
+            self.assertEqual(data['selected_pair']['historical_rate'], 30.0)
+            signal = data['items'][0]['signals'][0]
+            self.assertEqual(signal['bet_type'], 'odd_even')
+            self.assertEqual(signal['bet_value'], '双')
+
+    def test_export_pc28_best_pair_rejects_unknown_field(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_ids = [
+                create_predictor(harness, user_id, 'pc28', name='字段校验方案')
+            ]
+            response = client.get(
+                '/api/export/consensus/pc28/best-pair-signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}&field=number'
+            )
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('field', data.get('error', ''))
+
     def test_export_pc28_consensus_execution_signal(self):
         with fresh_app_harness() as harness:
             client, user_id = harness.make_client()
@@ -501,6 +627,213 @@ class SignalExportTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 400)
             self.assertIn('PC28', data['error'])
+
+
+class ConsensusFullPoolGateTests(unittest.TestCase):
+    """全池到齐门槛：机器算法先落库、外部/AI 预测晚到时缺员共识不允许出口。"""
+
+    LATEST_ISSUE = '20260730001'
+    OLDER_ISSUE = '20260729001'
+
+    @staticmethod
+    def _seed_settled_history(harness, predictor_ids, issue_prefix='20260408'):
+        for index in range(4):
+            issue_no = f'{issue_prefix}{index:03d}'
+            hit = index < 2
+            for predictor_id in predictor_ids:
+                harness.db.upsert_prediction({
+                    'predictor_id': predictor_id,
+                    'lottery_type': 'pc28',
+                    'issue_no': issue_no,
+                    'requested_targets': ['big_small', 'odd_even', 'combo'],
+                    'prediction_number': None,
+                    'prediction_big_small': '大',
+                    'prediction_odd_even': '双',
+                    'prediction_combo': '大双',
+                    'confidence': 0.7,
+                    'reasoning_summary': '全池门槛历史样本',
+                    'raw_response': '',
+                    'prompt_snapshot': '',
+                    'status': 'settled',
+                    'error_message': None,
+                    'actual_number': None,
+                    'actual_big_small': '大' if hit else '小',
+                    'actual_odd_even': '双',
+                    'actual_combo': '大双' if hit else '小双',
+                    'hit_number': None,
+                    'hit_big_small': int(hit),
+                    'hit_odd_even': 1,
+                    'hit_combo': int(hit),
+                    'settled_at': '2026-07-29T00:00:00Z',
+                })
+
+    @staticmethod
+    def _seed_pending_vote(harness, predictor_id, issue_no, odd_even='双', combo='大双'):
+        harness.db.upsert_prediction({
+            'predictor_id': predictor_id,
+            'lottery_type': 'pc28',
+            'issue_no': issue_no,
+            'requested_targets': ['big_small', 'odd_even', 'combo'],
+            'prediction_number': None,
+            'prediction_big_small': combo[0],
+            'prediction_odd_even': odd_even,
+            'prediction_combo': combo,
+            'confidence': 0.7,
+            'reasoning_summary': '全池门槛待发信号',
+            'raw_response': '',
+            'prompt_snapshot': '',
+            'status': 'pending',
+            'error_message': None,
+            'actual_number': None,
+            'actual_big_small': None,
+            'actual_odd_even': None,
+            'actual_combo': None,
+            'hit_number': None,
+            'hit_big_small': None,
+            'hit_odd_even': None,
+            'hit_combo': None,
+            'settled_at': None,
+        })
+
+    def test_best_pair_blocks_until_full_pool_voted(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_ids = [
+                create_predictor(harness, user_id, 'pc28', name=f'门槛方案{i}')
+                for i in range(3)
+            ]
+            self._seed_settled_history(harness, predictor_ids)
+            for predictor_id in predictor_ids[:2]:
+                self._seed_pending_vote(harness, predictor_id, self.LATEST_ISSUE)
+
+            response = client.get(
+                '/api/export/consensus/pc28/best-pair-signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}'
+                '&min_historical_rate=25&min_historical_sample=3&window=30'
+            )
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(data['items'], [])
+            self.assertEqual(data['qualified_pairs'], [])
+            self.assertEqual(data['full_pool_gate']['reason'], 'waiting_for_full_pool')
+            self.assertEqual(data['full_pool_gate']['issue_no'], self.LATEST_ISSUE)
+            self.assertEqual(data['full_pool_gate']['missing_predictor_ids'], [predictor_ids[2]])
+            self.assertEqual(data['full_pool_gate']['required_predictor_ids'], predictor_ids)
+
+            # 门槛可通过 require_full_pool=false 显式关闭，回到旧行为
+            legacy = client.get(
+                '/api/export/consensus/pc28/best-pair-signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}'
+                '&min_historical_rate=25&min_historical_sample=3&window=30'
+                '&require_full_pool=false'
+            ).get_json()
+            self.assertEqual(len(legacy['items']), 1)
+            self.assertNotIn('full_pool_gate', legacy)
+
+    def test_best_pair_gate_passes_when_full_pool_voted(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_ids = [
+                create_predictor(harness, user_id, 'pc28', name=f'全员方案{i}')
+                for i in range(3)
+            ]
+            self._seed_settled_history(harness, predictor_ids)
+            for predictor_id in predictor_ids:
+                self._seed_pending_vote(harness, predictor_id, self.LATEST_ISSUE)
+
+            response = client.get(
+                '/api/export/consensus/pc28/best-pair-signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}'
+                '&min_historical_rate=25&min_historical_sample=3&window=30'
+            )
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(data['items']), 1)
+            self.assertNotIn('full_pool_gate', data)
+
+    def test_best_pair_gate_ignores_disabled_pool_member(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_ids = [
+                create_predictor(harness, user_id, 'pc28', name=f'停用方案{i}')
+                for i in range(3)
+            ]
+            harness.db.update_predictor(predictor_ids[2], {'enabled': False})
+            self._seed_settled_history(harness, predictor_ids[:2])
+            for predictor_id in predictor_ids[:2]:
+                self._seed_pending_vote(harness, predictor_id, self.LATEST_ISSUE)
+
+            response = client.get(
+                '/api/export/consensus/pc28/best-pair-signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}'
+                '&min_historical_rate=25&min_historical_sample=3&window=30'
+            )
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(data['items']), 1)
+            self.assertEqual(data['predictor_ids'], predictor_ids[:2])
+            self.assertNotIn('full_pool_gate', data)
+
+    def test_best_pair_gate_evaluates_latest_pending_issue(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_ids = [
+                create_predictor(harness, user_id, 'pc28', name=f'滞后方案{i}')
+                for i in range(3)
+            ]
+            self._seed_settled_history(harness, predictor_ids)
+            # 旧待结算期全员已投票、最新期待结算缺一人：门槛按最新期判定并拦截
+            for predictor_id in predictor_ids:
+                self._seed_pending_vote(harness, predictor_id, self.OLDER_ISSUE)
+            for predictor_id in predictor_ids[:2]:
+                self._seed_pending_vote(harness, predictor_id, self.LATEST_ISSUE)
+
+            response = client.get(
+                '/api/export/consensus/pc28/best-pair-signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}'
+                '&min_historical_rate=25&min_historical_sample=3&window=30'
+            )
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(data['items'], [])
+            self.assertEqual(data['full_pool_gate']['issue_no'], self.LATEST_ISSUE)
+            self.assertEqual(data['full_pool_gate']['missing_predictor_ids'], [predictor_ids[2]])
+
+    def test_consensus_execution_blocks_until_full_pool_voted(self):
+        with fresh_app_harness() as harness:
+            client, user_id = harness.make_client()
+            predictor_ids = [
+                create_predictor(harness, user_id, 'pc28', name=f'共识门槛方案{i}')
+                for i in range(3)
+            ]
+            for predictor_id in predictor_ids[:2]:
+                self._seed_pending_vote(harness, predictor_id, self.LATEST_ISSUE)
+
+            response = client.get(
+                '/api/export/consensus/pc28/signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}'
+                '&field=odd_even&min_agreement=2'
+            )
+            data = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(data['items'], [])
+            self.assertEqual(data['full_pool_gate']['reason'], 'waiting_for_full_pool')
+            self.assertEqual(data['full_pool_gate']['missing_predictor_ids'], [predictor_ids[2]])
+
+            # min_agreement=2 时缺员的两票共识本可出口，门槛关闭后恢复旧行为
+            legacy = client.get(
+                '/api/export/consensus/pc28/signals'
+                f'?predictor_ids={",".join(map(str, predictor_ids))}'
+                '&field=odd_even&min_agreement=2&require_full_pool=false'
+            ).get_json()
+            self.assertEqual(len(legacy['items']), 1)
+            self.assertEqual(legacy['items'][0]['issue_no'], self.LATEST_ISSUE)
+            self.assertNotIn('full_pool_gate', legacy)
 
 
 if __name__ == '__main__':

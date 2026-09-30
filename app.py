@@ -6484,6 +6484,12 @@ def export_pc28_consensus_signals():
             min(int(request.args.get('min_historical_sample') or 0), 1000000),
         )
         window = max(1, min(int(request.args.get('window') or 7), 3650))
+        raw_require_full_pool = request.args.get('require_full_pool')
+        require_full_pool = (
+            None
+            if raw_require_full_pool in (None, '')
+            else str(raw_require_full_pool).strip().lower() in {'1', 'true', 'yes', 'on'}
+        )
         payload = build_pc28_consensus_execution_export(
             db,
             predictor_ids=predictor_ids,
@@ -6492,6 +6498,7 @@ def export_pc28_consensus_signals():
             min_historical_rate=min_historical_rate,
             min_historical_sample=min_historical_sample,
             time_window_days=window,
+            require_full_pool=require_full_pool,
         )
     except (TypeError, ValueError) as exc:
         return jsonify({'error': str(exc)}), 400
@@ -6503,7 +6510,7 @@ def export_pc28_consensus_signals():
 
 @app.route('/api/export/consensus/pc28/best-pair-signals', methods=['GET'])
 def export_pc28_best_pair_signals():
-    """公开导出 PC28 当期达标且历史命中率最高的方案对信号。"""
+    """公开导出 PC28 当期达标且历史命中率最高的方案对信号（field 可选 big_small/odd_even/combo，默认 combo）。"""
     raw_ids = str(request.args.get('predictor_ids') or '').strip()
     predictor_ids = None
     if raw_ids:
@@ -6520,12 +6527,20 @@ def export_pc28_best_pair_signals():
             min(int(request.args.get('min_historical_sample') or 300), 1000000),
         )
         window = max(1, min(int(request.args.get('window') or 30), 3650))
+        raw_require_full_pool = request.args.get('require_full_pool')
+        require_full_pool = (
+            None
+            if raw_require_full_pool in (None, '')
+            else str(raw_require_full_pool).strip().lower() in {'1', 'true', 'yes', 'on'}
+        )
         payload = build_pc28_best_pair_execution_export(
             db,
             predictor_ids=predictor_ids,
+            field=request.args.get('field') or 'combo',
             min_historical_rate=min_historical_rate,
             min_historical_sample=min_historical_sample,
             time_window_days=window,
+            require_full_pool=require_full_pool,
         )
     except (TypeError, ValueError) as exc:
         return jsonify({'error': str(exc)}), 400

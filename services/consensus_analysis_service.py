@@ -178,6 +178,9 @@ def build_consensus_analysis(
         predictor_weights=predictor_weights
     )
 
+    # 8b. 按期号归集各字段已投票方案，供执行导出的“全池到齐”门槛判定
+    pending_voters_by_issue = _build_pending_voters_by_issue(pending_items, fields)
+
     return {
         'lottery_type': normalized,
         'lottery_label': definition.label,
@@ -204,7 +207,8 @@ def build_consensus_analysis(
         'pair_combinations': pair_combinations,
         'pair_segment_combinations': pair_segment_combinations,
         'low_hit_signals': low_hit_signals,
-        'today_recommendations': today_recommendations
+        'today_recommendations': today_recommendations,
+        'pending_voters_by_issue': pending_voters_by_issue
     }
 
 
@@ -227,7 +231,70 @@ def _empty_analysis(lottery_type: str, fields: list[dict], window: int | None) -
         'pair_combinations': {f['key']: [] for f in fields},
         'pair_segment_combinations': {f['key']: [] for f in fields},
         'low_hit_signals': {f['key']: [] for f in fields},
-        'today_recommendations': []
+        'today_recommendations': [],
+        'pending_voters_by_issue': {}
+    }
+
+
+def _build_pending_voters_by_issue(pending_items: list[dict], fields: list[dict]) -> dict:
+    """按期号归集每个共识字段已投票的方案 ID 集合。
+
+    供 PC28 执行导出的“全池到齐”门槛使用：机器算法先落库、外部/AI 预测
+    晚到是常态，缺员时导出层据此保持安静，而不是把缺员共识发给执行平台。
+    """
+    voters: dict[str, dict[str, set[int]]] = {}
+    for item in pending_items or []:
+        issue_no = str(item.get('issue_no') or item.get('event_key') or '').strip()
+        try:
+            predictor_id = int(item.get('predictor_id') or 0)
+        except (TypeError, ValueError):
+            continue
+        if not issue_no or predictor_id <= 0:
+            continue
+        prediction = item.get('prediction') or {}
+        issue_fields = voters.setdefault(issue_no, {})
+        for field in fields or ():
+            field_key = field['key'] if isinstance(field, dict) else str(field)
+            if prediction.get(field_key) in (None, '', 'null'):
+                continue
+            issue_fields.setdefault(field_key, set()).add(predictor_id)
+    return {
+        issue: {field_key: sorted(ids) for field_key, ids in field_map.items()}
+        for issue, field_map in voters.items()
+    }
+
+
+def _resolve_require_full_pool(require_full_pool: bool | None, predictor_ids: list[int] | None) -> bool:
+    """全池到齐门槛开关：显式指定固定方案池时默认开启，未指定池保持旧行为。"""
+    if require_full_pool is None:
+        return predictor_ids is not None
+    return bool(require_full_pool)
+
+
+def _evaluate_full_pool_gate(analysis: dict, *, field_key: str, pool_ids: list[int]) -> dict:
+    """检查最新待结算期号的目标字段是否全池到齐。
+
+    门槛按“字段投票”判定：方案本期有 pending 预测但未给出该字段值（例如
+    外部模型不提供该字段）同样视为未到齐。没有任何待结算预测时视为通过，
+    由后续逻辑自然返回空 items。
+    """
+    voters_by_issue = analysis.get('pending_voters_by_issue') or {}
+    if not voters_by_issue:
+        return {'issue_no': None, 'passed': True, 'missing_predictor_ids': []}
+    latest_issue = max(voters_by_issue, key=lambda issue: int(issue) if issue.isdigit() else -1)
+    field_voters = set((voters_by_issue.get(latest_issue) or {}).get(field_key) or [])
+    missing = sorted(set(pool_ids) - field_voters)
+    return {'issue_no': latest_issue, 'passed': not missing, 'missing_predictor_ids': missing}
+
+
+def _full_pool_gate_payload(gate: dict, *, field: str, pool_ids: list[int]) -> dict:
+    return {
+        'enabled': True,
+        'reason': 'waiting_for_full_pool',
+        'issue_no': gate.get('issue_no'),
+        'field': field,
+        'required_predictor_ids': list(pool_ids),
+        'missing_predictor_ids': list(gate.get('missing_predictor_ids') or []),
     }
 
 
@@ -1642,11 +1709,16 @@ def build_pc28_consensus_execution_export(
     min_historical_rate: float | None = None,
     min_historical_sample: int = 0,
     time_window_days: int | None = 7,
+    require_full_pool: bool | None = None,
 ) -> dict:
     """生成单条可执行的 PC28 共识信号。
 
     共识计算仍复用历史分析服务；本函数只负责把最新满足门槛的共识
     转换成 pc28touzhu 可消费的 execution-view，避免执行侧重复实现预测逻辑。
+
+    require_full_pool：全池到齐门槛。开启后仅当最新待结算期号的目标字段
+    已获得池内全部方案投票才导出信号，否则返回空 items 并附 full_pool_gate
+    说明缺员情况。缺省：显式指定 predictor_ids（固定共识池）时开启。
     """
     normalized_field = str(field or '').strip()
     if normalized_field not in {'big_small', 'odd_even', 'combo'}:
@@ -1667,6 +1739,27 @@ def build_pc28_consensus_execution_export(
     )
     pool = analysis.get('predictors') or []
     pool_ids = sorted(int(item['id']) for item in pool if item.get('id') is not None)
+    generated_at = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # 全池到齐门槛：机器算法先落库、外部/AI 预测晚到时，缺员共识不允许出口，
+    # 否则执行平台会按先到的缺员信号下单且因 signal_id 去重永远收不到补齐后的共识。
+    if _resolve_require_full_pool(require_full_pool, predictor_ids):
+        gate = _evaluate_full_pool_gate(analysis, field_key=normalized_field, pool_ids=pool_ids)
+        if not gate['passed']:
+            return {
+                'schema_version': '1.0',
+                'source_type': 'ai_trading_simulator',
+                'export_type': 'consensus_execution',
+                'lottery_type': 'pc28',
+                'field': normalized_field,
+                'min_agreement': agreement,
+                'min_historical_rate': historical_rate_floor,
+                'min_historical_sample': historical_sample_floor,
+                'predictor_ids': pool_ids,
+                'generated_at': generated_at,
+                'full_pool_gate': _full_pool_gate_payload(gate, field=normalized_field, pool_ids=pool_ids),
+                'items': [],
+            }
     candidates = []
     for recommendation in analysis.get('today_recommendations') or []:
         issue_no = str(recommendation.get('event_key') or '').strip()
@@ -1698,7 +1791,6 @@ def build_pc28_consensus_execution_export(
         candidates.append((int(issue_no) if issue_no.isdigit() else -1, issue_no, field_row))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-    generated_at = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
     if not candidates:
         return {
             'schema_version': '1.0',
@@ -1788,11 +1880,23 @@ def build_pc28_best_pair_execution_export(
     db,
     *,
     predictor_ids: list[int] | None = None,
+    field: str = 'combo',
     min_historical_rate: float = 28.0,
     min_historical_sample: int = 300,
     time_window_days: int = 30,
+    require_full_pool: bool | None = None,
 ) -> dict:
-    """从当期同值共识的 PC28 方案对中选择历史命中率最高者。"""
+    """从当期同值共识的 PC28 方案对中选择历史命中率最高者。
+
+    field 支持 big_small、odd_even、combo；默认 combo 以兼容历史调用。
+
+    require_full_pool：全池到齐门槛。开启后仅当最新待结算期号的目标字段
+    已获得池内全部方案投票才选择方案对，否则返回空 items 并附 full_pool_gate
+    说明缺员情况。缺省：显式指定 predictor_ids（固定共识池）时开启。
+    """
+    normalized_field = str(field or '').strip()
+    if normalized_field not in {'big_small', 'odd_even', 'combo'}:
+        raise ValueError('field 仅支持 big_small、odd_even 或 combo')
     historical_rate_floor = float(min_historical_rate)
     if historical_rate_floor < 0 or historical_rate_floor > 100:
         raise ValueError('min_historical_rate 必须在 0 到 100 之间')
@@ -1819,7 +1923,7 @@ def build_pc28_best_pair_execution_export(
         'source_type': 'ai_trading_simulator',
         'export_type': 'best_consensus_pair_execution',
         'lottery_type': 'pc28',
-        'field': 'combo',
+        'field': normalized_field,
         'selection_mode': 'best_consensus_pair',
         'min_historical_rate': historical_rate_floor,
         'min_historical_sample': historical_sample_floor,
@@ -1832,8 +1936,18 @@ def build_pc28_best_pair_execution_export(
     if not pool_ids:
         return envelope
 
+    # 全池到齐门槛：机器算法先落库、外部/AI 预测晚到时，缺员共识不允许出口，
+    # 否则执行平台会按先到的缺员方案对下单且因 signal_id 去重永远收不到补齐后的共识。
+    if _resolve_require_full_pool(require_full_pool, predictor_ids):
+        gate = _evaluate_full_pool_gate(analysis, field_key=normalized_field, pool_ids=pool_ids)
+        if not gate['passed']:
+            envelope['full_pool_gate'] = _full_pool_gate_payload(
+                gate, field=normalized_field, pool_ids=pool_ids
+            )
+            return envelope
+
     pair_lookup = {}
-    for row in (analysis.get('pair_combinations') or {}).get('combo') or []:
+    for row in (analysis.get('pair_combinations') or {}).get(normalized_field) or []:
         pair = tuple(sorted(int(item) for item in (row.get('pair') or [])))
         if len(pair) != 2:
             continue
@@ -1860,7 +1974,7 @@ def build_pc28_best_pair_execution_export(
     recommendation = recommendations[0]
     issue_no = str(recommendation.get('event_key') or '').strip()
     field_row = next(
-        (item for item in recommendation.get('fields') or [] if item.get('field') == 'combo'),
+        (item for item in recommendation.get('fields') or [] if item.get('field') == normalized_field),
         None,
     )
     if not issue_no or not field_row:
@@ -1897,19 +2011,20 @@ def build_pc28_best_pair_execution_export(
 
     selected = qualified[0]
     value = str(selected['bet_value'])
-    config_key = 'combo-best-pair-rate%s-sample%s-window%s-%s' % (
+    config_key = '%s-best-pair-rate%s-sample%s-window%s-%s' % (
+        normalized_field,
         '%g' % historical_rate_floor,
         historical_sample_floor,
         window_days,
         '-'.join(str(item) for item in pool_ids),
     )
     signal = {
-        'bet_type': 'combo',
+        'bet_type': normalized_field,
         'bet_value': value,
         'confidence': round(float(selected['historical_rate']) / 100.0, 4),
         'message_text': f'{value}10',
         'normalized_payload': {
-            'primary_metric': 'combo',
+            'primary_metric': normalized_field,
             'selection_mode': 'best_consensus_pair',
             'consensus_count': 2,
             'predictor_ids': pool_ids,
