@@ -447,12 +447,12 @@
             const [p1, p2] = r.pair;
             const pairIds = [p1, p2].filter(id => id != null).sort((a, b) => a - b);
             const predictorIds = pairIds.length === 2 ? pairIds : poolIds;
-            const url = buildBestPairConsensusUrl(predictorIds, 25, 20, windowDays);
+            const url = buildBestPairConsensusUrl(predictorIds, 25, 20, windowDays, pairField);
             return `
                 <tr>
                     <td>
                         ${escapeHtml(predictorNameById(p1))} + ${escapeHtml(predictorNameById(p2))}
-                        <button type="button" class="btn compact pair-copy-btn" data-url="${escapeHtml(url)}" title="复制此组合共识导出链接（供 pc28touzhu 来源导入）">
+                        <button type="button" class="btn compact pair-copy-btn" data-url="${escapeHtml(url)}" title="复制此${escapeHtml(fieldLabelByKey(pairField || 'combo'))}共识导出链接（供 pc28touzhu 来源导入）">
                             <i class="bi bi-link-45deg"></i> 复制
                         </button>
                     </td>
@@ -626,9 +626,10 @@
     }
 
     // 组合命中率最优方案对导出：pc28touzhu 最常用来建档「单双共识」这类来源
-    function buildBestPairConsensusUrl(predictorIds, rateFloor, sampleFloor, windowDays) {
+    function buildBestPairConsensusUrl(predictorIds, rateFloor, sampleFloor, windowDays, field) {
         const p = new URLSearchParams();
         if (predictorIds && predictorIds.length) p.set('predictor_ids', predictorIds.join(','));
+        p.set('field', field || 'combo');
         p.set('min_historical_rate', rateFloor);
         p.set('min_historical_sample', sampleFloor);
         p.set('window', windowDays);
@@ -660,11 +661,12 @@
     // 共识导出口径不同，此函数给出一段可粘贴到「来源管理」的说明 + 链接，而非直接导入。
     // ---------- 复制共识方案链接（供 pc28touzhu 导入） ----------
     function copyConsensusSourceHint(predictorIds, rateFloor, sampleFloor, windowDays) {
-        const bestPair = buildBestPairConsensusUrl(predictorIds, rateFloor, sampleFloor, windowDays);
+        const currentField = pairField || 'combo';
+        const bestPair = buildBestPairConsensusUrl(predictorIds, rateFloor, sampleFloor, windowDays, currentField);
         const windowDaysCurrent = (currentAnalysis && currentAnalysis.window_days) || windowDays;
-        const exec = buildExecutionConsensusUrl(predictorIds, fieldLabelByKey(pairField || 'combo'), 2, windowDaysCurrent);
+        const exec = buildExecutionConsensusUrl(predictorIds, currentField, 2, windowDaysCurrent);
         const text =
-            `【组合最优方案对（单双/组合共识）】\n${bestPair}\n` +
+            `【最优方案对共识（${fieldLabelByKey(currentField)}，field=${currentField}）】\n${bestPair}\n` +
             `\n【共识执行信号】\n${exec}\n` +
             `\n在 pc28touzhu「来源管理 → 方案来源」导入时：\n` +
             `- source_type 选 ai_trading_simulator_export\n` +
