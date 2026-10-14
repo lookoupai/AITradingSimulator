@@ -4,7 +4,9 @@ PC28 数据服务
 from __future__ import annotations
 
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 import requests
@@ -23,6 +25,7 @@ class PC28Service:
         timeout: int = config.PC28_REQUEST_TIMEOUT,
         dashboard_official_timeout: float = config.PC28_DASHBOARD_OFFICIAL_TIMEOUT,
         dashboard_official_cooldown_seconds: int = config.PC28_DASHBOARD_OFFICIAL_COOLDOWN_SECONDS,
+        dashboard_official_failure_threshold: int = config.PC28_DASHBOARD_OFFICIAL_FAILURE_THRESHOLD,
         recent_source_order: tuple[str, ...] = config.PC28_RECENT_SOURCE_ORDER,
         jnd_recent_url: str = config.PC28_JND_RECENT_URL,
         feiji_recent_url: str = config.PC28_FEIJI_RECENT_URL
@@ -31,17 +34,25 @@ class PC28Service:
         self.timeout = timeout
         self.dashboard_official_timeout = max(0.2, float(dashboard_official_timeout))
         self.dashboard_official_cooldown_seconds = max(0, int(dashboard_official_cooldown_seconds))
+        self.dashboard_official_failure_threshold = max(1, int(dashboard_official_failure_threshold))
         self.recent_source_order = tuple(recent_source_order or ('official', 'jnd', 'feiji'))
         self.jnd_recent_url = jnd_recent_url
         self.feiji_recent_url = feiji_recent_url
         self._official_dashboard_cooldown_until = 0.0
+        self._official_dashboard_failure_count = 0
+        self._official_dashboard_failure_lock = threading.Lock()
+        # 复用连接可省去每次请求的 TLS 握手，官方源单次耗时能降约四成
+        self._session = requests.Session()
 
-    def _request_json(self, path: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
-        response = requests.get(
-            f'{self.base_url}/{path.lstrip("/")}',
+    def _http_get(self, url: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> requests.Response:
+        return self._session.get(
+            url,
             params=params or {},
             timeout=self.timeout if timeout is None else timeout
         )
+
+    def _request_json(self, path: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
+        response = self._http_get(f'{self.base_url}/{path.lstrip("/")}', params=params, timeout=timeout)
         response.raise_for_status()
         payload = response.json()
 
@@ -51,28 +62,36 @@ class PC28Service:
         return payload
 
     def _request_public_json(self, url: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> Any:
-        response = requests.get(url, params=params or {}, timeout=self.timeout if timeout is None else timeout)
+        response = self._http_get(url, params=params, timeout=timeout)
         response.raise_for_status()
         return response.json()
 
     def _is_official_dashboard_cooled_down(self) -> bool:
         return time.monotonic() < self._official_dashboard_cooldown_until
 
-    def _mark_official_dashboard_failure(self) -> None:
-        if self.dashboard_official_cooldown_seconds <= 0:
+    def _mark_official_dashboard_failure(self, critical: bool = True) -> None:
+        if not critical:
             return
-        self._official_dashboard_cooldown_until = time.monotonic() + self.dashboard_official_cooldown_seconds
+        with self._official_dashboard_failure_lock:
+            self._official_dashboard_failure_count += 1
+            if self._official_dashboard_failure_count < self.dashboard_official_failure_threshold:
+                return
+            if self.dashboard_official_cooldown_seconds <= 0:
+                return
+            self._official_dashboard_cooldown_until = time.monotonic() + self.dashboard_official_cooldown_seconds
 
     def _clear_official_dashboard_failure(self) -> None:
-        self._official_dashboard_cooldown_until = 0.0
+        with self._official_dashboard_failure_lock:
+            self._official_dashboard_failure_count = 0
+            self._official_dashboard_cooldown_until = 0.0
 
-    def _request_official_dashboard_json(self, path: str, params: Optional[dict] = None) -> dict:
+    def _request_official_dashboard_json(self, path: str, params: Optional[dict] = None, critical: bool = True) -> dict:
         if self._is_official_dashboard_cooled_down():
             raise RuntimeError('官方源熔断窗口内暂不请求')
         try:
             payload = self._request_json(path, params=params, timeout=self.dashboard_official_timeout)
         except Exception:
-            self._mark_official_dashboard_failure()
+            self._mark_official_dashboard_failure(critical=critical)
             raise
         self._clear_official_dashboard_failure()
         return payload
@@ -130,43 +149,50 @@ class PC28Service:
             raise ValueError(f'Feiji28 latest 接口返回格式异常: {payload}')
         return self._normalize_draw_list(data, source='feiji')
 
+    def _fetch_official_keno_snapshot(self, dashboard_mode: bool = False) -> dict:
+        """只请求官方快照接口，失败时抛出异常交由调用方回退"""
+        if dashboard_mode:
+            payload = self._request_official_dashboard_json('api/keno.json', {'nbr': 1})
+        else:
+            payload = self._request_json('api/keno.json', {'nbr': 1})
+        data = payload.get('data') or []
+        latest = data[0] if data else {}
+        latest_issue_no = str(latest.get('nbr') or '').strip() or None
+
+        return {
+            'countdown': str(payload.get('countdown') or '00:00:00'),
+            'latest_issue_no': latest_issue_no,
+            'next_issue_no': next_issue_no(latest_issue_no),
+            'raw_item': latest
+        }
+
+    def _build_keno_fallback_snapshot(self, recent_draws: Optional[list[dict]], error: Exception) -> dict:
+        draws = recent_draws or self.fetch_recent_draws(limit=1)
+        latest_draw = draws[0] if draws else None
+        latest_issue_no = str((latest_draw or {}).get('issue_no') or '').strip() or None
+        if not latest_issue_no:
+            raise RuntimeError(f'PC28 快照接口不可用，且无法从最近开奖推导下一期期号: {error}') from error
+
+        return {
+            'countdown': '--:--:--',
+            'latest_issue_no': latest_issue_no,
+            'next_issue_no': next_issue_no(latest_issue_no),
+            'raw_item': latest_draw,
+            'warning': '官方快照接口不可用，已按最近开奖推导下一期期号'
+        }
+
     def fetch_keno_snapshot(self, recent_draws: Optional[list[dict]] = None, dashboard_mode: bool = False) -> dict:
         """获取当前期倒计时与期号快照"""
         try:
-            if dashboard_mode:
-                payload = self._request_official_dashboard_json('api/keno.json', {'nbr': 1})
-            else:
-                payload = self._request_json('api/keno.json', {'nbr': 1})
-            data = payload.get('data') or []
-            latest = data[0] if data else {}
-            latest_issue_no = str(latest.get('nbr') or '').strip() or None
-
-            return {
-                'countdown': str(payload.get('countdown') or '00:00:00'),
-                'latest_issue_no': latest_issue_no,
-                'next_issue_no': next_issue_no(latest_issue_no),
-                'raw_item': latest
-            }
+            return self._fetch_official_keno_snapshot(dashboard_mode=dashboard_mode)
         except Exception as exc:
-            draws = recent_draws or self.fetch_recent_draws(limit=1)
-            latest_draw = draws[0] if draws else None
-            latest_issue_no = str((latest_draw or {}).get('issue_no') or '').strip() or None
-            if not latest_issue_no:
-                raise RuntimeError(f'PC28 快照接口不可用，且无法从最近开奖推导下一期期号: {exc}') from exc
-
-            return {
-                'countdown': '--:--:--',
-                'latest_issue_no': latest_issue_no,
-                'next_issue_no': next_issue_no(latest_issue_no),
-                'raw_item': latest_draw,
-                'warning': '官方快照接口不可用，已按最近开奖推导下一期期号'
-            }
+            return self._build_keno_fallback_snapshot(recent_draws, exc)
 
     def fetch_omission_stats(self, dashboard_mode: bool = False) -> dict:
         """获取遗漏统计"""
         try:
             if dashboard_mode:
-                payload = self._request_official_dashboard_json('api/yl.json')
+                payload = self._request_official_dashboard_json('api/yl.json', critical=False)
             else:
                 payload = self._request_json('api/yl.json')
             return payload.get('data') or {}
@@ -177,7 +203,7 @@ class PC28Service:
         """获取今日统计"""
         try:
             if dashboard_mode:
-                payload = self._request_official_dashboard_json('api/yk.json')
+                payload = self._request_official_dashboard_json('api/yk.json', critical=False)
             else:
                 payload = self._request_json('api/yk.json')
             return payload.get('data') or {}
@@ -188,7 +214,7 @@ class PC28Service:
         """获取聚合预览接口"""
         try:
             if dashboard_mode:
-                payload = self._request_official_dashboard_json('api/preview.json')
+                payload = self._request_official_dashboard_json('api/preview.json', critical=False)
             else:
                 payload = self._request_json('api/preview.json')
             return payload.get('data') or {}
@@ -203,11 +229,25 @@ class PC28Service:
 
     def build_overview(self, history_limit: int = 20) -> dict:
         """构建前端公开总览数据"""
-        draws, recent_source = self._fetch_recent_draws_with_source(limit=history_limit, dashboard_mode=True)
-        keno_snapshot = self.fetch_keno_snapshot(recent_draws=draws[:1], dashboard_mode=True)
-        omission_stats = self.fetch_omission_stats(dashboard_mode=True)
-        today_stats = self.fetch_today_stats(dashboard_mode=True)
-        preview = self.fetch_preview(dashboard_mode=True)
+        # 总览需要 5 个官方接口，串行时页面要等 3 秒以上，因此并发发起；
+        # 本轮已发出的请求不会被同轮的失败短路，熔断主要作用于下一轮。
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            draws_future = executor.submit(
+                self._fetch_recent_draws_with_source, limit=history_limit, dashboard_mode=True
+            )
+            keno_future = executor.submit(self._fetch_official_keno_snapshot, dashboard_mode=True)
+            omission_future = executor.submit(self.fetch_omission_stats, dashboard_mode=True)
+            today_future = executor.submit(self.fetch_today_stats, dashboard_mode=True)
+            preview_future = executor.submit(self.fetch_preview, dashboard_mode=True)
+
+            draws, recent_source = draws_future.result()
+            try:
+                keno_snapshot = keno_future.result()
+            except Exception as exc:
+                keno_snapshot = self._build_keno_fallback_snapshot(draws[:1], exc)
+            omission_stats = omission_future.result()
+            today_stats = today_future.result()
+            preview = preview_future.result()
 
         latest_draw = draws[0] if draws else None
         next_issue = self._resolve_next_issue_no(

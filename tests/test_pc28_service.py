@@ -8,6 +8,13 @@ import requests
 from services.pc28_service import PC28Service
 
 
+OPTIONAL_OFFICIAL_URLS = {
+    'https://pc28.help/api/yl.json',
+    'https://pc28.help/api/yk.json',
+    'https://pc28.help/api/preview.json',
+}
+
+
 class DummyResponse:
     def __init__(self, payload=None, status_code: int = 200):
         self.payload = payload
@@ -26,12 +33,17 @@ class PC28ServiceTests(unittest.TestCase):
         self.service = PC28Service(
             base_url='https://pc28.help',
             timeout=3,
-            dashboard_official_timeout=1.5,
-            dashboard_official_cooldown_seconds=300,
+            dashboard_official_timeout=4.0,
+            dashboard_official_cooldown_seconds=60,
+            dashboard_official_failure_threshold=2,
             recent_source_order=('official', 'jnd', 'feiji'),
             jnd_recent_url='https://jnd-28.vip/api/recent',
             feiji_recent_url='https://feiji28.com/api/keno/latest'
         )
+
+    def patch_http(self, fake_get):
+        """替换会话上的底层 GET，用于断言各数据源的请求行为"""
+        return mock.patch.object(self.service._session, 'get', side_effect=fake_get)
 
     def test_fetch_recent_draws_falls_back_to_jnd(self):
         def fake_get(url, params=None, timeout=None):
@@ -48,7 +60,7 @@ class PC28ServiceTests(unittest.TestCase):
                 ])
             raise AssertionError(f'未预期的请求: {url}')
 
-        with mock.patch('services.pc28_service.requests.get', side_effect=fake_get):
+        with self.patch_http(fake_get):
             draws = self.service.fetch_recent_draws(limit=1)
 
         self.assertEqual(len(draws), 1)
@@ -77,7 +89,7 @@ class PC28ServiceTests(unittest.TestCase):
                 })
             raise AssertionError(f'未预期的请求: {url}')
 
-        with mock.patch('services.pc28_service.requests.get', side_effect=fake_get):
+        with self.patch_http(fake_get):
             draws = self.service.fetch_recent_draws(limit=1)
 
         self.assertEqual(len(draws), 1)
@@ -93,7 +105,7 @@ class PC28ServiceTests(unittest.TestCase):
                 return DummyResponse(status_code=404)
             raise AssertionError(f'未预期的请求: {url}')
 
-        with mock.patch('services.pc28_service.requests.get', side_effect=fake_get):
+        with self.patch_http(fake_get):
             snapshot = self.service.fetch_keno_snapshot(recent_draws=[{'issue_no': '3421529'}])
 
         self.assertEqual(snapshot['latest_issue_no'], '3421529')
@@ -116,7 +128,7 @@ class PC28ServiceTests(unittest.TestCase):
             raise AssertionError(f'未预期的请求: {url}')
 
         fake_db = mock.Mock()
-        with mock.patch('services.pc28_service.requests.get', side_effect=fake_get):
+        with self.patch_http(fake_get):
             draws = self.service.sync_recent_draws(fake_db, limit=1)
 
         self.assertEqual(len(draws), 1)
@@ -158,7 +170,7 @@ class PC28ServiceTests(unittest.TestCase):
                 ])
             raise AssertionError(f'未预期的请求: {url}')
 
-        with mock.patch('services.pc28_service.requests.get', side_effect=fake_get):
+        with self.patch_http(fake_get):
             overview = self.service.build_overview(history_limit=1)
 
         self.assertEqual(overview['latest_draw']['issue_no'], '3421529')
@@ -168,19 +180,34 @@ class PC28ServiceTests(unittest.TestCase):
         self.assertEqual(overview['today_preview'], {'summary': {}, 'hot_numbers': []})
         self.assertIn('JND28', overview['warning'])
         self.assertEqual(official_calls['kj'], 1)
-        self.assertEqual(official_calls['keno'], 0)
-        self.assertEqual(official_calls['yl'], 0)
-        self.assertEqual(official_calls['yk'], 0)
-        self.assertEqual(official_calls['preview'], 0)
-        self.assertEqual(official_timeouts, [1.5])
+        self.assertEqual(official_calls['keno'], 1)
+        # 并发发起时熔断可能在装饰接口之前打开，因此它们最多各请求一次
+        self.assertTrue(all(official_calls[key] <= 1 for key in ('yl', 'yk', 'preview')))
+        self.assertTrue(official_timeouts)
+        self.assertTrue(all(timeout == 4.0 for timeout in official_timeouts))
 
-    def test_build_overview_skips_official_during_dashboard_cooldown(self):
+    def test_build_overview_recovers_after_single_transient_official_failure(self):
         official_calls = {'kj': 0}
 
         def fake_get(url, params=None, timeout=None):
             if url == 'https://pc28.help/api/kj.json':
                 official_calls['kj'] += 1
-                raise requests.Timeout('official timeout')
+                if official_calls['kj'] == 1:
+                    raise requests.Timeout('official timeout')
+                return DummyResponse({
+                    'message': 'success',
+                    'data': [
+                        {'nbr': '3421530', 'num': 11, 'date': '2026-04-17', 'time': '13:38:30'}
+                    ]
+                })
+            if url == 'https://pc28.help/api/keno.json':
+                return DummyResponse({
+                    'message': 'success',
+                    'countdown': '00:30',
+                    'data': [{'nbr': '3421530'}]
+                })
+            if url in OPTIONAL_OFFICIAL_URLS:
+                return DummyResponse({'message': 'success', 'data': {}})
             if url == 'https://jnd-28.vip/api/recent':
                 return DummyResponse([
                     {
@@ -191,13 +218,84 @@ class PC28ServiceTests(unittest.TestCase):
                 ])
             raise AssertionError(f'未预期的请求: {url}')
 
-        with mock.patch('services.pc28_service.requests.get', side_effect=fake_get):
+        with self.patch_http(fake_get):
+            first = self.service.build_overview(history_limit=1)
+            second = self.service.build_overview(history_limit=1)
+
+        self.assertEqual(first['latest_draw']['issue_no'], '3421529')
+        self.assertIn('JND28', first['warning'])
+        self.assertEqual(second['latest_draw']['issue_no'], '3421530')
+        self.assertNotIn('warning', second)
+        self.assertEqual(official_calls['kj'], 2)
+
+    def test_optional_endpoint_failure_does_not_open_official_breaker(self):
+        official_calls = {'kj': 0, 'yl': 0, 'yk': 0, 'preview': 0}
+
+        def fake_get(url, params=None, timeout=None):
+            if url == 'https://pc28.help/api/kj.json':
+                official_calls['kj'] += 1
+                return DummyResponse({
+                    'message': 'success',
+                    'data': [
+                        {'nbr': '3421529', 'num': 10, 'date': '2026-04-17', 'time': '13:38:00'}
+                    ]
+                })
+            if url == 'https://pc28.help/api/keno.json':
+                return DummyResponse({
+                    'message': 'success',
+                    'countdown': '00:30',
+                    'data': [{'nbr': '3421529'}]
+                })
+            if url in OPTIONAL_OFFICIAL_URLS:
+                key = url.rsplit('/', 1)[-1].split('.')[0]
+                official_calls[key] += 1
+                raise requests.Timeout('optional endpoint timeout')
+            raise AssertionError(f'未预期的请求: {url}')
+
+        with self.patch_http(fake_get):
+            self.service.build_overview(history_limit=1)
+            second = self.service.build_overview(history_limit=1)
+
+        self.assertEqual(official_calls['kj'], 2)
+        self.assertEqual(official_calls['yl'], 2)
+        self.assertEqual(official_calls['yk'], 2)
+        self.assertEqual(official_calls['preview'], 2)
+        self.assertNotIn('warning', second)
+
+    def test_build_overview_skips_official_during_dashboard_cooldown(self):
+        official_calls = {'kj': 0, 'keno': 0, 'yl': 0, 'yk': 0, 'preview': 0}
+
+        def fake_get(url, params=None, timeout=None):
+            if url == 'https://pc28.help/api/kj.json':
+                official_calls['kj'] += 1
+                raise requests.Timeout('official timeout')
+            if url == 'https://pc28.help/api/keno.json':
+                official_calls['keno'] += 1
+                raise requests.Timeout('official timeout')
+            if url in OPTIONAL_OFFICIAL_URLS:
+                key = url.rsplit('/', 1)[-1].split('.')[0]
+                official_calls[key] += 1
+                raise requests.Timeout('optional endpoint timeout')
+            if url == 'https://jnd-28.vip/api/recent':
+                return DummyResponse([
+                    {
+                        'draw_number': 3421529,
+                        'draw_date': '2026-04-17T13:38:00+08:00',
+                        'canada28_result': 10
+                    }
+                ])
+            raise AssertionError(f'未预期的请求: {url}')
+
+        with self.patch_http(fake_get):
             first = self.service.build_overview(history_limit=1)
             second = self.service.build_overview(history_limit=1)
 
         self.assertEqual(first['latest_draw']['issue_no'], '3421529')
         self.assertEqual(second['latest_draw']['issue_no'], '3421529')
         self.assertEqual(official_calls['kj'], 1)
+        self.assertEqual(official_calls['keno'], 1)
+        # 装饰接口是否被短路取决于并发时序，本轮最多各请求一次
+        self.assertTrue(all(official_calls[key] <= 1 for key in ('yl', 'yk', 'preview')))
 
 
 if __name__ == '__main__':

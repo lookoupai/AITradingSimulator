@@ -21,6 +21,7 @@
 - AI 接口：OpenAI 兼容格式（DeepSeek、Gemini OpenAI-compatible、OpenAI 等）
 - 数据源：
   - PC28：默认 `https://pc28.help`，当官方最近开奖接口不可用时自动回退 `https://jnd-28.vip/api/recent` 与 `https://feiji28.com/api/keno/latest`
+    - 总览页对官方源的超时由 `PC28_DASHBOARD_OFFICIAL_TIMEOUT` 控制（默认 4 秒，官方接口尾延迟可达 2~3 秒）；核心接口连续失败 `PC28_DASHBOARD_OFFICIAL_FAILURE_THRESHOLD` 次才熔断 `PC28_DASHBOARD_OFFICIAL_COOLDOWN_SECONDS` 秒，`yl/yk/preview` 等辅助接口失败不触发熔断
   - 竞彩足球：新浪移动 JSON 接口为主，体彩 `webapi.sporttery.cn` 作为辅助探测/校验源
 
 ## 快速开始
@@ -98,6 +99,9 @@ PC28_PREDICTION_CUTOFF_BUFFER_SECONDS=20
 PC28_PREDICTION_MIN_REQUEST_WINDOW_SECONDS=8
 PC28_API_BASE_URL=https://pc28.help
 PC28_REQUEST_TIMEOUT=10
+PC28_DASHBOARD_OFFICIAL_TIMEOUT=4
+PC28_DASHBOARD_OFFICIAL_COOLDOWN_SECONDS=60
+PC28_DASHBOARD_OFFICIAL_FAILURE_THRESHOLD=2
 PC28_SYNC_HISTORY=120
 PC28_JND_RECENT_URL=https://jnd-28.vip/api/recent
 PC28_FEIJI_RECENT_URL=https://feiji28.com/api/keno/latest
