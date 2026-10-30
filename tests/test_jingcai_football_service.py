@@ -782,5 +782,150 @@ class JingcaiFootballServicePromptTests(unittest.TestCase):
             self.assertTrue(payload['matches'][0]['settled'])
 
 
+class JingcaiFootballSnapshotRecommendationTests(unittest.TestCase):
+    """批次截止销售后，推荐票面按预测批次快照回退展示"""
+
+    def setUp(self):
+        from services.jingcai_football_service import JingcaiFootballService
+        self.service = JingcaiFootballService()
+
+    @staticmethod
+    def _build_item(
+        issue_no: str,
+        confidence: float,
+        spf: str | None = '胜',
+        rqspf: str | None = '负',
+        *,
+        show_status: str = '1',
+        spf_status: str = '3',
+        rqspf_status: str = '3',
+        spf_snapshot: str | None = '1',
+        rqspf_snapshot: str | None = '1',
+        spf_odds: dict | None = None,
+        rqspf_odds: dict | None = None,
+        status: str = 'pending'
+    ) -> dict:
+        return {
+            'issue_no': issue_no,
+            'title': f'[欧罗巴] {issue_no}',
+            'status': status,
+            'confidence': confidence,
+            'prediction_payload': {'spf': spf, 'rqspf': rqspf},
+            'market_snapshot': {
+                'status': show_status,
+                'status_label': '已开奖' if show_status == '3' else '已开售',
+                'spf_odds': spf_odds if spf_odds is not None else {'胜': 1.80, '平': 3.30, '负': 4.20},
+                'rqspf': {
+                    'handicap': -1,
+                    'handicap_text': '-1',
+                    'odds': rqspf_odds if rqspf_odds is not None else {'胜': 3.80, '平': 3.20, '负': 1.80}
+                },
+                'spf_sell_status': spf_status,
+                'rqspf_sell_status': rqspf_status,
+                'spf_sell_status_snapshot': spf_snapshot,
+                'rqspf_sell_status_snapshot': rqspf_snapshot
+            }
+        }
+
+    def test_snapshot_sellable_requires_snapshot_and_odds(self):
+        from utils.jingcai_football import is_metric_snapshot_sellable
+        meta = {
+            'settled': False,
+            'spf_sell_status': '3',
+            'spf_sell_status_snapshot': '1',
+            'spf_odds': {'胜': 1.80, '平': 3.30, '负': 4.20}
+        }
+        self.assertTrue(is_metric_snapshot_sellable('spf', meta, '胜', play_mode='parlay'))
+        # 单关池只接受快照 2
+        self.assertFalse(is_metric_snapshot_sellable('spf', meta, '胜', play_mode='single'))
+        # 已开奖场次不参与快照推荐
+        self.assertFalse(is_metric_snapshot_sellable('spf', {**meta, 'settled': True}, '胜', play_mode='parlay'))
+        # 无快照（未曾在售）时不可回退
+        self.assertFalse(is_metric_snapshot_sellable('spf', {**meta, 'spf_sell_status_snapshot': ''}, '胜', play_mode='parlay'))
+        # 无有效赔率快照时不可回退
+        self.assertFalse(is_metric_snapshot_sellable('spf', {**meta, 'spf_odds': {}}, '胜', play_mode='parlay'))
+
+    def test_ticket_plan_falls_back_to_snapshot_when_batch_closed(self):
+        items = [
+            self._build_item('周五001', 0.72),
+            self._build_item('周五002', 0.66)
+        ]
+        plan = self.service._build_recommended_ticket_plan(items)
+        self.assertTrue(plan['snapshot_used'])
+        self.assertEqual(plan['warnings'], [])
+        self.assertEqual(len(plan['tickets']), 2)
+        for ticket in plan['tickets']:
+            self.assertTrue(ticket['snapshot_based'])
+            self.assertEqual(ticket['odds_source_label'], '已截止 · 按批次赔率快照参考')
+            for leg in ticket['legs']:
+                self.assertTrue(leg['based_on_snapshot'])
+
+    def test_ticket_plan_prefers_live_legs_before_snapshot_fill(self):
+        live = self._build_item('周五003', 0.50, spf_status='1', rqspf_status='1',
+                                spf_snapshot='1', rqspf_snapshot='1')
+        closed_high_confidence = self._build_item('周五001', 0.90)
+        closed_low_confidence = self._build_item('周五002', 0.60)
+        plan = self.service._build_recommended_ticket_plan([
+            live, closed_high_confidence, closed_low_confidence
+        ])
+        self.assertTrue(plan['snapshot_used'])
+        self.assertEqual(len(plan['tickets']), 2)
+        spf_legs = plan['tickets'][0]['legs']
+        self.assertEqual([leg['issue_no'] for leg in spf_legs], ['周五003', '周五001'])
+        self.assertFalse(spf_legs[0]['based_on_snapshot'])
+        self.assertTrue(spf_legs[1]['based_on_snapshot'])
+
+    def test_ticket_plan_keeps_live_only_labels_when_on_sale(self):
+        items = [
+            self._build_item('周五001', 0.72, spf_status='2', rqspf_status='2',
+                             spf_snapshot='2', rqspf_snapshot='2'),
+            self._build_item('周五002', 0.66, spf_status='1', rqspf_status='1',
+                             spf_snapshot='1', rqspf_snapshot='1')
+        ]
+        plan = self.service._build_recommended_ticket_plan(items)
+        self.assertFalse(plan['snapshot_used'])
+        self.assertEqual(plan['warnings'], [])
+        for ticket in plan['tickets']:
+            self.assertFalse(ticket['snapshot_based'])
+            self.assertEqual(ticket['odds_source_label'], '预测批次赔率快照')
+
+    def test_ticket_plan_warns_when_no_snapshot_available(self):
+        items = [
+            self._build_item('周五001', 0.72, spf_snapshot='', rqspf_snapshot=''),
+            self._build_item('周五002', 0.66, spf_snapshot='', rqspf_snapshot='')
+        ]
+        plan = self.service._build_recommended_ticket_plan(items)
+        self.assertFalse(plan['snapshot_used'])
+        self.assertEqual(plan['tickets'], [])
+        self.assertEqual(len(plan['warnings']), 2)
+        for warning in plan['warnings']:
+            self.assertIn('仅有 0 场可参与二串一', warning['message'])
+
+    def test_ticket_plan_skips_settled_matches_even_with_snapshot(self):
+        items = [
+            self._build_item('周五001', 0.72, show_status='3', status='settled'),
+            self._build_item('周五002', 0.66, spf_snapshot='', rqspf_snapshot='')
+        ]
+        plan = self.service._build_recommended_ticket_plan(items)
+        self.assertFalse(plan['snapshot_used'])
+        self.assertEqual(plan['tickets'], [])
+
+    def test_two_match_recommendation_marks_and_orders_snapshot_candidates(self):
+        live = self._build_item('周五003', 0.50, spf_status='1', rqspf_status='1',
+                                spf_snapshot='1', rqspf_snapshot='1')
+        closed_high = self._build_item('周五001', 0.90)
+        candidates = self.service._build_two_match_recommendation([closed_high, live])
+        self.assertEqual([item['issue_no'] for item in candidates], ['周五003', '周五001'])
+        self.assertFalse(candidates[0]['based_on_snapshot'])
+        self.assertTrue(candidates[1]['based_on_snapshot'])
+
+        closed_only = self.service._build_two_match_recommendation([
+            self._build_item('周五001', 0.72),
+            self._build_item('周五002', 0.66)
+        ])
+        self.assertEqual([item['issue_no'] for item in closed_only], ['周五001', '周五002'])
+        self.assertTrue(all(item['based_on_snapshot'] for item in closed_only))
+
+
 if __name__ == '__main__':
     unittest.main()

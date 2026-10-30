@@ -39,6 +39,8 @@ PREDICTION_MAX_OUTPUT_TOKENS = max(800, int(getattr(config, 'JINGCAI_PREDICTION_
 PREDICTION_CONCISE_REASONING_THRESHOLD = max(1, int(getattr(config, 'JINGCAI_PREDICTION_CONCISE_REASONING_THRESHOLD', 8)))
 FAILED_ITEM_RETRY_MAX_ATTEMPTS = max(1, int(getattr(config, 'JINGCAI_FAILED_ITEM_RETRY_MAX_ATTEMPTS', 3)))
 FAILED_ITEM_RETRY_COOLDOWN_SECONDS = max(60, int(getattr(config, 'JINGCAI_FAILED_ITEM_RETRY_COOLDOWN_SECONDS', 15 * 60)))
+SNAPSHOT_TICKET_ODDS_SOURCE_LABEL = '已截止 · 按批次赔率快照参考'
+SNAPSHOT_RECOMMENDATION_NOTICE = '当前批次玩法已截止销售，推荐按预测批次赔率快照生成，仅供参考'
 
 
 class JingcaiFootballService:
@@ -2299,40 +2301,56 @@ class JingcaiFootballService:
             return None
         items = self._decorate_prediction_items(db, db.get_prediction_run_items(run['id']))
         ticket_plan = self._build_recommended_ticket_plan(items)
+        recommended_parlay = self._build_two_match_recommendation(items)
+        snapshot_used = bool(ticket_plan.get('snapshot_used')) or any(
+            item.get('based_on_snapshot') for item in recommended_parlay
+        )
         failed_batches = self._build_failed_batch_summaries([item for item in items if item.get('status') == 'failed'])
         return {
             **run,
             'lottery_type': self.lottery_type,
             'items': items,
             'failed_batches': failed_batches,
-            'recommended_parlay': self._build_two_match_recommendation(items),
+            'recommended_parlay': recommended_parlay,
             'recommended_tickets': ticket_plan['tickets'],
-            'recommended_ticket_warnings': ticket_plan['warnings']
+            'recommended_ticket_warnings': ticket_plan['warnings'],
+            'recommendation_notice': SNAPSHOT_RECOMMENDATION_NOTICE if snapshot_used else None
         }
 
+    def _metric_recommendation_availability(self, metric_key: str, meta_payload: dict, outcome: str | None) -> tuple[bool, bool]:
+        """返回 (是否可参与推荐票面, 是否基于预测批次快照回退)。优先按当前可售状态，已截止时回退快照。"""
+        if not outcome:
+            return False, False
+        if self._is_metric_on_sale(metric_key, meta_payload, outcome, play_mode='parlay'):
+            return True, False
+        if football_utils.is_metric_snapshot_sellable(metric_key, meta_payload, outcome, play_mode='parlay'):
+            return True, True
+        return False, False
+
     def _build_two_match_recommendation(self, items: list[dict]) -> list[dict]:
-        top_items: list[dict] = []
+        live_items: list[dict] = []
+        snapshot_items: list[dict] = []
         for item in football_utils.rank_prediction_items(items):
             market_snapshot = item.get('market_snapshot') or {}
             meta_payload = self._build_market_snapshot_payload(market_snapshot)
             prediction_payload = item.get('prediction_payload') or {}
-            can_use_spf = self._is_metric_on_sale('spf', meta_payload, prediction_payload.get('spf'), play_mode='parlay')
-            can_use_rqspf = self._is_metric_on_sale('rqspf', meta_payload, prediction_payload.get('rqspf'), play_mode='parlay')
+            can_use_spf, spf_snapshot = self._metric_recommendation_availability('spf', meta_payload, prediction_payload.get('spf'))
+            can_use_rqspf, rqspf_snapshot = self._metric_recommendation_availability('rqspf', meta_payload, prediction_payload.get('rqspf'))
             if not (can_use_spf or can_use_rqspf):
                 continue
-            top_items.append(item)
-            if len(top_items) >= 2:
-                break
-        return [
-            {
+            based_on_snapshot = (spf_snapshot if can_use_spf else False) or (rqspf_snapshot if can_use_rqspf else False)
+            entry = {
                 'issue_no': item.get('issue_no'),
                 'title': item.get('title'),
-                'prediction_payload': item.get('prediction_payload') or {},
-                'market_snapshot': item.get('market_snapshot') or {},
-                'confidence': item.get('confidence')
+                'prediction_payload': prediction_payload,
+                'market_snapshot': market_snapshot,
+                'confidence': item.get('confidence'),
+                'based_on_snapshot': based_on_snapshot
             }
-            for item in top_items
-        ]
+            (snapshot_items if based_on_snapshot else live_items).append(entry)
+        # 当前仍可购的场次优先，已截止场次仅作为快照参考补位
+        top_items = (live_items + snapshot_items)[:2]
+        return top_items
 
     def _decorate_prediction_items(self, db, items: list[dict]) -> list[dict]:
         if not items:
@@ -2368,6 +2386,8 @@ class JingcaiFootballService:
                     'odds_snapshots': odds_snapshots,
                     'spf_sell_status': meta_payload.get('spf_sell_status') or '',
                     'rqspf_sell_status': meta_payload.get('rqspf_sell_status') or '',
+                    'spf_sell_status_snapshot': meta_payload.get('spf_sell_status_snapshot') or '',
+                    'rqspf_sell_status_snapshot': meta_payload.get('rqspf_sell_status_snapshot') or '',
                     'spf_single_sellable': self._is_metric_on_sale('spf', meta_payload, play_mode='single'),
                     'rqspf_single_sellable': self._is_metric_on_sale('rqspf', meta_payload, play_mode='single'),
                     'spf_parlay_sellable': self._is_metric_on_sale('spf', meta_payload, play_mode='parlay'),
@@ -2388,28 +2408,34 @@ class JingcaiFootballService:
     def _build_recommended_ticket_plan(self, items: list[dict]) -> dict:
         tickets = []
         warnings = []
+        snapshot_used = False
         for metric in ('spf', 'rqspf'):
             ranked_items = football_utils.rank_prediction_items(items, metric_key=metric)
-            legs = []
+            live_legs = []
+            snapshot_legs = []
             for item in ranked_items:
                 market_snapshot = item.get('market_snapshot') or {}
                 meta_payload = self._build_market_snapshot_payload(market_snapshot)
                 prediction_payload = item.get('prediction_payload') or {}
                 outcome = prediction_payload.get(metric)
-                if not outcome or not self._is_metric_on_sale(metric, meta_payload, outcome, play_mode='parlay'):
+                usable, based_on_snapshot = self._metric_recommendation_availability(metric, meta_payload, outcome)
+                if not usable:
                     continue
                 odds = football_utils.resolve_snapshot_odds(meta_payload, metric, outcome)
                 if odds is None or odds <= 0:
                     continue
-                legs.append({
+                leg = {
                     'issue_no': item.get('issue_no') or '--',
                     'title': item.get('title') or '--',
                     'outcome': outcome,
                     'display_outcome': self._format_ticket_outcome(metric, outcome, meta_payload),
-                    'odds': float(odds)
-                })
-                if len(legs) == 2:
-                    break
+                    'odds': float(odds),
+                    'based_on_snapshot': based_on_snapshot
+                }
+                (snapshot_legs if based_on_snapshot else live_legs).append(leg)
+
+            # 当前仍可购的场次优先，已截止场次仅作为快照参考补位
+            legs = (live_legs + snapshot_legs)[:2]
 
             if len(legs) < 2:
                 warnings.append({
@@ -2419,18 +2445,22 @@ class JingcaiFootballService:
                 })
                 continue
 
+            ticket_snapshot_used = any(leg['based_on_snapshot'] for leg in legs)
+            snapshot_used = snapshot_used or ticket_snapshot_used
             tickets.append({
                 'metric': f'{metric}_parlay',
                 'metric_label': football_utils.TARGET_LABELS.get(f'{metric}_parlay', metric),
                 'ticket_text': ' + '.join(f"{leg['issue_no']} {leg['display_outcome']}" for leg in legs),
                 'odds': round(legs[0]['odds'] * legs[1]['odds'], 4),
                 'legs': legs,
-                'odds_source_label': '预测批次赔率快照'
+                'odds_source_label': SNAPSHOT_TICKET_ODDS_SOURCE_LABEL if ticket_snapshot_used else '预测批次赔率快照',
+                'snapshot_based': ticket_snapshot_used
             })
 
         return {
             'tickets': tickets,
-            'warnings': warnings
+            'warnings': warnings,
+            'snapshot_used': snapshot_used
         }
 
     def _build_market_snapshot_payload(self, market_snapshot: dict) -> dict:
@@ -2439,7 +2469,9 @@ class JingcaiFootballService:
             'rqspf': market_snapshot.get('rqspf') or {},
             'settled': str(market_snapshot.get('status') or '').strip() == '3',
             'spf_sell_status': str(market_snapshot.get('spf_sell_status') or '').strip(),
-            'rqspf_sell_status': str(market_snapshot.get('rqspf_sell_status') or '').strip()
+            'rqspf_sell_status': str(market_snapshot.get('rqspf_sell_status') or '').strip(),
+            'spf_sell_status_snapshot': str(market_snapshot.get('spf_sell_status_snapshot') or '').strip(),
+            'rqspf_sell_status_snapshot': str(market_snapshot.get('rqspf_sell_status_snapshot') or '').strip()
         }
 
     def _is_metric_on_sale(self, metric_key: str, meta_payload: dict, outcome: str | None = None, play_mode: str = 'parlay') -> bool:

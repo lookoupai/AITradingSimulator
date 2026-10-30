@@ -359,6 +359,26 @@ def is_metric_sellable(
     return metric_has_sellable_odds(metric_key, meta_payload, outcome)
 
 
+def is_metric_snapshot_sellable(
+    metric_key: str,
+    meta_payload: dict,
+    outcome: Optional[str] = None,
+    play_mode: Optional[str] = None
+) -> bool:
+    """已截止但未开奖场次的回退判定：基于预测批次销售状态快照与赔率快照。
+
+    用于批次整体截止销售后，继续按预测时的快照给出参考推荐；已开奖场次不参与。
+    """
+    if meta_payload.get('settled'):
+        return False
+
+    status = metric_sell_status_snapshot(metric_key, meta_payload)
+    if not status or status not in allowed_sell_statuses(play_mode):
+        return False
+
+    return metric_has_sellable_odds(metric_key, meta_payload, outcome)
+
+
 def metric_availability_label(metric_key: str, meta_payload: dict, outcome: Optional[str] = None, play_mode: Optional[str] = None) -> str:
     """给页面展示玩法可用性说明"""
     if meta_payload.get('settled'):

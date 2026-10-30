@@ -3368,6 +3368,7 @@ class PredictionApp {
             const parlay = Array.isArray(prediction.recommended_parlay) ? prediction.recommended_parlay : [];
             const tickets = Array.isArray(prediction.recommended_tickets) ? prediction.recommended_tickets : [];
             const ticketWarnings = Array.isArray(prediction.recommended_ticket_warnings) ? prediction.recommended_ticket_warnings : [];
+            const recommendationNotice = String(prediction.recommendation_notice || '').trim();
             const failedBatches = Array.isArray(prediction.failed_batches) ? prediction.failed_batches : [];
             const saleNotice = ticketWarnings.length
                 ? ticketWarnings.map((item) => item.message || '--').join('；')
@@ -3441,7 +3442,7 @@ class PredictionApp {
                 return this.renderCurrentPredictionCard(
                     `候选场次 ${index + 1}`,
                     `${item.issue_no || '--'} · ${item.title || '--'}`,
-                    `SPF ${spfOutcome || '--'}${spfOdds ? ` @ ${spfOdds}` : ''}${spfHint ? ` · ${spfHint}` : ''} · RQSPF ${rqspfOutcome || '--'}${rqspfOdds ? ` @ ${rqspfOdds}` : ''}${rqspfHint ? ` · ${rqspfHint}` : ''} · 置信度 ${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}${snapshotSummary ? ` · ${snapshotSummary}` : ''}`
+                    `SPF ${spfOutcome || '--'}${spfOdds ? ` @ ${spfOdds}` : ''}${spfHint ? ` · ${spfHint}` : ''} · RQSPF ${rqspfOutcome || '--'}${rqspfOdds ? ` @ ${rqspfOdds}` : ''}${rqspfHint ? ` · ${rqspfHint}` : ''} · 置信度 ${this.formatPercent(item.confidence !== null && item.confidence !== undefined ? item.confidence * 100 : null)}${snapshotSummary ? ` · ${snapshotSummary}` : ''}${item.based_on_snapshot ? ' · 按批次快照参考' : ''}`
                 );
             }).join('');
 
@@ -3469,6 +3470,7 @@ class PredictionApp {
                 ${prediction.error_message ? `<div class="warning-banner">${this.escapeHtml(prediction.error_message)}</div>` : ''}
                 ${this.renderPredictorExecutionPanel(predictor)}
                 ${saleNoticeBlock}
+                ${recommendationNotice ? `<div class="metric-hint prediction-note"><p>${this.escapeHtml(recommendationNotice)}</p></div>` : ''}
                 ${this.renderFootballFailedBatchSection(failedBatches)}
                 <div class="prediction-grid prediction-grid-compact">
                     ${this.renderCurrentPredictionCard('预测批次', prediction.run_key || '--')}
