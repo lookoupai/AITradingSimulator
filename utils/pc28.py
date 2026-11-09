@@ -11,7 +11,9 @@ ALLOWED_TARGETS = ('number', 'big_small', 'odd_even', 'combo')
 ALLOWED_INJECTION_MODES = ('summary', 'raw')
 ALLOWED_API_MODES = ('auto', 'chat_completions', 'chat_completions_no_thinking', 'responses')
 ALLOWED_PRIMARY_METRICS = ('combo', 'number', 'big_small', 'odd_even', 'double_group', 'kill_group')
-ALLOWED_PROFIT_METRICS = ('combo', 'number', 'big_small', 'odd_even')
+ALLOWED_PROFIT_METRICS = ('combo', 'number', 'big_small', 'odd_even', 'double_group', 'kill_group')
+GROUP_PLAY_TYPES = ('double_group', 'kill_group')
+COMBO_VALUES = ('大单', '大双', '小单', '小双')
 ALLOWED_PROFIT_RULES = (
     'pc28_netdisk',
     'pc28_high',
@@ -37,8 +39,8 @@ TARGET_LABELS = {
     'big_small': '大/小',
     'odd_even': '单/双',
     'combo': '组合投注',
-    'double_group': '组合分组统计',
-    'kill_group': '排除统计'
+    'double_group': '双组',
+    'kill_group': '杀组'
 }
 
 DOUBLE_GROUP_LABELS = {
@@ -259,6 +261,23 @@ def derive_kill_group(combo: Optional[str]) -> Optional[str]:
     if not combo:
         return None
     return OPPOSITE_COMBO_MAP.get(combo)
+
+
+def derive_group_bet(metric: str, combo: Optional[str]) -> Optional[dict]:
+    """保持历史派生规则，执行和收益模拟共享明确的下注集合。"""
+    if metric not in GROUP_PLAY_TYPES or combo not in COMBO_VALUES:
+        return None
+    opposite = OPPOSITE_COMBO_MAP[combo]
+    selected = [value for value in COMBO_VALUES if value in {combo, opposite}] if metric == 'double_group' else [value for value in COMBO_VALUES if value != opposite]
+    return {
+        'bet_type': metric,
+        'bet_value': '+'.join(selected) if metric == 'double_group' else opposite,
+        'selected_combos': selected,
+        'excluded_combo': opposite if metric == 'kill_group' else None,
+        'group_derivation': 'opposite_combo_v1',
+        'origin_combo': combo,
+        'unit_count': len(selected),
+    }
 
 
 def derive_pc28_attributes(number: int) -> dict:

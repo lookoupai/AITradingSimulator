@@ -71,8 +71,8 @@ LOTTERY_DEFINITIONS = {
             ('number', '单点'),
             ('big_small', '大/小'),
             ('odd_even', '单/双'),
-            ('double_group', '组合分组统计'),
-            ('kill_group', '排除统计')
+            ('double_group', '双组'),
+            ('kill_group', '杀组')
         ),
         supports_profit_simulation=True,
         supports_public_pages=True,

@@ -130,8 +130,8 @@ const LOTTERY_UI_CONFIG = {
             { key: 'number', label: '单点：只按精确和值判断连中' },
             { key: 'big_small', label: '大/小：适合保守玩法' },
             { key: 'odd_even', label: '单/双：适合保守玩法' },
-            { key: 'double_group', label: '组合分组统计：大双/小单 vs 大单/小双' },
-            { key: 'kill_group', label: '排除统计：按预测组合结果的对角组合做排除统计' }
+            { key: 'double_group', label: '双组：同时下注大双＋小单或大单＋小双' },
+            { key: 'kill_group', label: '杀组：排除一个组合，下注其余三个' }
         ],
         profitRuleOptions: [
             { key: 'pc28_netdisk', label: 'OK游戏网盘：无回本，13/14 正常赔付' },
@@ -790,7 +790,9 @@ class PredictionApp {
             options.push({ key: 'odd_even', label: '单/双：默认按单双盘看当盘日盈亏' });
         }
         if (selectedTargets.includes('combo')) {
-            options.push({ key: 'combo', label: '组合投注：默认按组合票面看当盘日盈亏' });
+            options.push({ key: 'combo', label: '组合：下注单个组合' });
+            options.push({ key: 'double_group', label: '双组：每期下注两个组合' });
+            options.push({ key: 'kill_group', label: '杀组：每期下注三个组合' });
         }
         if (selectedTargets.includes('number')) {
             options.push({ key: 'number', label: '单点：默认按精确和值看当盘日盈亏' });
@@ -803,9 +805,7 @@ class PredictionApp {
             return preferredValue;
         }
 
-        const derivedMetric = lotteryType === 'pc28' && ['double_group', 'kill_group'].includes(primaryMetric)
-            ? 'combo'
-            : primaryMetric;
+        const derivedMetric = primaryMetric;
         if (options.some((item) => item.key === derivedMetric)) {
             return derivedMetric;
         }
@@ -1030,7 +1030,7 @@ class PredictionApp {
         const previousValue = selectedValue || select.value || config.defaultPrimaryMetric;
         const isExternalEngine = this.getFormEngineType() === 'external';
         const metricOptions = isExternalEngine
-            ? config.primaryMetricOptions.filter((item) => ['big_small', 'odd_even', 'combo'].includes(item.key))
+            ? config.primaryMetricOptions.filter((item) => ['big_small', 'odd_even', 'combo', 'double_group', 'kill_group'].includes(item.key))
             : config.primaryMetricOptions;
         select.innerHTML = metricOptions.map((item) => `
             <option value="${this.escapeHtml(item.key)}">${this.escapeHtml(item.label)}</option>
@@ -3279,13 +3279,13 @@ class PredictionApp {
                 <div class="prediction-section-head">
                     <div>
                         <span class="mini-label">派生玩法映射</span>
-                        <p class="section-hint">把组合结果翻译成真实可下注的组合投注分组。</p>
+                        <p class="section-hint">组合下注一个，双组下注两个，杀组排除一个、下注其余三个。</p>
                     </div>
                 </div>
                 <div class="prediction-grid prediction-grid-compact">
-                    ${this.renderCurrentPredictionCard('组合分组', predictionSnapshot.doubleGroup || '--', predictionSnapshot.doubleGroup ? '用于辅助解释组合投注的分组口径' : '依赖组合结果')}
-                    ${this.renderCurrentPredictionCard('组合投注', predictionSnapshot.pairTicket || '--', predictionSnapshot.pairTicket ? '真实下注按这个组合票面结算' : '依赖组合结果')}
-                    ${this.renderCurrentPredictionCard('排除对角组', predictionSnapshot.killGroup ? `杀${predictionSnapshot.killGroup}` : '--', predictionSnapshot.killGroup ? '实际未开出该组合即计为命中' : '依赖组合结果')}
+                    ${this.renderCurrentPredictionCard('组合', predictionSnapshot.combo || '--', '四个组合中下注一个')}
+                    ${this.renderCurrentPredictionCard('双组', predictionSnapshot.pairTicket || '--', '同时下注所列两个组合，逐注结算')}
+                    ${this.renderCurrentPredictionCard('杀组', predictionSnapshot.killGroup ? `杀${predictionSnapshot.killGroup}` : '--', predictionSnapshot.killTicket ? `下注 ${predictionSnapshot.killTicket}，逐注结算` : '依赖组合结果')}
                     ${this.renderCurrentPredictionCard('更新时间', prediction.updated_at || prediction.created_at || '--')}
                 </div>
             </div>
@@ -3972,7 +3972,7 @@ class PredictionApp {
             ['总下注', this.formatUsd(summary.total_stake || 0)],
             ['净收益', this.formatSignedUsd(summary.net_profit || 0)],
             ['ROI', this.formatPercent(summary.roi_percentage || 0)],
-            ['单注平均收益', this.formatSignedUsd(summary.average_profit || 0)],
+            [simulation.stake_basis === 'per_combo' ? '每组平均收益' : '单注平均收益', this.formatSignedUsd(summary.average_profit || 0)],
             ['命中 / 回本 / 未中', `${summary.hit_count || 0} / ${summary.refund_count || 0} / ${summary.miss_count || 0}`]
         ];
 
@@ -4055,7 +4055,7 @@ class PredictionApp {
                 <td>${this.escapeHtml(this.formatUsd(item.stake_amount || 0))}<br><span class="hint-text">${this.escapeHtml(item.bet_step_label || '--')}</span></td>
                 <td>${this.escapeHtml(item.predicted_value || '--')}</td>
                 <td>${this.escapeHtml(item.actual_value || '--')}</td>
-                <td>${this.formatOdds(item.odds)}</td>
+                <td>${this.formatProfitOdds(item)}</td>
                 <td>${this.renderProfitResult(item)}</td>
                 <td><strong class="${this.profitValueClass(item.net_profit)}">${this.escapeHtml(this.formatSignedUsd(item.net_profit))}</strong></td>
                 <td><strong class="${this.profitValueClass(item.cumulative_profit)}">${this.escapeHtml(this.formatSignedUsd(item.cumulative_profit))}</strong></td>
@@ -4066,11 +4066,20 @@ class PredictionApp {
         }
     }
 
+    formatProfitOdds(item) {
+        if (Array.isArray(item.legs)) {
+            return item.legs.map((leg) => this.escapeHtml(leg.ticket_label || '') + ' ' + this.formatOdds(leg.odds)).join(' / ');
+        }
+        return this.formatOdds(item.odds);
+    }
+
     renderProfitResult(item) {
+        const coverageText = typeof item.prediction_hit === 'boolean' ? `<span class="result-meta-text">预测${item.prediction_hit ? '命中' : '未中'} · 每组合 ${this.escapeHtml(this.formatUsd(item.per_combo_amount))}</span>` : '';
         const reasonText = item.refund_reason ? `<span class="result-meta-text">${this.escapeHtml(item.refund_reason)}</span>` : '';
         return `
             <div class="hit-summary-block">
                 <span class="hit-pill ${this.profitResultClass(item.result_type)}">${this.escapeHtml(item.result_label || '--')}</span>
+                ${coverageText}
                 ${reasonText}
             </div>
         `;
@@ -4160,6 +4169,11 @@ class PredictionApp {
             items.push(
                 `倍投 ${Number(simulation.bet_config?.multiplier || DEFAULT_PROFIT_MULTIPLIER).toFixed(2)} × ${Number.parseInt(simulation.bet_config?.max_steps || DEFAULT_PROFIT_MAX_STEPS, 10)} 手`
             );
+        }
+        if (simulation.stake_basis === 'per_combo') {
+            items[0] = `每组合 ${this.formatUsd(simulation.bet_config?.base_stake || 0)}`;
+            items.push(`每组 ${simulation.unit_count} 注，合计 ${this.formatUsd((simulation.bet_config?.base_stake || 0) * simulation.unit_count)}`);
+            items.push('命中按覆盖组合统计，倍投按整组盈亏推进');
         }
         items.push(oddsText);
         items.push(`当前共计下注 ${summary.bet_count || 0} 笔模拟票`);
@@ -4408,7 +4422,7 @@ class PredictionApp {
                 { label: '下注额 / 手数', content: `${this.escapeHtml(this.formatUsd(item.stake_amount || 0))}<br><span class="hint-text">${this.escapeHtml(item.bet_step_label || '--')}</span>` },
                 { label: '预测值', content: this.escapeHtml(item.predicted_value || '--') },
                 { label: '实际值', content: this.escapeHtml(item.actual_value || '--') },
-                { label: '赔率', content: this.formatOdds(item.odds) },
+                { label: '赔率', content: this.formatProfitOdds(item) },
                 { label: '结果', content: this.renderProfitResult(item) },
                 { label: '单期盈亏', content: `<strong class="${this.profitValueClass(item.net_profit)}">${this.escapeHtml(this.formatSignedUsd(item.net_profit))}</strong>` },
                 { label: '累计盈亏', content: `<strong class="${this.profitValueClass(item.cumulative_profit)}">${this.escapeHtml(this.formatSignedUsd(item.cumulative_profit))}</strong>` }
@@ -6023,22 +6037,23 @@ class PredictionApp {
     }
 
     constrainExternalMetricSelects(supported) {
+        const allowedMetrics = supported.includes('combo') ? [...supported, 'double_group', 'kill_group'] : supported;
         // 目标约束后同步收窄主玩法与默认收益玩法的可选项
         const primarySelect = document.getElementById('primaryMetric');
         if (primarySelect) {
             const previousValue = primarySelect.value;
             const options = Array.from(primarySelect.options).map((option) => option.value);
-            const allowed = options.filter((value) => supported.includes(value));
+            const allowed = options.filter((value) => allowedMetrics.includes(value));
             if (allowed.length && !allowed.includes(previousValue)) {
                 primarySelect.value = allowed[0];
             }
         }
         this.syncProfitMetricOptions(this.getFormLotteryType(), null);
         const profitSelect = document.getElementById('profitDefaultMetric');
-        if (profitSelect && profitSelect.value && !supported.includes(profitSelect.value)) {
+        if (profitSelect && profitSelect.value && !allowedMetrics.includes(profitSelect.value)) {
             const profitOptions = Array.from(profitSelect.options).map((option) => option.value);
-            if (profitOptions.length && !profitOptions.every((value) => supported.includes(value))) {
-                profitSelect.value = profitOptions.find((value) => supported.includes(value)) || profitOptions[0];
+            if (profitOptions.length && !profitOptions.every((value) => allowedMetrics.includes(value))) {
+                profitSelect.value = profitOptions.find((value) => allowedMetrics.includes(value)) || profitOptions[0];
             }
         }
     }
@@ -6911,7 +6926,7 @@ class PredictionApp {
             <div class="result-stack">
                 <strong>${this.escapeHtml(snapshot.numberText || '--')}</strong>
                 <span class="result-meta-text">大/小：${this.escapeHtml(snapshot.bigSmall || '--')} · 单/双：${this.escapeHtml(snapshot.oddEven || '--')} · 组合结果：${this.escapeHtml(snapshot.combo || '--')}</span>
-                <span class="result-meta-text">组合投注：${this.escapeHtml(snapshot.pairTicket || '--')} · 排除对角组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}` : '--')}</span>
+                <span class="result-meta-text">双组：${this.escapeHtml(snapshot.pairTicket || '--')} · 杀组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}（下注 ${snapshot.killTicket}）` : '--')}</span>
             </div>
         `;
     }
@@ -6940,7 +6955,7 @@ class PredictionApp {
             <div class="result-stack">
                 <strong>${this.escapeHtml(snapshot.numberText || '--')}</strong>
                 <span class="result-meta-text">大/小：${this.escapeHtml(snapshot.bigSmall || '--')} · 单/双：${this.escapeHtml(snapshot.oddEven || '--')} · 组合结果：${this.escapeHtml(snapshot.combo || '--')}</span>
-                <span class="result-meta-text">组合投注：${this.escapeHtml(snapshot.pairTicket || '--')} · 排除对角组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}` : '--')}</span>
+                <span class="result-meta-text">双组：${this.escapeHtml(snapshot.pairTicket || '--')} · 杀组：${this.escapeHtml(snapshot.killGroup ? `杀${snapshot.killGroup}（下注 ${snapshot.killTicket}）` : '--')}</span>
             </div>
         `;
     }
@@ -7062,8 +7077,8 @@ class PredictionApp {
             { label: '大/小', value: snapshot.bigSmall || '--' },
             { label: '单/双', value: snapshot.oddEven || '--' },
             { label: '组合结果', value: snapshot.combo || '--' },
-            { label: '组合投注', value: snapshot.pairTicket || '--' },
-            { label: '排除对角组', value: snapshot.killGroup ? `杀${snapshot.killGroup}` : '--' }
+            { label: '双组', value: snapshot.pairTicket || '--' },
+            { label: '杀组', value: snapshot.killGroup ? `杀${snapshot.killGroup}（下注 ${snapshot.killTicket}）` : '--' }
         ];
 
         return `
@@ -7100,12 +7115,12 @@ class PredictionApp {
         const predictedGroup = this.deriveDoubleGroup(prediction.prediction_combo);
         const actualGroup = this.deriveDoubleGroup(prediction.actual_combo);
         if (predictedGroup && actualGroup) {
-            items.push({ label: '组合分组', value: predictedGroup === actualGroup ? 1 : 0 });
+            items.push({ label: '双组', value: predictedGroup === actualGroup ? 1 : 0 });
         }
 
         const killGroup = this.deriveKillGroup(prediction.prediction_combo);
         if (killGroup && prediction.actual_combo) {
-            items.push({ label: '排除统计', value: prediction.actual_combo !== killGroup ? 1 : 0 });
+            items.push({ label: '杀组', value: prediction.actual_combo !== killGroup ? 1 : 0 });
         }
 
         return items;
@@ -7176,22 +7191,22 @@ class PredictionApp {
             combo: {
                 label: '组合投注',
                 alias: '组合结果为：小双 / 小单 / 大双 / 大单',
-                shortRule: '二组选一',
-                description: '模型先给出组合结果，再映射到真实可下注的组合投注：小单/大双 或 大单/小双。',
-                formula: '预测组合结果映射到对应组合投注票面'
+                shortRule: '四选一',
+                description: '从大单、大双、小单、小双中选择一个组合下注，开出该组合才命中。',
+                formula: '预测组合 = 开奖组合'
             },
             double_group: {
-                label: '组合分组统计',
-                alias: '辅助统计口径',
-                shortRule: '组别匹配',
-                description: '把组合结果合并成两组：大双 / 小单 为“双组”，大单 / 小双 为“单组”。',
+                label: '双组',
+                alias: '同时下注两个组合',
+                shortRule: '覆盖两个组合',
+                description: '同时下注两个组合；当前按原组合预测派生大双＋小单或大单＋小双。',
                 formula: '预测组别 = 开奖组别'
             },
             kill_group: {
-                label: '排除统计',
-                alias: '旧显示名：杀组',
-                shortRule: '排除统计',
-                description: '按预测组合结果的对角组合做排除，只要实际没开出被杀组合，就算命中。',
+                label: '杀组',
+                alias: '下注三个组合，排除一个',
+                shortRule: '覆盖三个组合',
+                description: '排除预测组合的对角组合，下注其余三个；未开出排除项为预测命中，盈亏逐注结算。',
                 formula: '开奖结果 ≠ 被杀组合'
             }
         };
@@ -7288,6 +7303,7 @@ class PredictionApp {
         const doubleGroup = this.deriveDoubleGroup(resolvedCombo);
         const pairTicket = this.derivePairTicket(resolvedCombo);
         const killGroup = this.deriveKillGroup(resolvedCombo);
+        const killTicket = killGroup ? ['大单', '大双', '小单', '小双'].filter((value) => value !== killGroup).join('＋') : null;
 
         return {
             numberText,
@@ -7296,7 +7312,8 @@ class PredictionApp {
             combo: resolvedCombo || null,
             doubleGroup,
             pairTicket,
-            killGroup
+            killGroup,
+            killTicket
         };
     }
 
@@ -7315,10 +7332,10 @@ class PredictionApp {
             return null;
         }
         if (combo === '大单' || combo === '小双') {
-            return '单组';
+            return '大单＋小双';
         }
         if (combo === '大双' || combo === '小单') {
-            return '双组';
+            return '大双＋小单';
         }
         return null;
     }
@@ -7328,7 +7345,7 @@ class PredictionApp {
         if (!group) {
             return null;
         }
-        return group === '单组' ? '大单 / 小双' : '大双 / 小单';
+        return group;
     }
 
     deriveKillGroup(combo) {
@@ -7348,7 +7365,7 @@ class PredictionApp {
         if (!snapshot.pairTicket) {
             return snapshot.doubleGroup;
         }
-        return `${snapshot.doubleGroup}（${snapshot.pairTicket}）`;
+        return snapshot.pairTicket;
     }
 
     async copyPublicUrl(button) {

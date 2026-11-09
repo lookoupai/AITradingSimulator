@@ -21,6 +21,8 @@ from utils import jingcai_football as football_utils
 from utils.pc28 import (
     DEFAULT_PROFIT_RULE_ID as PC28_DEFAULT_PROFIT_RULE_ID,
     TARGET_LABELS as PC28_TARGET_LABELS,
+    GROUP_PLAY_TYPES,
+    derive_group_bet,
     has_abc_zero_or_nine,
     is_pc28_baozi,
     is_pc28_pair,
@@ -37,7 +39,7 @@ from utils.timezone import (
 )
 
 
-PC28_SUPPORTED_SIMULATION_METRICS = ('big_small', 'odd_even', 'combo', 'number')
+PC28_SUPPORTED_SIMULATION_METRICS = ('big_small', 'odd_even', 'combo', 'number', *GROUP_PLAY_TYPES)
 FOOTBALL_DEFAULT_ODDS_PROFILE = 'snapshot'
 FOOTBALL_PARLAY_METRIC_MAP = {
     'spf_parlay': 'spf',
@@ -261,22 +263,15 @@ PC28_PROFIT_RULES = {
         'metrics': {
             'big_small': {
                 'regular': _pc28_basic(2.846, **_HIGH_SPECIAL_REFUND),
-                'abc': {'kind': 'basic', 'odds': 1.98, 'refund_policy': 'none'}
+                'abc': _pc28_basic(1.98, **_HIGH_SPECIAL_REFUND)
             },
             'odd_even': {
                 'regular': _pc28_basic(2.846, **_HIGH_SPECIAL_REFUND),
-                'abc': {'kind': 'basic', 'odds': 1.98, 'refund_policy': 'none'}
+                'abc': _pc28_basic(1.98, **_HIGH_SPECIAL_REFUND)
             },
             'combo': {
                 'regular': _pc28_combo(6.78, 6.33, **_HIGH_SPECIAL_REFUND),
-                'abc': {
-                    'kind': 'combo_group',
-                    'refund_policy': 'none',
-                    'group_odds': {
-                        '小单 / 大双': 4.9,
-                        '大单 / 小双': 3.1
-                    }
-                }
+                'abc': _pc28_combo(4.9, 3.1, **_HIGH_SPECIAL_REFUND)
             },
             'number': {
                 'regular': _pc28_number_map(HIGH_NUMBER_ODDS, **_NONE_REFUND),
@@ -476,13 +471,13 @@ class ProfitSimulator:
 
         targets = normalize_pc28_target_list(predictor.get('prediction_targets'))
         metrics = [metric for metric in targets if metric in PC28_SUPPORTED_SIMULATION_METRICS]
+        if 'combo' in metrics:
+            metrics.extend(GROUP_PLAY_TYPES)
         profit_default_metric = predictor.get('profit_default_metric')
         primary_metric = predictor.get('primary_metric')
 
         if profit_default_metric in metrics:
             metrics = [profit_default_metric] + [metric for metric in metrics if metric != profit_default_metric]
-        elif primary_metric in {'double_group', 'kill_group'} and 'combo' in metrics:
-            metrics = ['combo'] + [metric for metric in metrics if metric != 'combo']
         elif primary_metric in metrics:
             metrics = [primary_metric] + [metric for metric in metrics if metric != primary_metric]
 
@@ -716,9 +711,10 @@ class ProfitSimulator:
                 record['result_type']
             )
 
-            if record['result_type'] == 'hit':
+            stats_result = ('hit' if record['prediction_hit'] else 'miss') if isinstance(record.get('prediction_hit'), bool) else record['result_type']
+            if stats_result == 'hit':
                 hit_count += 1
-            elif record['result_type'] == 'refund':
+            elif stats_result == 'refund':
                 refund_count += 1
             else:
                 miss_count += 1
@@ -745,7 +741,7 @@ class ProfitSimulator:
             'bet_modes': self.get_bet_mode_options(),
             'bet_mode': bet_strategy['mode'],
             'bet_mode_label': bet_strategy['mode_label'],
-            'bet_strategy_label': self._bet_strategy_label(bet_strategy),
+            'bet_strategy_label': ('每组合 ' if effective_metric in GROUP_PLAY_TYPES else '') + self._bet_strategy_label(bet_strategy),
             'bet_config': {
                 'base_stake': bet_strategy['base_stake'],
                 'multiplier': bet_strategy['multiplier'],
@@ -756,6 +752,8 @@ class ProfitSimulator:
                 'cap_action_label': bet_strategy['cap_action_label']
             },
             'stake_amount': bet_strategy['base_stake'],
+            'stake_basis': 'per_combo' if effective_metric in GROUP_PLAY_TYPES else 'per_bet',
+            'unit_count': 2 if effective_metric == 'double_group' else 3 if effective_metric == 'kill_group' else 1,
             'available_metrics': self.get_metric_options(predictor),
             'default_metric': self.get_default_metric(predictor),
             'default_profit_rule_id': self.get_default_rule_id(predictor),
@@ -1115,6 +1113,8 @@ class ProfitSimulator:
         bet_strategy: dict,
         bet_step: int
     ) -> Optional[dict]:
+        if metric in GROUP_PLAY_TYPES:
+            return self._build_group_record(prediction, draw, metric, profit_rule_id, odds_profile, bet_strategy, bet_step)
         profile = self._get_metric_profile(profit_rule_id, metric, odds_profile, lottery_type='pc28')
         if not profile:
             return None
@@ -1220,6 +1220,46 @@ class ProfitSimulator:
             'stake_amount': round(stake_amount, 2),
             'payout_amount': round(payout_amount, 2),
             'net_profit': net_profit
+        }
+
+    def _build_group_record(
+        self, prediction: dict, draw: dict, metric: str, profit_rule_id: str,
+        odds_profile: str, bet_strategy: dict, bet_step: int,
+    ) -> Optional[dict]:
+        group = derive_group_bet(metric, prediction.get('prediction_combo'))
+        if not group:
+            return None
+        legs = [self._build_record(
+            {**prediction, 'prediction_combo': combo}, draw, 'combo', profit_rule_id,
+            odds_profile, bet_strategy, bet_step,
+        ) for combo in group['selected_combos']]
+        if any(leg is None for leg in legs):
+            return None
+        # 执行账本先把每笔中奖净收益舍入到分，再加回本金。
+        # 直接舍入含本返还会在 0.15 × 3.1 等金额上相差一分。
+        for leg in legs:
+            if leg['result_type'] == 'hit':
+                leg['net_profit'] = round(leg['stake_amount'] * max(0.0, float(leg['odds']) - 1.0), 2)
+                leg['payout_amount'] = round(leg['stake_amount'] + leg['net_profit'], 2)
+        stake = round(sum(leg['stake_amount'] for leg in legs), 2)
+        payout = round(sum(leg['payout_amount'] for leg in legs), 2)
+        net = round(payout - stake, 2)
+        result_type = 'hit' if net > 0 else 'miss' if net < 0 else 'refund'
+        actual = draw.get('combo')
+        refunds = list(dict.fromkeys(leg['refund_reason'] for leg in legs if leg.get('refund_reason')))
+        ticket = '＋'.join(group['selected_combos'])
+        if metric == 'kill_group':
+            ticket = '杀' + group['excluded_combo'] + '（' + ticket + '）'
+        return {
+            **legs[0], **group,
+            'metric': metric, 'metric_label': self._metric_label(metric, 'pc28'),
+            'ticket_label': ticket, 'predicted_value': ticket, 'actual_value': actual,
+            'prediction_hit': actual in group['selected_combos'],
+            'result_type': result_type,
+            'result_label': '盈利' if net > 0 else '亏损' if net < 0 else '持平',
+            'refund_reason': '；'.join(refunds) or None,
+            'odds': None, 'stake_basis': 'per_combo', 'per_combo_amount': legs[0]['stake_amount'],
+            'stake_amount': stake, 'payout_amount': payout, 'net_profit': net, 'legs': legs,
         }
 
     def _build_football_single_record(

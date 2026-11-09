@@ -74,6 +74,9 @@ from utils.pc28 import (
     DEFAULT_PROFIT_RULE_ID,
     derive_double_group,
     derive_kill_group,
+    derive_group_bet,
+    GROUP_PLAY_TYPES,
+    normalize_profit_rule as normalize_pc28_group_profit_rule,
     mask_api_key,
     normalize_api_mode,
     normalize_injection_mode,
@@ -1103,7 +1106,7 @@ def _serialize_public_prediction_with_level(prediction: dict, share_level: str) 
     return data
 
 
-def _build_pc28_execution_signal_view(predictor: dict, prediction: dict) -> dict | None:
+def _build_pc28_execution_signal_view(predictor: dict, prediction: dict, *, include_group_plays: bool = False) -> dict | None:
     if not predictor or not prediction:
         return None
     if normalize_lottery_type(prediction.get('lottery_type')) != 'pc28':
@@ -1127,6 +1130,13 @@ def _build_pc28_execution_signal_view(predictor: dict, prediction: dict) -> dict
     ]
     if prediction.get('prediction_number') is not None:
         mappings.insert(0, ('number', prediction.get('prediction_number')))
+    group_bets = {
+        metric: derive_group_bet(metric, prediction.get('prediction_combo'))
+        for metric in GROUP_PLAY_TYPES
+    }
+    group_rule_id = normalize_pc28_group_profit_rule(predictor.get('profit_rule_id')) + '_regular'
+    if include_group_plays:
+        mappings.extend((metric, group['bet_value']) for metric, group in group_bets.items() if group)
 
     for bet_type, bet_value in mappings:
         if bet_value in {None, ''}:
@@ -1144,7 +1154,14 @@ def _build_pc28_execution_signal_view(predictor: dict, prediction: dict) -> dict
                 'odds_profile': DEFAULT_ODDS_PROFILE
             }
         }
-        if bet_type != 'number':
+        if bet_type == 'combo':
+            # 只供新组玩法使用；旧 combo 的历史 profit_rule_id 导出兼容不变。
+            item['normalized_payload']['group_settlement_rule_id'] = group_rule_id
+        if bet_type in GROUP_PLAY_TYPES:
+            item['normalized_payload'].update(group_bets[bet_type])
+            item['normalized_payload']['source_hints'] = {'settlement': {'settlement_rule_id': group_rule_id}}
+            item['confidence'] = None  # 原组合置信度不是覆盖两个/三个组合的概率。
+        elif bet_type != 'number':
             item['message_text'] = f'{bet_value}10'
         signal_items.append(item)
 
@@ -1252,7 +1269,7 @@ def _build_pc28_performance_export_view(predictor: dict) -> dict | None:
     predictor_name = str(predictor.get('name') or '').strip() or f"predictor-{predictor.get('id')}"
     stats = db.get_predictor_stats(predictor['id'])
     metrics = {}
-    for metric_key in ['big_small', 'odd_even', 'combo']:
+    for metric_key in ['big_small', 'odd_even', 'combo', *GROUP_PLAY_TYPES]:
         metric_stats = (stats.get('metrics') or {}).get(metric_key) or {}
         metric_streaks = (stats.get('metric_streaks') or {}).get(metric_key) or {}
         recent_20 = metric_stats.get('recent_20') or {}
@@ -2570,11 +2587,13 @@ def _validate_predictor_payload(
         elif lottery_type != 'jingcai_football':
             errors.append('当前仅支持竞彩足球用户算法绑定预测方案')
 
-    if primary_metric not in prediction_targets:
+    primary_target = 'combo' if lottery_type == 'pc28' and primary_metric in GROUP_PLAY_TYPES else primary_metric
+    profit_target = 'combo' if lottery_type == 'pc28' and profit_default_metric in GROUP_PLAY_TYPES else profit_default_metric
+    if primary_target not in prediction_targets:
         errors.append('主玩法必须包含在预测目标中')
     if lottery_type == 'pc28' and primary_metric in {'double_group', 'kill_group'} and 'combo' not in prediction_targets:
-        errors.append('双组/杀组统计依赖组合预测，请勾选组合目标')
-    if supports_profit_simulation(lottery_type) and profit_default_metric not in prediction_targets:
+        errors.append('双组、杀组由组合预测派生，请勾选组合目标')
+    if supports_profit_simulation(lottery_type) and profit_target not in prediction_targets:
         errors.append('默认收益玩法必须包含在预测目标中')
 
     try:
@@ -5947,6 +5966,10 @@ def export_predictor_signals(predictor_id: int):
     if view not in {'execution', 'analysis'}:
         return jsonify({'error': 'view 仅支持 execution 或 analysis'}), 400
 
+    group_flag = str(request.args.get('include_group_plays') or '0').strip()
+    if group_flag not in {'0', '1'}:
+        return jsonify({'error': 'include_group_plays 仅支持 0 或 1'}), 400
+
     access = _resolve_signal_export_access(predictor)
     if not access.get('allowed'):
         return jsonify({'error': '该方案未公开分享信号导出；请使用方案所有者会话或导出授权 Token'}), 403
@@ -5968,7 +5991,7 @@ def export_predictor_signals(predictor_id: int):
     item = None
     if latest_prediction:
         item = (
-            _build_pc28_execution_signal_view(predictor, latest_prediction)
+            _build_pc28_execution_signal_view(predictor, latest_prediction, include_group_plays=group_flag == '1')
             if view == 'execution'
             else _build_pc28_analysis_signal_view(predictor, latest_prediction)
         )

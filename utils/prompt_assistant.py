@@ -283,7 +283,7 @@ def _analyze_pc28_prompt(
         issues.append(_issue('warning', '提示词与目标玩法不一致', '当前没有勾选“组合”，但提示词里要求输出大单/大双/小单/小双。', '如果确实要看组合，请勾选“组合”目标。'))
 
     if metric in {'double_group', 'kill_group'} and 'combo' not in targets:
-        issues.append(_issue('error', '主玩法依赖组合预测', '双组/杀组统计必须基于组合预测。', '请先勾选“组合”，再使用双组或杀组作为主玩法。'))
+        issues.append(_issue('error', '主玩法依赖组合预测', '双组、杀组玩法必须基于组合预测。', '请先勾选“组合”，再使用双组或杀组作为主玩法。'))
 
     if not placeholders:
         issues.append(_issue('info', '未使用变量占位符', '当前提示词完全依赖平台默认注入数据。', '这不是错误；如果你想精确控制输入格式，可手动加入变量占位符。'))
@@ -897,8 +897,8 @@ def _primary_metric_focus(metric: str) -> str:
         'big_small': '`predicted_big_small` 的稳定判断',
         'odd_even': '`predicted_odd_even` 的稳定判断',
         'combo': '`predicted_combo` 的稳定判断',
-        'double_group': '`predicted_combo` 的稳定判断（再派生单双组）',
-        'kill_group': '`predicted_combo` 的稳定判断（再派生排除组合）'
+        'double_group': '`predicted_combo` 的稳定判断（再派生两个组合下注）',
+        'kill_group': '`predicted_combo` 的稳定判断（再排除一个组合、下注其余三个）'
     }
     return mapping.get(metric, '当前主玩法对应字段的稳定判断')
 

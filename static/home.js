@@ -11,8 +11,8 @@ const HOME_LOTTERY_CONFIG = {
             { value: 'number', label: '单点' },
             { value: 'big_small', label: '大/小' },
             { value: 'odd_even', label: '单/双' },
-            { value: 'double_group', label: '组合分组统计' },
-            { value: 'kill_group', label: '排除统计' }
+            { value: 'double_group', label: '双组' },
+            { value: 'kill_group', label: '杀组' }
         ],
         summaryLabels: ['下一期期号', '倒计时', '最新开奖号码', '今日总期数']
     },
@@ -522,15 +522,15 @@ class HomePage {
             },
             combo: {
                 label: '组合投注',
-                description: '模型先给出小双 / 小单 / 大双 / 大单，再映射到真实可下注的组合投注票面。'
+                description: '从大单、大双、小单、小双中选一个组合下注。'
             },
             double_group: {
-                label: '组合分组统计',
-                description: '按分组口径统计：大双/小单为“双组”，大单/小双为“单组”。'
+                label: '双组',
+                description: '同时下注两个组合；当前派生大双＋小单或大单＋小双。'
             },
             kill_group: {
-                label: '排除统计',
-                description: '按排除口径统计：预测某组合结果的对角组合不出现即视为命中。'
+                label: '杀组',
+                description: '排除一个组合，下注其余三个；当前排除原预测的对角组合。'
             }
         };
         return mapping[metric] || { label: metric || '--', description: '当前玩法说明暂未定义。' };
