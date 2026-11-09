@@ -56,6 +56,7 @@ from services.notification_rule_engine import NotificationRuleEngine, PERFORMANC
 from services.notification_service import NotificationService
 from services.pc28_service import PC28Service
 from services.profit_simulator import DEFAULT_ODDS_PROFILE, ProfitSimulator
+from services.pc28_roll_simulator import ROLL_DEFAULTS, ROLL_MODE
 from services.prediction_engine import PredictionEngine
 from services.prediction_guard import AIPredictionError, PredictionGuardService
 from utils import jingcai_football as football_utils
@@ -884,6 +885,7 @@ def _serialize_predictor(predictor: dict) -> dict:
         'primary_metric_options': lottery_definition.to_catalog_item()['primary_metric_options'],
         'capabilities': lottery_definition.to_catalog_item()['capabilities'],
         'simulation_metrics': simulation_metrics,
+        'simulation_bet_modes': profit_simulator.get_bet_mode_options(predictor) if supports_profit_simulation(lottery_type) else [],
         'default_simulation_metric': default_simulation_metric,
         'profit_rule_options': profit_simulator.get_rule_options(predictor) if supports_profit_simulation(lottery_type) else [],
         'profit_period_options': profit_simulator.get_period_options(predictor) if supports_profit_simulation(lottery_type) else [],
@@ -1321,6 +1323,17 @@ def _serialize_profit_simulation(simulation: dict, include_records: bool = True)
     if not include_records:
         payload['records'] = []
     return payload
+
+
+def _simulation_roll_config():
+    # 保留原始字符串交由业务层校验，避免 type=float/int 将非法值静默变为默认值。
+    params = {key: ('roll_mode' if key == 'roll_mode' else 'roll_' + key) for key in ROLL_DEFAULTS}
+    if str(request.args.get('bet_mode') or '').strip().lower() == ROLL_MODE:
+        if any(key.startswith('roll_') and key not in params.values() for key in request.args):
+            raise ValueError('存在不支持的过关参数')
+        if request.args.get('bet_profile_id'):
+            raise ValueError('过关模拟请使用独立参数，不支持套用均注或倍投模板')
+    return {key: request.args[param] for key, param in params.items() if param in request.args}
 
 
 def _format_jingcai_simulation_outcome(metric: str, outcome: str, meta_payload: dict) -> str:
@@ -2168,6 +2181,7 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'prediction_method': predictor.get('prediction_method') or '自定义策略',
             'prediction_targets': predictor.get('prediction_targets') or [],
             'simulation_metrics': profit_simulator.get_metric_options(predictor) if supports_profit_simulation(lottery_type) else [],
+            'simulation_bet_modes': profit_simulator.get_bet_mode_options(predictor) if supports_profit_simulation(lottery_type) else [],
             'default_simulation_metric': profit_simulator.get_default_metric(predictor) if supports_profit_simulation(lottery_type) else None,
             'profit_rule_options': profit_simulator.get_rule_options(predictor) if supports_profit_simulation(lottery_type) else [],
             'profit_period_options': profit_simulator.get_period_options(predictor) if supports_profit_simulation(lottery_type) else [],
@@ -4250,6 +4264,7 @@ def get_public_predictor_simulation(predictor_id: int):
             base_stake=base_stake,
             multiplier=multiplier,
             max_steps=max_steps,
+            roll_config=_simulation_roll_config(),
             include_records=force_include_records
         )
         if lottery_type == 'jingcai_football':
@@ -5720,6 +5735,9 @@ def get_predictor_simulation(predictor_id: int):
     max_steps = request.args.get('max_steps', type=int)
     bet_profile = None
 
+    if str(bet_mode or '').strip().lower() == ROLL_MODE and request.args.get('bet_profile_id'):
+        return jsonify({'error': '过关模拟请使用独立参数，不支持套用均注或倍投模板'}), 400
+
     if bet_profile_id:
         bet_profile = db.get_bet_profile(bet_profile_id)
         if not bet_profile or int(bet_profile.get('user_id') or 0) != int(user_id):
@@ -5742,6 +5760,7 @@ def get_predictor_simulation(predictor_id: int):
             base_stake=base_stake,
             multiplier=multiplier,
             max_steps=max_steps,
+            roll_config=_simulation_roll_config(),
             include_records=True
         )
         if lottery_type == 'jingcai_football':

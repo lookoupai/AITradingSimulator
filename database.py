@@ -3276,6 +3276,22 @@ class Database:
         conn.close()
         return self._prepare_prediction(row) if row else None
 
+    def get_pc28_simulation_predictions(self, predictor_id: int, start_time: str, end_time: str) -> list[dict]:
+        """只读指定区间内已结算的模拟输入，避免加载全部历史及大段原始响应。"""
+        conn = self.get_connection()
+        try:
+            rows = conn.execute('''
+                SELECT p.issue_no, p.status, p.prediction_combo, p.created_at, p.external_fetched_at
+                FROM predictions p
+                JOIN lottery_draws d ON d.lottery_type = p.lottery_type AND d.issue_no = p.issue_no
+                WHERE p.predictor_id = ? AND p.lottery_type = 'pc28' AND p.status = 'settled'
+                  AND datetime(d.open_time) >= datetime(?) AND datetime(d.open_time) <= datetime(?)
+                ORDER BY CAST(p.issue_no AS INTEGER)
+            ''', (predictor_id, start_time, end_time)).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
     def get_recent_predictions(self, predictor_id: int, limit: Optional[int] = 20, offset: int = 0) -> list[dict]:
         conn = self.get_connection()
         cursor = conn.cursor()

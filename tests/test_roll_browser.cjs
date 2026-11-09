@@ -1,0 +1,112 @@
+/* Uses only the disposable fixture; all external network requests are blocked. */
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const {spawn} = require('node:child_process');
+const {chromium} = require(path.join(process.env.ROLL_UI_NODE_MODULES || '/tmp/pc28-cycle-ui-tools/node_modules', 'playwright-core'));
+const root = path.resolve(__dirname, '..');
+(async () => {
+    const server = spawn(process.env.PYTHON || path.join(root, '.venv/bin/python'), ['-u', '-m', 'tests.roll_ui_server'], {cwd: root});
+    let stderr = '', browser;
+    server.stderr.on('data', data => { stderr += data; });
+    try {
+        const info = await new Promise((resolve, reject) => {
+            let output = '';
+            const timeout = setTimeout(() => reject(new Error('Fixture timeout: ' + stderr)), 20000);
+            server.on('exit', code => { clearTimeout(timeout); reject(new Error(`Fixture exit ${code}: ${stderr}`)); });
+            server.stdout.on('data', data => {
+                output += data;
+                const line = output.split('\n').find(line => line.startsWith('{"url":'));
+                if (line) { clearTimeout(timeout); resolve(JSON.parse(line)); }
+            });
+        });
+        browser = await chromium.launch({headless: true, executablePath: process.env.ROLL_UI_CHROMIUM || '/root/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome', args: ['--no-sandbox']});
+        const context = await browser.newContext({viewport: {width: 1440, height: 1000}});
+        await context.addCookies([{name: 'session', value: info.cookie, url: info.url}]);
+        await context.route('**/*', route => new URL(route.request().url()).origin === info.url ? route.continue() : route.abort());
+        const page = await context.newPage();
+        const errors = [];
+        page.on('pageerror', error => errors.push(String(error)));
+        await page.goto(info.url + '/dashboard');
+        await page.waitForFunction(() => typeof app !== 'undefined' && app.predictors?.length > 0);
+        await page.evaluate(pid => app.selectPredictor(pid), info.ids.records);
+        await page.locator('#profitBetModeView').waitFor({state: 'visible'});
+        assert.equal(await page.locator('#profitBetModeView option[value="win_streak_roll"]').count(), 1, '过关模式应可选择');
+        const simulation = page.waitForResponse(r => r.url().includes('/simulation?') && r.url().includes('win_streak_roll'));
+        await page.selectOption('#profitBetModeView', 'win_streak_roll');
+        const response = await simulation;
+        assert.equal(response.status(), 200, await response.text());
+        assert.equal((await response.json()).simulation.summary.target_cycle_count, 1);
+        await page.locator('#profitRollControls').waitFor({state: 'visible'});
+        assert.match(await page.locator('#profitSummaryGrid').innerText(), /达标/);
+        assert.match(await page.locator('#profitSimulationBody').innerText(), /余额/);
+        const changed = page.waitForResponse(r => r.url().includes('/simulation?') && r.url().includes('roll_target_streak=1'));
+        await page.fill('#profitRollTarget', '1');
+        await page.locator('#profitRollTarget').press('Tab');
+        assert.equal((await (await changed).json()).simulation.summary.bet_count, 1);
+        await page.screenshot({path: '/tmp/ai-roll-dashboard.png', fullPage: false});
+        await page.selectOption('#profitBetModeView', 'martingale');
+        await page.locator('#profitMultiplierView').waitFor({state: 'visible'});
+        assert.equal(await page.locator('#profitRollControls').isVisible(), false);
+        await page.evaluate(pid => app.selectPredictor(pid), info.ids.no_combo);
+        await page.selectOption('#profitBetModeView', 'win_streak_roll');
+        assert.equal(await page.locator('#profitRollStructure').inputValue(), 'A');
+        assert.equal(await page.locator('#profitRollStructure option[value="follow_signal"]').evaluate(el => el.disabled), true, JSON.stringify(await page.evaluate(() => ({id: app.currentPredictor.id, metrics: app.currentPredictor.simulation_metrics}))));
+        await page.evaluate(pid => app.selectPredictor(pid), info.ids.football);
+        assert.equal(await page.locator('#profitBetModeView option[value="win_streak_roll"]').count(), 0);
+        assert.equal(await page.locator('#profitRollControls').isVisible(), false);
+        await page.goto(info.url + '/public/predictors/' + info.ids.records);
+        await page.locator('#publicProfitBetModeView').waitFor({state: 'visible'});
+        await page.selectOption('#publicProfitBetModeView', 'win_streak_roll');
+        await page.locator('#publicProfitRollControls').waitFor({state: 'visible'});
+        await page.waitForFunction(() => document.getElementById('publicProfitSummaryGrid').textContent.includes('达标'));
+        // An old, slow calculation must never overwrite a newer parameter choice.
+        let slowStarted;
+        const slowRequest = new Promise(resolve => { slowStarted = resolve; });
+        await page.route('**/api/public/predictors/*/simulation?*', async route => {
+            const params = new URL(route.request().url()).searchParams;
+            if (params.get('roll_target_streak') === '1') {
+                slowStarted();
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            await route.continue().catch(() => {});
+        });
+        await page.fill('#publicProfitRollTarget', '1');
+        await page.locator('#publicProfitRollTarget').press('Tab');
+        await slowRequest;
+        const newest = page.waitForResponse(r => r.url().includes('/simulation?') && r.url().includes('roll_target_streak=3'));
+        await page.fill('#publicProfitRollTarget', '3');
+        await page.locator('#publicProfitRollTarget').press('Tab');
+        await newest;
+        await page.waitForTimeout(650);
+        assert.match(await page.locator('#publicProfitSimulationHint').innerText(), /3 关/);
+        await page.setViewportSize({width: 390, height: 844});
+        await page.locator('#publicProfitRollControls').scrollIntoViewIfNeeded();
+        await page.screenshot({path: '/tmp/ai-roll-mobile-debug.png'});
+        const overflow = await page.evaluate(() => ({width: innerWidth, scroll: document.documentElement.scrollWidth, items: [...document.querySelectorAll('body *')].filter(el => el.getBoundingClientRect().right > innerWidth + 1 && el.getBoundingClientRect().width > 0).filter(el => { for(let parent=el.parentElement;parent && parent!==document.body;parent=parent.parentElement) { if(['auto','scroll','hidden','clip'].includes(getComputedStyle(parent).overflowX)) return false; } return true; }).slice(0, 20).map(el => [el.tagName, el.id, el.className, el.getBoundingClientRect().width])}));
+        assert.ok(overflow.scroll <= overflow.width + 1, '手机页面不应横向溢出: ' + JSON.stringify(overflow));
+        assert.match(await page.locator('#publicProfitSimulationCards').innerText(), /余额/);
+        await page.screenshot({path: '/tmp/ai-roll-public-mobile.png', fullPage: false});
+        await page.goto(info.url + '/public/predictors/' + info.ids.summary);
+        await page.locator('#publicProfitBetModeView').waitFor({state: 'visible'});
+        const summaryResponse = page.waitForResponse(r => r.url().includes('/simulation?') && r.url().includes('win_streak_roll'));
+        await page.selectOption('#publicProfitBetModeView', 'win_streak_roll');
+        const summary = await (await summaryResponse).json();
+        assert.equal(summary.can_view_records, false);
+        assert.deepEqual(summary.simulation.records, []);
+        await page.waitForFunction(() => document.getElementById('publicProfitSummaryGrid').textContent.includes('达标'));
+        assert.equal(await page.locator('#publicProfitSimulationChart').isVisible(), false);
+        assert.equal(await page.locator('#publicProfitSimulationCards').isVisible(), false);
+        assert.deepEqual(errors, []);
+        // A cached old template may not load the new component during a rolling release.
+        await page.route('**/static/roll_simulation.js*', route => route.abort());
+        await page.goto(info.url + '/dashboard');
+        await page.waitForFunction(() => typeof app !== 'undefined' && app.predictors?.length > 0, null, {timeout: 5000});
+        await page.evaluate(pid => app.selectPredictor(pid), info.ids.records);
+        assert.equal(await page.locator('#profitBetModeView option[value="win_streak_roll"]').count(), 0);
+        assert.deepEqual(errors, []);
+        console.log('PASS: 后台/公开页计算、快速参数切换、资金明细、旧模式、无组合方案、竞彩足球隔离、公开权限及移动端布局');
+    } finally {
+        if (browser) await browser.close();
+        server.kill('SIGTERM');
+    }
+})().catch(error => { console.error(error); process.exitCode = 1; });

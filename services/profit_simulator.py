@@ -17,6 +17,9 @@ from services.bet_strategy import (
     DEFAULT_BET_MULTIPLIER,
     build_bet_strategy
 )
+from services.pc28_roll_simulator import (
+    ROLL_MODE, REPLAY_NOTE, STRUCTURES, normalize_roll_config, replay_roll, roll_period,
+)
 from utils import jingcai_football as football_utils
 from utils.pc28 import (
     DEFAULT_PROFIT_RULE_ID as PC28_DEFAULT_PROFIT_RULE_ID,
@@ -552,13 +555,16 @@ class ProfitSimulator:
             for key, label in self._odds_profile_labels(lottery_type).items()
         ]
 
-    def get_bet_mode_options(self) -> list[dict]:
+    def get_bet_mode_options(self, predictor=None) -> list[dict]:
+        labels = dict(BET_MODE_LABELS)
+        if predictor is not None and self._resolve_lottery_type(predictor) == 'pc28':
+            labels[ROLL_MODE] = '过关'
         return [
             {
                 'key': key,
                 'label': label
             }
-            for key, label in BET_MODE_LABELS.items()
+            for key, label in labels.items()
         ]
 
     def build_profit_simulation(
@@ -572,13 +578,20 @@ class ProfitSimulator:
         base_stake: Optional[float] = None,
         multiplier: Optional[float] = None,
         max_steps: Optional[int] = None,
-        include_records: bool = True
+        include_records: bool = True,
+        roll_config: Optional[dict] = None,
     ) -> dict:
         predictor = self.db.get_predictor(predictor_id, include_secret=False)
         if not predictor:
             raise ValueError('预测方案不存在')
 
         lottery_type = self._resolve_lottery_type(predictor)
+        if str(bet_mode or '').strip().lower() == ROLL_MODE:
+            if lottery_type != 'pc28':
+                raise ValueError('过关收益模拟仅支持 PC28')
+            return self._build_pc28_roll_simulation(
+                predictor, profit_rule_id, odds_profile, roll_config, include_records,
+            )
         if lottery_type == 'jingcai_football':
             return self._build_football_period_simulation(
                 predictor,
@@ -604,6 +617,70 @@ class ProfitSimulator:
             max_steps=max_steps,
             include_records=include_records
         )
+
+    def _build_pc28_roll_simulation(self, predictor, profit_rule_id, odds_profile, roll_config, include_records):
+        config = normalize_roll_config(roll_config)
+        if config['structure'] == 'follow_signal' and 'combo' not in self.get_available_metrics(predictor):
+            raise ValueError('跟随预测过关需要方案支持组合预测；可选择固定结构')
+        rule_id = self._resolve_rule_id(predictor, profit_rule_id)
+        profile_key = self._resolve_odds_profile(odds_profile, predictor)
+        start, end = roll_period(config, get_current_beijing_time())
+        predictions = self.db.get_pc28_simulation_predictions(
+            predictor['id'], format_beijing_time(start), format_beijing_time(end),
+        )
+        draws = self.db.get_draws_by_issues('pc28', [row['issue_no'] for row in predictions])
+
+        def settle_leg(prediction, draw, metric, value, stake):
+            try:
+                number = int(draw['result_number'])
+                if not 0 <= number <= 27 or float(draw['result_number']) != number:
+                    return None
+            except (KeyError, ValueError, TypeError, OverflowError):
+                return None
+            profile = self._get_metric_profile(rule_id, metric, profile_key, lottery_type='pc28')
+            spec = _expand_legacy_refund_profile(profile)
+            if any(spec.get(key) for key in ('on_hit_refund_pair', 'on_hit_refund_straight',
+                                             'on_hit_refund_baozi', 'on_hit_refund_abc_zero_or_nine')):
+                try:
+                    payload = json.loads(draw.get('source_payload') or '{}')
+                    triplet = _coerce_pc28_triplet(parse_pc28_triplet(payload.get('number')))
+                except (TypeError, ValueError, AttributeError):
+                    triplet = None
+                if triplet is None or sum(triplet) != number:
+                    return None
+            odd = '单' if number % 2 else '双'
+            actual = {**draw, 'odd_even': odd, 'combo': ('大' if number >= 14 else '小') + odd}
+            policy = build_bet_strategy('flat', stake)
+            # 模拟允许滚动超过普通基础注上限，结算使用真实金额。
+            policy['base_stake'] = stake
+            leg = self._build_record({**prediction, 'prediction_' + metric: value}, actual,
+                                     metric, rule_id, profile_key, policy, 1)
+            if leg and leg['result_type'] == 'hit':
+                leg['net_profit'] = round(stake * max(0, leg['odds'] - 1), 2)
+                leg['payout_amount'] = round(stake + leg['net_profit'], 2)
+            return leg
+
+        replay = replay_roll(predictions, draws, config, start=start, end=end,
+                             settle_leg=settle_leg, include_records=include_records)
+        structure_label = '跟随组合预测' if config['structure'] == 'follow_signal' else '＋'.join(STRUCTURES[config['structure']])
+        roll_label = '链条滚动' if config['roll_mode'] == 'chain' else '全仓滚动'
+        day_label = '北京时间自然日' if config['day_boundary'] == 'natural' else 'PC28 盘日'
+        return {
+            **replay, 'metric': 'roll', 'metric_label': '过关',
+            'profit_rule_id': rule_id, 'profit_rule_label': self.get_rule_label(rule_id, predictor),
+            'odds_profile': profile_key, 'odds_profile_label': self._odds_profile_labels('pc28')[profile_key],
+            'profit_rules': self.get_rule_options(predictor), 'odds_profiles': self.get_odds_profile_options(predictor),
+            'bet_modes': self.get_bet_mode_options(predictor),
+            'bet_mode': ROLL_MODE, 'bet_mode_label': '过关', 'roll_config': config,
+            'bet_strategy_label': f'{structure_label} · {roll_label} · {config["target_streak"]} 关',
+            'bet_config': {'base_stake': config['base_amount']}, 'stake_amount': config['base_amount'],
+            'stake_basis': 'per_period', 'unit_count': 2,
+            'period': {'key': f'roll_{config["days"]}d', 'label': f'近 {config["days"]} 日 · {day_label}',
+                       'start_time': format_beijing_time(start), 'end_time': format_beijing_time(end)},
+            'odds_source_label': self._odds_profile_labels('pc28')[profile_key],
+            'odds_source_description': '按所选规则与每期实际注额结算，不回看历史盘口变化。',
+            'replay_note': REPLAY_NOTE,
+        }
 
     def build_today_simulation(
         self,

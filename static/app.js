@@ -259,6 +259,9 @@ class PredictionApp {
         this.selectedProfitMaxSteps = DEFAULT_PROFIT_MAX_STEPS;
         this.selectedProfitOrder = 'desc';
         this.selectedProfitOddsProfile = 'regular';
+        this.rollControls = typeof RollSimulationControls === 'undefined'
+            ? {root: null, sync() {}, validate() { return true; }, query() { return ''; }}
+            : new RollSimulationControls('profit', () => this.refreshProfitSimulation());
         this.currentProfitSimulation = null;
         this.overview = null;
         this.overviewCollapsed = true;
@@ -3752,7 +3755,10 @@ class PredictionApp {
             this.selectedProfitOddsProfile = oddsProfiles[0]?.key || 'regular';
         }
 
-        if (!['flat', 'martingale'].includes(this.selectedProfitBetMode)) {
+        const supportsRoll = Boolean(this.rollControls.root) && predictor?.lottery_type === 'pc28' && predictor?.simulation_bet_modes?.some(item => item.key === 'win_streak_roll');
+        const betModes = supportsRoll ? ['flat', 'martingale', 'win_streak_roll'] : ['flat', 'martingale'];
+        betModeSelect.innerHTML = betModes.map(mode => `<option value="${mode}">${({flat: '均注', martingale: '倍投', win_streak_roll: '过关'})[mode]}</option>`).join('');
+        if (!betModes.includes(this.selectedProfitBetMode)) {
             this.selectedProfitBetMode = DEFAULT_PROFIT_BET_MODE;
         }
         this.selectedProfitBaseStake = this.normalizePositiveNumber(this.selectedProfitBaseStake, DEFAULT_PROFIT_BASE_STAKE, 0.01);
@@ -3840,6 +3846,7 @@ class PredictionApp {
     }
 
     async loadProfitSimulation(sequence = null) {
+        if (this.selectedProfitBetMode === 'win_streak_roll' && !this.rollControls.validate()) return;
         const requestSequence = sequence ?? (this.profitSimulationLoadSequence + 1);
         if (sequence === null) {
             this.profitSimulationLoadSequence = requestSequence;
@@ -3887,7 +3894,7 @@ class PredictionApp {
         this.profitSimulationFetchController = controller;
         try {
             const response = await fetch(
-                `/api/predictors/${predictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&period_key=${encodeURIComponent(this.selectedProfitPeriodKey)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_profile_id=${encodeURIComponent(this.selectedProfitBetProfileId || '')}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}`,
+                `/api/predictors/${predictorId}/simulation?profit_rule_id=${encodeURIComponent(this.selectedProfitRuleId)}&metric=${encodeURIComponent(this.selectedProfitMetric)}&period_key=${encodeURIComponent(this.selectedProfitPeriodKey)}&odds_profile=${encodeURIComponent(this.selectedProfitOddsProfile)}&bet_profile_id=${encodeURIComponent(this.selectedProfitBetProfileId || '')}&bet_mode=${encodeURIComponent(this.selectedProfitBetMode)}&base_stake=${encodeURIComponent(this.selectedProfitBaseStake)}&multiplier=${encodeURIComponent(this.selectedProfitMultiplier)}&max_steps=${encodeURIComponent(this.selectedProfitMaxSteps)}${this.rollControls.query()}`,
                 { credentials: 'include', signal: controller.signal }
             );
             if (response.status === 401) {
@@ -3936,7 +3943,7 @@ class PredictionApp {
         const summary = simulation.summary || {};
         const selectedBetProfile = (this.betProfiles || []).find((item) => String(item.id) === String(this.selectedProfitBetProfileId));
         const primaryMetric = predictor?.primary_metric || '';
-        const fallbackText = primaryMetric && primaryMetric !== simulation.metric
+        const fallbackText = simulation.bet_mode === 'win_streak_roll' ? '按所选结构逐期结算主辅两注，并按整期净盈亏推进关数。' : primaryMetric && primaryMetric !== simulation.metric
             ? `当前方案主玩法为 ${this.escapeHtml(this.targetLabel(primaryMetric, predictor?.lottery_type || this.currentLotteryType))}，收益模拟已回退为 ${this.escapeHtml(simulation.metric_label || '--')}。`
             : '当前默认按方案主玩法计算；切换其他玩法时才会额外发起计算。';
         const periodText = period.start_time && period.end_time
@@ -3964,7 +3971,7 @@ class PredictionApp {
     renderProfitSummary(simulation) {
         const container = document.getElementById('profitSummaryGrid');
         const summary = simulation.summary || {};
-        const cards = [
+        const cards = simulation.bet_mode === 'win_streak_roll' ? RollSimulationControls.summaryCards(simulation, this) : [
             ['收益规则', simulation.profit_rule_label || '--'],
             ['当前玩法', simulation.metric_label || '--'],
             ['下注策略', simulation.bet_strategy_label || '--'],
@@ -3979,7 +3986,7 @@ class PredictionApp {
         container.innerHTML = cards.map(([label, value]) => `
             <article class="stat-card">
                 <span class="stat-label">${this.escapeHtml(label)}</span>
-                <strong class="stat-value ${this.profitValueClass(label === 'ROI' ? summary.roi_percentage || 0 : summary.net_profit || 0, label)}">${this.escapeHtml(String(value))}</strong>
+                <strong class="stat-value ${simulation.bet_mode === 'win_streak_roll' && !['净收益', 'ROI'].includes(label) ? '' : this.profitValueClass(label === 'ROI' ? summary.roi_percentage || 0 : summary.net_profit || 0, label)}">${this.escapeHtml(String(value))}</strong>
             </article>
         `).join('');
     }
@@ -4080,6 +4087,7 @@ class PredictionApp {
             <div class="hit-summary-block">
                 <span class="hit-pill ${this.profitResultClass(item.result_type)}">${this.escapeHtml(item.result_label || '--')}</span>
                 ${coverageText}
+                ${item.metric === 'roll' && typeof RollSimulationControls !== 'undefined' ? RollSimulationControls.detail(item, this) : ''}
                 ${reasonText}
             </div>
         `;
@@ -4121,20 +4129,23 @@ class PredictionApp {
     }
 
     syncProfitBetControlState() {
-        const betModeSelect = document.getElementById('profitBetModeView');
-        const baseStakeInput = document.getElementById('profitBaseStakeView');
-        const multiplierInput = document.getElementById('profitMultiplierView');
-        const maxStepsInput = document.getElementById('profitMaxStepsView');
+        const isRoll = this.selectedProfitBetMode === 'win_streak_roll';
         const hasProfileOverride = Boolean(this.selectedProfitBetProfileId);
-        const isFlatMode = this.selectedProfitBetMode === DEFAULT_PROFIT_BET_MODE;
-        betModeSelect.hidden = hasProfileOverride;
-        baseStakeInput.hidden = hasProfileOverride;
-        multiplierInput.hidden = hasProfileOverride || isFlatMode;
-        maxStepsInput.hidden = hasProfileOverride || isFlatMode;
-        betModeSelect.disabled = hasProfileOverride;
-        baseStakeInput.disabled = hasProfileOverride;
-        multiplierInput.disabled = hasProfileOverride || isFlatMode;
-        maxStepsInput.disabled = hasProfileOverride || isFlatMode;
+        const isFlat = this.selectedProfitBetMode === 'flat';
+        const predictor = this.currentPredictor;
+        this.rollControls.sync(isRoll, predictor);
+        for (const [suffix, visible] of [
+            ['BetModeView', !hasProfileOverride], ['BaseStakeView', !hasProfileOverride && !isRoll],
+            ['MultiplierView', !hasProfileOverride && !isRoll && !isFlat],
+            ['MaxStepsView', !hasProfileOverride && !isRoll && !isFlat],
+            ['MetricView', !isRoll && (predictor?.simulation_metrics || []).length > 1],
+            ['PeriodView', !isRoll && (predictor?.profit_period_options || []).length > 1],
+        ]) {
+            const field = document.getElementById('profit' + suffix);
+            if (field) { field.hidden = !visible; field.disabled = !visible; }
+        }
+        const profile = document.getElementById('profitBetProfileView');
+        if (profile) { profile.hidden = isRoll || !this.betProfiles?.some(item => item.lottery_type === predictor?.lottery_type); profile.disabled = profile.hidden; }
     }
 
     syncProfitOptionVisibility({
@@ -4145,10 +4156,10 @@ class PredictionApp {
         hasSavedBetProfiles = false
     } = {}) {
         this.setProfitControlVisibility(document.getElementById('profitRuleView'), ruleCount > 1);
-        this.setProfitControlVisibility(document.getElementById('profitMetricView'), metricCount > 1);
-        this.setProfitControlVisibility(document.getElementById('profitPeriodView'), periodCount > 1);
+        this.setProfitControlVisibility(document.getElementById('profitMetricView'), metricCount > 1 && this.selectedProfitBetMode !== 'win_streak_roll');
+        this.setProfitControlVisibility(document.getElementById('profitPeriodView'), periodCount > 1 && this.selectedProfitBetMode !== 'win_streak_roll');
         this.setProfitControlVisibility(document.getElementById('profitOddsProfileView'), oddsCount > 1);
-        this.setProfitControlVisibility(document.getElementById('profitBetProfileView'), hasSavedBetProfiles);
+        this.setProfitControlVisibility(document.getElementById('profitBetProfileView'), hasSavedBetProfiles && this.selectedProfitBetMode !== 'win_streak_roll');
     }
 
     setProfitControlVisibility(element, shouldShow) {
@@ -4162,6 +4173,7 @@ class PredictionApp {
     }
 
     buildProfitHintFootText(simulation, summary, oddsText) {
+        if (simulation.bet_mode === 'win_streak_roll') return RollSimulationControls.hint(simulation, this);
         const items = [
             `基础注 ${this.formatUsd(simulation.bet_config?.base_stake || 0)}`
         ];

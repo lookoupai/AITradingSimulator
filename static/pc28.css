@@ -139,6 +139,26 @@ a {
     line-height: 1.6;
 }
 
+.roll-controls {
+    margin: 0 0 20px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    min-width: 0;
+}
+.roll-controls[hidden] { display: none; }
+#publicProfitSimulationCards[hidden] { display: none !important; }
+.roll-controls legend { padding: 0 8px; font-weight: 600; font-size: 14px; }
+.roll-control-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px 16px; }
+.roll-control-grid label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--muted); min-width: 0; }
+.roll-control-grid .home-select { width: 100%; min-width: 0; }
+.roll-control-help { margin: 14px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.roll-record-detail { max-width: 260px; white-space: normal; line-height: 1.6; }
+@media (max-width: 480px) { .roll-control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+#profitPanel > .panel-header, #publicProfitPanel > .panel-header { display: block; }
+#profitPanel > .panel-header .panel-actions, #publicProfitPanel > .panel-header .panel-actions { margin-top: 14px; min-width: 0; }
+#profitPanel .home-select, #publicProfitPanel .home-select { max-width: 100%; }
+
 .header-actions,
 .hero-actions,
 .panel-actions {

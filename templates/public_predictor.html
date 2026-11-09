@@ -115,7 +115,7 @@
             <div class="panel-header">
                 <div>
                     <h3>收益模拟</h3>
-                    <p class="panel-subtitle">PC28 按盘日统计；竞彩足球默认按近 30 天已结算比赛统计，也支持切换区间。</p>
+                    <p class="panel-subtitle">PC28 支持均注、倍投和过关模拟；竞彩足球默认统计近 30 天已结算比赛。</p>
                 </div>
                 <div class="panel-actions">
                     <select id="publicProfitRuleView" class="home-select"></select>
@@ -138,6 +138,8 @@
                     </select>
                 </div>
             </div>
+            {% set roll_prefix = 'publicProfit' %}
+            {% include '_roll_simulation_controls.html' %}
             <div id="publicProfitSimulationHint" class="metric-hint empty-panel">
                 当前公开页将按主玩法加载收益模拟
             </div>
@@ -245,6 +247,7 @@
         window.PUBLIC_PREDICTOR_ID = {{ predictor.id }};
         window.PUBLIC_PREDICTOR = {{ predictor|tojson }};
     </script>
+    <script src="/static/roll_simulation.js?v={{ app_version }}"></script>
     <script src="/static/public_predictor.js?v={{ app_version }}"></script>
     {% endif %}
 </body>
