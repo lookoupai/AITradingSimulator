@@ -1,0 +1,848 @@
+{
+  "config": {
+    "generated_at": "2026-11-02 16:03:03",
+    "profit_rule_id": "pc28_fullpay_netdisk",
+    "odds_profile": "regular",
+    "bankroll": 100.0,
+    "main_share": 0.7,
+    "tp_streak": 3,
+    "precision": "float",
+    "monte_days": 1000000,
+    "seed": "20261102",
+    "day_boundary": "pc28"
+  },
+  "draws": {
+    "draw_count": 24522,
+    "draw_start": "2026-09-03 00:02:30",
+    "draw_end": "2026-11-02 23:59:00",
+    "skipped": [],
+    "skipped_count": 0,
+    "raw_count": 24522
+  },
+  "structures": [
+    {
+      "structure": "odd_small_even",
+      "label": "单+小双",
+      "main_value": "单",
+      "aux_value": "小双",
+      "profit_rule_id": "pc28_fullpay_netdisk",
+      "odds_profile": "regular",
+      "bankroll": 100.0,
+      "main_share": 0.7,
+      "tp_streak": 3,
+      "precision": "float",
+      "outcome_groups": [
+        {
+          "multiplier": 1.393,
+          "main_result": "hit",
+          "aux_result": "miss",
+          "count": 499,
+          "sums": [
+            1,
+            3,
+            5,
+            7,
+            9,
+            11,
+            13,
+            15,
+            17,
+            19,
+            21,
+            23,
+            25
+          ]
+        },
+        {
+          "multiplier": 1.296,
+          "main_result": "miss",
+          "aux_result": "hit",
+          "count": 231,
+          "sums": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12
+          ]
+        },
+        {
+          "multiplier": 0.7,
+          "main_result": "refund",
+          "aux_result": "miss",
+          "count": 1,
+          "sums": [
+            27
+          ]
+        },
+        {
+          "multiplier": 0.0,
+          "main_result": "miss",
+          "aux_result": "miss",
+          "count": 269,
+          "sums": [
+            14,
+            16,
+            18,
+            20,
+            22,
+            24,
+            26
+          ]
+        }
+      ],
+      "exact": {
+        "period_ev_pct": -0.4816999999999849,
+        "win_probability": 0.73,
+        "lose_probability": 0.001,
+        "neutral_probability": 0.0,
+        "bust_probability": 0.269,
+        "win_mean_multiplier": 1.3623054794520548,
+        "lose_mean_multiplier": 0.7,
+        "daily_tp_probability": 0.3898993031330597,
+        "daily_bust_probability": 0.6101006968669402,
+        "daily_expected_net": -1.4401497048638578,
+        "daily_expected_periods": 2.2680323303603727,
+        "daily_expected_multiplier": 0.9855985029513614
+      },
+      "monte_carlo": {
+        "days": 1000000,
+        "tp_rate": 0.38928,
+        "bust_rate": 0.61072,
+        "incomplete_rate": 0.0,
+        "daily_net_mean": -1.5893081903148016,
+        "daily_net_median": -100.0,
+        "daily_net_stdev": 123.60905447912421,
+        "daily_periods_mean": 2.267946,
+        "daily_periods_max": 9,
+        "tp_day_net_mean": 152.80181825340424,
+        "tp_day_net_max": 363.9891019745999,
+        "tp_day_net_negative_count": 0,
+        "bust_day_net_values": [
+          -100.0
+        ],
+        "cumulative_net": -1589308.1903210208,
+        "max_drawdown": 1594304.2075691218,
+        "longest_losing_day_run": 25,
+        "cumulative_30_days": {
+          "windows": 33333,
+          "mean": -47.694464097909034,
+          "p5": -1200.6692828999999,
+          "median": -26.97598509999932,
+          "p95": 1069.1325319000005,
+          "positive_rate": 0.4876248762487625
+        },
+        "cumulative_100_days": {
+          "windows": 10000,
+          "mean": -158.93081903148015,
+          "p5": -2173.524946299999,
+          "median": -156.51599559999863,
+          "p95": 1880.5858765350017,
+          "positive_rate": 0.4489
+        },
+        "cumulative_365_days": {
+          "windows": 2739,
+          "mean": -579.0657505590221,
+          "p5": -4460.441701099995,
+          "median": -618.1621186999951,
+          "p95": 3311.9496736000046,
+          "positive_rate": 0.3953997809419496
+        }
+      },
+      "real_replay": {
+        "day_boundary": "pc28",
+        "draws_consumed": 140,
+        "windows": 63,
+        "incomplete_days": 0,
+        "summary": {
+          "days": 63,
+          "tp_rate": 0.30158730158730157,
+          "bust_rate": 0.6984126984126984,
+          "incomplete_rate": 0.0,
+          "daily_net_mean": -24.331554965079352,
+          "daily_net_median": -100.0,
+          "daily_net_stdev": 115.38925549427587,
+          "daily_periods_mean": 2.2222222222222223,
+          "daily_periods_max": 3,
+          "tp_day_net_mean": 150.90063353684212,
+          "tp_day_net_max": 170.3045457,
+          "tp_day_net_negative_count": 0,
+          "bust_day_net_values": [
+            -100.0
+          ],
+          "cumulative_net": -1532.8879627999993,
+          "max_drawdown": 2282.3901965999994,
+          "longest_losing_day_run": 10
+        }
+      },
+      "real_replay_sequential": {
+        "day_boundary": "sequential",
+        "draws_consumed": 24522,
+        "summary": {
+          "days": 10787,
+          "tp_rate": 0.3909335311022527,
+          "bust_rate": 0.6089737647167888,
+          "incomplete_rate": 9.270418095856123e-05,
+          "daily_net_mean": -1.2756293472763374,
+          "daily_net_median": -100.0,
+          "daily_net_stdev": 123.54698004968813,
+          "daily_periods_mean": 2.2732919254658386,
+          "daily_periods_max": 6,
+          "tp_day_net_mean": 152.4921160614015,
+          "tp_day_net_max": 170.3045457,
+          "tp_day_net_negative_count": 0,
+          "bust_day_net_values": [
+            -100.0
+          ],
+          "cumulative_net": -13760.213769068983,
+          "max_drawdown": 22682.772921429372,
+          "longest_losing_day_run": 17,
+          "cumulative_30_days": {
+            "windows": 359,
+            "mean": -37.00367699518065,
+            "p5": -1218.1809644999998,
+            "median": -13.39632459999953,
+            "p95": 1028.9577412000006,
+            "positive_rate": 0.49025069637883006
+          },
+          "cumulative_100_days": {
+            "windows": 107,
+            "mean": -121.80849470345657,
+            "p5": -2040.7049868679992,
+            "median": -281.3931263999989,
+            "p95": 2175.9131242400017,
+            "positive_rate": 0.4392523364485981
+          },
+          "cumulative_365_days": {
+            "windows": 29,
+            "mean": -448.23517971965015,
+            "p5": -4688.514056999995,
+            "median": -1055.9573986999953,
+            "p95": 5098.924228145006,
+            "positive_rate": 0.3793103448275862
+          }
+        }
+      }
+    },
+    {
+      "structure": "odd_big_even",
+      "label": "单+大双",
+      "main_value": "单",
+      "aux_value": "大双",
+      "profit_rule_id": "pc28_fullpay_netdisk",
+      "odds_profile": "regular",
+      "bankroll": 100.0,
+      "main_share": 0.7,
+      "tp_streak": 3,
+      "precision": "float",
+      "outcome_groups": [
+        {
+          "multiplier": 1.393,
+          "main_result": "hit",
+          "aux_result": "miss",
+          "count": 499,
+          "sums": [
+            1,
+            3,
+            5,
+            7,
+            9,
+            11,
+            13,
+            15,
+            17,
+            19,
+            21,
+            23,
+            25
+          ]
+        },
+        {
+          "multiplier": 1.113,
+          "main_result": "miss",
+          "aux_result": "hit",
+          "count": 269,
+          "sums": [
+            14,
+            16,
+            18,
+            20,
+            22,
+            24,
+            26
+          ]
+        },
+        {
+          "multiplier": 0.7,
+          "main_result": "refund",
+          "aux_result": "miss",
+          "count": 1,
+          "sums": [
+            27
+          ]
+        },
+        {
+          "multiplier": 0.0,
+          "main_result": "miss",
+          "aux_result": "miss",
+          "count": 231,
+          "sums": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12
+          ]
+        }
+      ],
+      "exact": {
+        "period_ev_pct": -0.47959999999999114,
+        "win_probability": 0.768,
+        "lose_probability": 0.001,
+        "neutral_probability": 0.0,
+        "bust_probability": 0.231,
+        "win_mean_multiplier": 1.2949270833333333,
+        "lose_mean_multiplier": 0.7,
+        "daily_tp_probability": 0.4540554147542375,
+        "daily_bust_probability": 0.5459445852457625,
+        "daily_expected_net": -1.4339015159898438,
+        "daily_expected_periods": 2.3633964729253787,
+        "daily_expected_multiplier": 0.9856609848401016
+      },
+      "monte_carlo": {
+        "days": 1000000,
+        "tp_rate": 0.454295,
+        "bust_rate": 0.545705,
+        "incomplete_rate": 0.0,
+        "daily_net_mean": -1.4041861822982464,
+        "daily_net_median": -100.0,
+        "daily_net_stdev": 111.2269638805633,
+        "daily_periods_mean": 2.364718,
+        "daily_periods_max": 6,
+        "tp_day_net_mean": 117.0303741350923,
+        "tp_day_net_max": 267.1585297793135,
+        "tp_day_net_negative_count": 20,
+        "bust_day_net_values": [
+          -100.0
+        ],
+        "cumulative_net": -1404186.182300665,
+        "max_drawdown": 1407008.5474073056,
+        "longest_losing_day_run": 20,
+        "cumulative_30_days": {
+          "windows": 33333,
+          "mean": -42.10411564647487,
+          "p5": -1034.4099966999997,
+          "median": -50.93583789999988,
+          "p95": 970.4740866,
+          "positive_rate": 0.46953469534695347
+        },
+        "cumulative_100_days": {
+          "windows": 10000,
+          "mean": -140.41861822982466,
+          "p5": -1982.5354862699999,
+          "median": -153.48822979999946,
+          "p95": 1733.1260595150002,
+          "positive_rate": 0.4448
+        },
+        "cumulative_365_days": {
+          "windows": 2739,
+          "mean": -510.8673198043982,
+          "p5": -3986.896538699999,
+          "median": -535.4320788999987,
+          "p95": 2909.927882990002,
+          "positive_rate": 0.4045271997079226
+        }
+      },
+      "real_replay": {
+        "day_boundary": "pc28",
+        "draws_consumed": 144,
+        "windows": 63,
+        "incomplete_days": 0,
+        "summary": {
+          "days": 63,
+          "tp_rate": 0.4126984126984127,
+          "bust_rate": 0.5873015873015873,
+          "incomplete_rate": 0.0,
+          "daily_net_mean": -12.654574155555553,
+          "daily_net_median": -100.0,
+          "daily_net_stdev": 106.53615299986583,
+          "daily_periods_mean": 2.2857142857142856,
+          "daily_periods_max": 3,
+          "tp_day_net_mean": 111.64468570000001,
+          "tp_day_net_max": 170.3045457,
+          "tp_day_net_negative_count": 0,
+          "bust_day_net_values": [
+            -100.0
+          ],
+          "cumulative_net": -797.2381717999997,
+          "max_drawdown": 976.5516556999997,
+          "longest_losing_day_run": 4
+        }
+      },
+      "real_replay_sequential": {
+        "day_boundary": "sequential",
+        "draws_consumed": 24522,
+        "summary": {
+          "days": 10433,
+          "tp_rate": 0.44876833125658966,
+          "bust_rate": 0.5511358190357519,
+          "incomplete_rate": 9.584970765839164e-05,
+          "daily_net_mean": -2.764657777296576,
+          "daily_net_median": -100.0,
+          "daily_net_stdev": 110.92360398039648,
+          "daily_periods_mean": 2.35042653119908,
+          "daily_periods_max": 6,
+          "tp_day_net_mean": 116.64182516220949,
+          "tp_day_net_max": 170.3045457,
+          "tp_day_net_negative_count": 1,
+          "bust_day_net_values": [
+            -100.0
+          ],
+          "cumulative_net": -28843.674590532846,
+          "max_drawdown": 30807.271910232954,
+          "longest_losing_day_run": 16,
+          "cumulative_30_days": {
+            "windows": 347,
+            "mean": -83.99355110442414,
+            "p5": -1084.3741206999998,
+            "median": -65.13744419999986,
+            "p95": 889.8350815800001,
+            "positive_rate": 0.4495677233429395
+          },
+          "cumulative_100_days": {
+            "windows": 104,
+            "mean": -280.08881146187673,
+            "p5": -1803.1807554,
+            "median": -456.99579289999986,
+            "p95": 1642.130567375,
+            "positive_rate": 0.3942307692307692
+          },
+          "cumulative_365_days": {
+            "windows": 28,
+            "mean": -1046.1091956119706,
+            "p5": -5018.466863565498,
+            "median": -787.6643205501287,
+            "p95": 3015.9773484350017,
+            "positive_rate": 0.2857142857142857
+          }
+        }
+      }
+    },
+    {
+      "structure": "even_small_odd",
+      "label": "双+小单",
+      "main_value": "双",
+      "aux_value": "小单",
+      "profit_rule_id": "pc28_fullpay_netdisk",
+      "odds_profile": "regular",
+      "bankroll": 100.0,
+      "main_share": 0.7,
+      "tp_streak": 3,
+      "precision": "float",
+      "outcome_groups": [
+        {
+          "multiplier": 1.393,
+          "main_result": "hit",
+          "aux_result": "miss",
+          "count": 499,
+          "sums": [
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14,
+            16,
+            18,
+            20,
+            22,
+            24,
+            26
+          ]
+        },
+        {
+          "multiplier": 1.113,
+          "main_result": "miss",
+          "aux_result": "hit",
+          "count": 269,
+          "sums": [
+            1,
+            3,
+            5,
+            7,
+            9,
+            11,
+            13
+          ]
+        },
+        {
+          "multiplier": 0.7,
+          "main_result": "refund",
+          "aux_result": "miss",
+          "count": 1,
+          "sums": [
+            0
+          ]
+        },
+        {
+          "multiplier": 0.0,
+          "main_result": "miss",
+          "aux_result": "miss",
+          "count": 231,
+          "sums": [
+            15,
+            17,
+            19,
+            21,
+            23,
+            25,
+            27
+          ]
+        }
+      ],
+      "exact": {
+        "period_ev_pct": -0.47959999999999114,
+        "win_probability": 0.768,
+        "lose_probability": 0.001,
+        "neutral_probability": 0.0,
+        "bust_probability": 0.231,
+        "win_mean_multiplier": 1.2949270833333333,
+        "lose_mean_multiplier": 0.7,
+        "daily_tp_probability": 0.4540554147542375,
+        "daily_bust_probability": 0.5459445852457625,
+        "daily_expected_net": -1.4339015159898438,
+        "daily_expected_periods": 2.3633964729253787,
+        "daily_expected_multiplier": 0.9856609848401016
+      },
+      "monte_carlo": {
+        "days": 1000000,
+        "tp_rate": 0.454588,
+        "bust_rate": 0.545412,
+        "incomplete_rate": 0.0,
+        "daily_net_mean": -1.342529185848676,
+        "daily_net_median": -100.0,
+        "daily_net_stdev": 111.23492537781222,
+        "daily_periods_mean": 2.363223,
+        "daily_periods_max": 6,
+        "tp_day_net_mean": 117.02612214610004,
+        "tp_day_net_max": 267.1585297793135,
+        "tp_day_net_negative_count": 20,
+        "bust_day_net_values": [
+          -100.0
+        ],
+        "cumulative_net": -1342529.185851989,
+        "max_drawdown": 1358944.476492363,
+        "longest_losing_day_run": 19,
+        "cumulative_30_days": {
+          "windows": 33333,
+          "mean": -40.2763970819661,
+          "p5": -1023.4888766999999,
+          "median": -50.935837899999854,
+          "p95": 962.5850523000001,
+          "positive_rate": 0.47025470254702545
+        },
+        "cumulative_100_days": {
+          "windows": 10000,
+          "mean": -134.25291858486761,
+          "p5": -1915.1002456699994,
+          "median": -146.9575097999997,
+          "p95": 1678.7810674850002,
+          "positive_rate": 0.4484
+        },
+        "cumulative_365_days": {
+          "windows": 2739,
+          "mean": -490.3437647294874,
+          "p5": -3957.122835299999,
+          "median": -445.3645663999985,
+          "p95": 2888.2460925759356,
+          "positive_rate": 0.4085432639649507
+        }
+      },
+      "real_replay": {
+        "day_boundary": "pc28",
+        "draws_consumed": 146,
+        "windows": 63,
+        "incomplete_days": 0,
+        "summary": {
+          "days": 63,
+          "tp_rate": 0.4444444444444444,
+          "bust_rate": 0.5555555555555556,
+          "incomplete_rate": 0.0,
+          "daily_net_mean": 3.2379540888888916,
+          "daily_net_median": -100.0,
+          "daily_net_stdev": 118.61583435859961,
+          "daily_periods_mean": 2.3174603174603177,
+          "daily_periods_max": 3,
+          "tp_day_net_mean": 132.2853967,
+          "tp_day_net_max": 170.3045457,
+          "tp_day_net_negative_count": 0,
+          "bust_day_net_values": [
+            -100.0
+          ],
+          "cumulative_net": 203.99110760000022,
+          "max_drawdown": 684.5744109,
+          "longest_losing_day_run": 4
+        }
+      },
+      "real_replay_sequential": {
+        "day_boundary": "sequential",
+        "draws_consumed": 24522,
+        "summary": {
+          "days": 10400,
+          "tp_rate": 0.45365384615384613,
+          "bust_rate": 0.54625,
+          "incomplete_rate": 9.615384615384615e-05,
+          "daily_net_mean": -1.323851291052175,
+          "daily_net_median": -100.0,
+          "daily_net_stdev": 111.48277793457304,
+          "daily_periods_mean": 2.3578846153846156,
+          "daily_periods_max": 6,
+          "tp_day_net_mean": 117.49059910408168,
+          "tp_day_net_max": 193.35782027593393,
+          "tp_day_net_negative_count": 0,
+          "bust_day_net_values": [
+            -100.0
+          ],
+          "cumulative_net": -13768.053426943212,
+          "max_drawdown": 18611.314904009127,
+          "longest_losing_day_run": 13,
+          "cumulative_30_days": {
+            "windows": 346,
+            "mean": -38.922925013996014,
+            "p5": -938.798288795,
+            "median": -42.209917899999965,
+            "p95": 966.203268405,
+            "positive_rate": 0.4595375722543353
+          },
+          "cumulative_100_days": {
+            "windows": 104,
+            "mean": -132.3851291052175,
+            "p5": -1574.3806159999997,
+            "median": -144.76230979999957,
+            "p95": 1642.666104422501,
+            "positive_rate": 0.40384615384615385
+          },
+          "cumulative_365_days": {
+            "windows": 28,
+            "mean": -501.4018692872364,
+            "p5": -4584.5350099305,
+            "median": -333.6768377999988,
+            "p95": 2862.1864884691718,
+            "positive_rate": 0.4642857142857143
+          }
+        }
+      }
+    },
+    {
+      "structure": "even_big_odd",
+      "label": "双+大单",
+      "main_value": "双",
+      "aux_value": "大单",
+      "profit_rule_id": "pc28_fullpay_netdisk",
+      "odds_profile": "regular",
+      "bankroll": 100.0,
+      "main_share": 0.7,
+      "tp_streak": 3,
+      "precision": "float",
+      "outcome_groups": [
+        {
+          "multiplier": 1.393,
+          "main_result": "hit",
+          "aux_result": "miss",
+          "count": 499,
+          "sums": [
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14,
+            16,
+            18,
+            20,
+            22,
+            24,
+            26
+          ]
+        },
+        {
+          "multiplier": 1.296,
+          "main_result": "miss",
+          "aux_result": "hit",
+          "count": 231,
+          "sums": [
+            15,
+            17,
+            19,
+            21,
+            23,
+            25,
+            27
+          ]
+        },
+        {
+          "multiplier": 0.7,
+          "main_result": "refund",
+          "aux_result": "miss",
+          "count": 1,
+          "sums": [
+            0
+          ]
+        },
+        {
+          "multiplier": 0.0,
+          "main_result": "miss",
+          "aux_result": "miss",
+          "count": 269,
+          "sums": [
+            1,
+            3,
+            5,
+            7,
+            9,
+            11,
+            13
+          ]
+        }
+      ],
+      "exact": {
+        "period_ev_pct": -0.4816999999999849,
+        "win_probability": 0.73,
+        "lose_probability": 0.001,
+        "neutral_probability": 0.0,
+        "bust_probability": 0.269,
+        "win_mean_multiplier": 1.3623054794520548,
+        "lose_mean_multiplier": 0.7,
+        "daily_tp_probability": 0.3898993031330597,
+        "daily_bust_probability": 0.6101006968669402,
+        "daily_expected_net": -1.4401497048638578,
+        "daily_expected_periods": 2.2680323303603727,
+        "daily_expected_multiplier": 0.9855985029513614
+      },
+      "monte_carlo": {
+        "days": 1000000,
+        "tp_rate": 0.389336,
+        "bust_rate": 0.610664,
+        "incomplete_rate": 0.0,
+        "daily_net_mean": -1.57378203995014,
+        "daily_net_median": -100.0,
+        "daily_net_stdev": 123.61222956205802,
+        "daily_periods_mean": 2.266828,
+        "daily_periods_max": 9,
+        "tp_day_net_mean": 152.80533513481893,
+        "tp_day_net_max": 301.6202020780603,
+        "tp_day_net_negative_count": 0,
+        "bust_day_net_values": [
+          -100.0
+        ],
+        "cumulative_net": -1573782.0399545247,
+        "max_drawdown": 1593193.7818341993,
+        "longest_losing_day_run": 39,
+        "cumulative_30_days": {
+          "windows": 33333,
+          "mean": -47.206566661306816,
+          "p5": -1183.1576013,
+          "median": -15.926404699999608,
+          "p95": 1066.6024518000006,
+          "positive_rate": 0.4881348813488135
+        },
+        "cumulative_100_days": {
+          "windows": 10000,
+          "mean": -157.37820399501402,
+          "p5": -2174.6833823799993,
+          "median": -157.73540199999866,
+          "p95": 1874.2808838150017,
+          "positive_rate": 0.4492
+        },
+        "cumulative_365_days": {
+          "windows": 2739,
+          "mean": -573.0733611463819,
+          "p5": -4522.333996399995,
+          "median": -554.0689710999959,
+          "p95": 3201.216151600005,
+          "positive_rate": 0.40817816721431177
+        }
+      },
+      "real_replay": {
+        "day_boundary": "pc28",
+        "draws_consumed": 148,
+        "windows": 63,
+        "incomplete_days": 0,
+        "summary": {
+          "days": 63,
+          "tp_rate": 0.5079365079365079,
+          "bust_rate": 0.49206349206349204,
+          "incomplete_rate": 0.0,
+          "daily_net_mean": 29.456773736507955,
+          "daily_net_median": 117.67823360000014,
+          "daily_net_stdev": 127.94083167867362,
+          "daily_periods_mean": 2.3492063492063493,
+          "daily_periods_max": 3,
+          "tp_day_net_mean": 154.86802329375004,
+          "tp_day_net_max": 170.3045457,
+          "tp_day_net_negative_count": 0,
+          "bust_day_net_values": [
+            -100.0
+          ],
+          "cumulative_net": 1855.7767454000004,
+          "max_drawdown": 726.7310735000001,
+          "longest_losing_day_run": 6
+        }
+      },
+      "real_replay_sequential": {
+        "day_boundary": "sequential",
+        "draws_consumed": 24522,
+        "summary": {
+          "days": 10859,
+          "tp_rate": 0.399392209227369,
+          "bust_rate": 0.600607790772631,
+          "incomplete_rate": 0.0,
+          "daily_net_mean": 0.9199848798466687,
+          "daily_net_median": -100.0,
+          "daily_net_stdev": 124.11101114996939,
+          "daily_periods_mean": 2.2582189888571693,
+          "daily_periods_max": 6,
+          "tp_day_net_mean": 152.6839095711909,
+          "tp_day_net_max": 217.80548788131597,
+          "tp_day_net_negative_count": 0,
+          "bust_day_net_values": [
+            -100.0
+          ],
+          "cumulative_net": 9990.115810255591,
+          "max_drawdown": 12682.11697886747,
+          "longest_losing_day_run": 18,
+          "cumulative_30_days": {
+            "windows": 361,
+            "mean": 26.62901540209134,
+            "p5": -1180.09575944,
+            "median": 37.91931380000028,
+            "p95": 1194.38519229,
+            "positive_rate": 0.5484764542936288
+          },
+          "cumulative_100_days": {
+            "windows": 108,
+            "mean": 80.9526775356942,
+            "p5": -1918.789566688431,
+            "median": 81.9049702000015,
+            "p95": 2312.9541864300018,
+            "positive_rate": 0.5277777777777778
+          },
+          "cumulative_365_days": {
+            "windows": 29,
+            "mean": 352.5772264645383,
+            "p5": -3532.482271879995,
+            "median": 450.1591603800045,
+            "p95": 3907.4168823500063,
+            "positive_rate": 0.5172413793103449
+          }
+        }
+      }
+    }
+  ]
+}

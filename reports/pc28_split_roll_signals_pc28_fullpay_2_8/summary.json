@@ -1,0 +1,158 @@
+{
+  "generated_at": "2026-11-02 18:08:00",
+  "profit_rule_id": "pc28_fullpay_2_8",
+  "draw_count": 24558,
+  "draw_range": [
+    "2026-09-03 00:02:30",
+    "2026-11-03 02:05:00"
+  ],
+  "runs": {
+    "固定 单+小双": {
+      "days": 62,
+      "tp_rate": 0.16129032258064516,
+      "bust_rate": 0.8387096774193549,
+      "incomplete_rate": 0.0,
+      "daily_net_mean": -5.865250166110024,
+      "daily_net_median": -100.0,
+      "daily_net_stdev": 245.02422001119126,
+      "daily_periods_mean": 3.129032258064516,
+      "daily_periods_max": 10,
+      "tp_day_net_mean": 483.63544897011786,
+      "tp_day_net_max": 944.4127018169595,
+      "tp_day_net_negative_count": 0,
+      "bust_day_net_values": [
+        -100.0
+      ],
+      "cumulative_net": -363.64551029882136,
+      "max_drawdown": 2008.3371615903254,
+      "longest_losing_day_run": 10,
+      "daily_net_se": 31.11810705954391
+    },
+    "固定 单+大双": {
+      "days": 62,
+      "tp_rate": 0.0967741935483871,
+      "bust_rate": 0.9032258064516129,
+      "incomplete_rate": 0.0,
+      "daily_net_mean": -34.823826291284206,
+      "daily_net_median": -100.0,
+      "daily_net_stdev": 212.25664145341142,
+      "daily_periods_mean": 3.0483870967741935,
+      "daily_periods_max": 12,
+      "tp_day_net_mean": 573.4871283233965,
+      "tp_day_net_max": 724.8945572000002,
+      "tp_day_net_negative_count": 0,
+      "bust_day_net_values": [
+        -100.0
+      ],
+      "cumulative_net": -2159.077230059621,
+      "max_drawdown": 3516.238824499621,
+      "longest_losing_day_run": 21,
+      "daily_net_se": 26.95662042121715
+    },
+    "固定 双+小单": {
+      "days": 62,
+      "tp_rate": 0.1774193548387097,
+      "bust_rate": 0.8225806451612904,
+      "incomplete_rate": 0.0,
+      "daily_net_mean": 37.996335189787615,
+      "daily_net_median": -100.0,
+      "daily_net_stdev": 313.1796677832091,
+      "daily_periods_mean": 3.7580645161290325,
+      "daily_periods_max": 19,
+      "tp_day_net_mean": 677.7975256151666,
+      "tp_day_net_max": 1047.9232657995194,
+      "tp_day_net_negative_count": 0,
+      "bust_day_net_values": [
+        -100.0
+      ],
+      "cumulative_net": 2355.772781766832,
+      "max_drawdown": 2615.3785642771663,
+      "longest_losing_day_run": 17,
+      "daily_net_se": 39.77385758234502
+    },
+    "固定 双+大单": {
+      "days": 62,
+      "tp_rate": 0.1935483870967742,
+      "bust_rate": 0.8064516129032258,
+      "incomplete_rate": 0.0,
+      "daily_net_mean": 23.973664297976036,
+      "daily_net_median": -100.0,
+      "daily_net_stdev": 264.03656751680575,
+      "daily_periods_mean": 3.3225806451612905,
+      "daily_periods_max": 14,
+      "tp_day_net_mean": 540.5305988728762,
+      "tp_day_net_max": 685.6862271999996,
+      "tp_day_net_negative_count": 0,
+      "bust_day_net_values": [
+        -100.0
+      ],
+      "cumulative_net": 1486.3671864745143,
+      "max_drawdown": 2853.8637125511996,
+      "longest_losing_day_run": 17,
+      "daily_net_se": 33.5326776073287
+    },
+    "算法 频次趋势 V1": {
+      "days": 62,
+      "tp_rate": 0.1774193548387097,
+      "bust_rate": 0.8225806451612904,
+      "incomplete_rate": 0.0,
+      "daily_net_mean": 43.81038311672214,
+      "daily_net_median": -100.0,
+      "daily_net_stdev": 392.85896707260736,
+      "daily_periods_mean": 3.596774193548387,
+      "daily_periods_max": 14,
+      "tp_day_net_mean": 710.5676139306157,
+      "tp_day_net_max": 2422.41876606822,
+      "tp_day_net_negative_count": 0,
+      "bust_day_net_values": [
+        -100.0
+      ],
+      "cumulative_net": 2716.243753236773,
+      "max_drawdown": 2400.0,
+      "longest_losing_day_run": 24,
+      "daily_net_se": 49.89313871138479
+    },
+    "算法 组合马尔可夫 V1": {
+      "days": 62,
+      "tp_rate": 0.14516129032258066,
+      "bust_rate": 0.8548387096774194,
+      "incomplete_rate": 0.0,
+      "daily_net_mean": -10.194598374734303,
+      "daily_net_median": -100.0,
+      "daily_net_stdev": 236.13105592548925,
+      "daily_periods_mean": 3.435483870967742,
+      "daily_periods_max": 19,
+      "tp_day_net_mean": 518.659433418497,
+      "tp_day_net_max": 705.0517327999997,
+      "tp_day_net_negative_count": 0,
+      "bust_day_net_values": [
+        -100.0
+      ],
+      "cumulative_net": -632.0650992335268,
+      "max_drawdown": 2550.0196409600003,
+      "longest_losing_day_run": 21,
+      "daily_net_se": 29.98867409122622
+    },
+    "算法 遗漏回补 V1": {
+      "days": 62,
+      "tp_rate": 0.12903225806451613,
+      "bust_rate": 0.8709677419354839,
+      "incomplete_rate": 0.0,
+      "daily_net_mean": -25.181645508694228,
+      "daily_net_median": -100.0,
+      "daily_net_stdev": 219.6451738017051,
+      "daily_periods_mean": 3.5483870967741935,
+      "daily_periods_max": 10,
+      "tp_day_net_mean": 479.84224730761974,
+      "tp_day_net_max": 724.8945572000002,
+      "tp_day_net_negative_count": 1,
+      "bust_day_net_values": [
+        -100.0
+      ],
+      "cumulative_net": -1561.262021539042,
+      "max_drawdown": 4000.0,
+      "longest_losing_day_run": 40,
+      "daily_net_se": 27.894964967795463
+    }
+  }
+}
