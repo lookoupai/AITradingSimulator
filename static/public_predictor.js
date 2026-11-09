@@ -785,7 +785,7 @@ class PublicPredictorPage {
         const orderSelect = document.getElementById('publicProfitOrderView');
         const oddsSelect = document.getElementById('publicProfitOddsProfileView');
         const rules = predictor?.profit_rule_options || [];
-        const metrics = predictor?.simulation_metrics || [];
+        const metrics = predictor?.simulation_play_selection ? (predictor.simulation_play_metrics || predictor.simulation_metrics || []) : (predictor?.simulation_metrics || []);
         const periodOptions = predictor?.profit_period_options || [];
         const oddsProfiles = predictor?.odds_profiles || [];
 
@@ -900,7 +900,7 @@ class PublicPredictorPage {
             return;
         }
 
-        const metrics = this.currentPredictor.simulation_metrics || [];
+        const metrics = this.currentPredictor.simulation_play_selection ? (this.currentPredictor.simulation_play_metrics || this.currentPredictor.simulation_metrics || []) : (this.currentPredictor.simulation_metrics || []);
         if (!metrics.length) {
             this.renderProfitSimulationEmpty('当前方案没有可用于收益模拟的玩法');
             return;
@@ -958,6 +958,7 @@ class PublicPredictorPage {
             oddsCount: (this.currentPredictor?.odds_profiles || []).length,
             canViewRecords: this.currentProfitCanViewRecords
         });
+        this.rollControls.sync(this.selectedProfitBetMode === 'win_streak_roll', this.currentPredictor);
         this.syncProfitResultVisibility(canViewRecords);
         this.renderProfitSimulationHint(simulation, canViewRecords);
         this.renderProfitSummary(simulation);
@@ -1183,7 +1184,6 @@ class PublicPredictorPage {
         const hasProfileOverride = false;
         const isFlat = this.selectedProfitBetMode === 'flat';
         const predictor = this.currentPredictor;
-        this.rollControls.sync(isRoll, predictor);
         for (const [suffix, visible] of [
             ['BetModeView', !hasProfileOverride], ['BaseStakeView', !hasProfileOverride && !isRoll],
             ['MultiplierView', !hasProfileOverride && !isRoll && !isFlat],
@@ -1195,6 +1195,7 @@ class PublicPredictorPage {
             if (field) { field.hidden = !visible; field.disabled = !visible; }
         }
 
+        this.rollControls.sync(isRoll, predictor);
     }
 
     syncProfitOptionVisibility({
@@ -1252,6 +1253,8 @@ class PublicPredictorPage {
             items.push(`每组 ${simulation.unit_count} 注，合计 ${this.formatUsd((simulation.bet_config?.base_stake || 0) * simulation.unit_count)}`);
             items.push('命中按覆盖组合统计，倍投按整组盈亏推进');
         }
+        if (simulation.selection_config?.selection_mode === 'fixed') items.push('固定买 ' + simulation.selection_config.fixed_value);
+        if (simulation.selection_config?.selection_mode === 'filter') items.push('只跟 ' + simulation.selection_config.fixed_value);
         items.push(oddsText);
         items.push(`当前共计下注 ${summary.bet_count || 0} 笔模拟票`);
         return items.join(' · ');

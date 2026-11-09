@@ -147,6 +147,8 @@ a {
     min-width: 0;
 }
 .roll-controls[hidden] { display: none; }
+.play-selection-controls { margin: 0 0 16px; max-width: 600px; }
+.play-selection-controls[hidden], .roll-control-grid label[hidden] { display: none; }
 #publicProfitSimulationCards[hidden] { display: none !important; }
 .roll-controls legend { padding: 0 8px; font-weight: 600; font-size: 14px; }
 .roll-control-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px 16px; }

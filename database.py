@@ -3281,7 +3281,8 @@ class Database:
         conn = self.get_connection()
         try:
             rows = conn.execute('''
-                SELECT p.issue_no, p.status, p.prediction_combo, p.created_at, p.external_fetched_at
+                SELECT p.issue_no, p.status, p.prediction_combo, p.prediction_big_small,
+                       p.prediction_odd_even, p.prediction_number, p.created_at, p.external_fetched_at
                 FROM predictions p
                 JOIN lottery_draws d ON d.lottery_type = p.lottery_type AND d.issue_no = p.issue_no
                 WHERE p.predictor_id = ? AND p.lottery_type = 'pc28' AND p.status = 'settled'

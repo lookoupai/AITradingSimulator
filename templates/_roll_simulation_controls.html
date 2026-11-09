@@ -1,9 +1,21 @@
+<div id="{{ roll_prefix }}PlaySelection" class="roll-control-grid play-selection-controls" hidden>
+    <label for="{{ roll_prefix }}SelectionMode">投注方向
+        <select id="{{ roll_prefix }}SelectionMode" class="home-select">
+            <option value="follow">跟随方案预测</option><option value="fixed">固定买所选方向</option>
+            <option value="filter">只跟预测的所选方向</option>
+        </select>
+    </label>
+    <label for="{{ roll_prefix }}FixedValue" hidden>固定／筛选方向
+        <select id="{{ roll_prefix }}FixedValue" class="home-select"></select>
+    </label>
+</div>
 <fieldset id="{{ roll_prefix }}RollControls" class="roll-controls" hidden>
     <legend>过关设置</legend>
     <div class="roll-control-grid">
         <label for="{{ roll_prefix }}RollStructure">投注结构
             <select id="{{ roll_prefix }}RollStructure" class="home-select" data-roll-key="structure">
-                <option value="follow_signal">跟随组合预测</option>
+                <option value="single_play">当前所选玩法过关</option>
+                <option value="follow_signal">旧七三分注：跟随组合预测</option>
                 <option value="A">固定：单＋小双</option><option value="B">固定：单＋大双</option>
                 <option value="C">固定：双＋小单</option><option value="D">固定：双＋大单</option>
             </select>
@@ -14,7 +26,7 @@
             </select>
         </label>
         <label for="{{ roll_prefix }}RollBase">每轮起始金额（U）
-            <input id="{{ roll_prefix }}RollBase" class="home-select" data-roll-key="base_amount" type="number" min="2" max="1000000" step="0.01" value="100" required>
+            <input id="{{ roll_prefix }}RollBase" class="home-select" data-roll-key="base_amount" type="number" min="1" max="1000000" step="0.01" value="100" required>
         </label>
         <label for="{{ roll_prefix }}RollShare">主注占比（%）
             <input id="{{ roll_prefix }}RollShare" class="home-select" data-roll-key="main_share" type="number" min="1" max="99" step="0.01" value="70" required>
@@ -46,5 +58,5 @@
             <input id="{{ roll_prefix }}RollMaxCycles" class="home-select" data-roll-key="max_cycles_per_day" type="number" min="1" max="1000" step="1" value="1" required>
         </label>
     </div>
-    <p class="roll-control-help">整期盈利加一关，亏损清零，持平保持。主辅注按整数拆分；补入本金不计作收益。区间包含当前未结束日。</p>
+    <p class="roll-control-help">整期盈利加一关，亏损清零，持平保持。起始金额为整期总额，组玩法等分为整数子注，尾差留仓；补入本金不计作收益。不同玩法分别模拟，各自独立过关。</p>
 </fieldset>

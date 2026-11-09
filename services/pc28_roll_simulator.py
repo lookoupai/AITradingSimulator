@@ -5,6 +5,7 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from utils.timezone import BEIJING_FIXED_TZ, get_pc28_day_window, parse_beijing_time
+from services.pc28_play_selection import normalize_selection, selected_bets, VALUES
 
 
 ROLL_MODE = 'win_streak_roll'
@@ -18,6 +19,7 @@ ROLL_DEFAULTS = {
     'main_share': 0.7, 'target_streak': 3, 'on_target': 'close_day',
     'on_bust': 'close_day', 'max_cycles_per_day': 1,
     'day_boundary': 'natural', 'days': 1,
+    'play_type': 'big_small', 'selection_mode': 'follow', 'fixed_value': None,
 }
 REPLAY_NOTE = '按每期当前保存的预测回放，并排除已知晚于开奖的预测；历史覆盖版本无法完整还原。'
 
@@ -30,14 +32,18 @@ def normalize_roll_config(value=None):
         raise ValueError('存在不支持的过关参数')
     config = {**ROLL_DEFAULTS, **incoming}
     enums = {
-        'structure': ('follow_signal', *STRUCTURES), 'roll_mode': ('chain', 'all_in'),
+        'structure': ('single_play', 'follow_signal', *STRUCTURES), 'roll_mode': ('chain', 'all_in'),
         'on_target': ('close_day', 'new_cycle'), 'on_bust': ('close_day', 'new_cycle'),
         'day_boundary': ('natural', 'pc28'),
     }
     for key, allowed in enums.items():
         if config[key] not in allowed:
             raise ValueError(f'过关参数 {key} 无效')
-    bounds = {'base_amount': (2, 1_000_000), 'main_share': (0.01, 0.99),
+    single = config['structure'] == 'single_play'
+    if single:
+        config.update(normalize_selection(config['play_type'], config))
+    units = {'double_group':2,'kill_group':3}.get(config['play_type'],1) if single else 2
+    bounds = {'base_amount': (units, 1_000_000), 'main_share': (0.01, 0.99),
               'target_streak': (1, 100), 'max_cycles_per_day': (1, 1000), 'days': (1, 30)}
     for key, (lower, upper) in bounds.items():
         try:
@@ -54,7 +60,7 @@ def normalize_roll_config(value=None):
             config[key] = round(number, 4 if key == 'main_share' else 2)
     if config['days'] not in (1, 7, 30):
         raise ValueError('过关区间仅支持 1、7、30 日')
-    if split_roll_stakes(config['base_amount'], config['main_share'])[0] < 1:
+    if not single and split_roll_stakes(config['base_amount'], config['main_share'])[0] < 1:
         raise ValueError('起始金额按当前比例无法拆成两笔整数注')
     return config
 
@@ -143,6 +149,11 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
             skip('unknown_prediction_time' if available_at is None else 'late_prediction')
             continue
         structure = config['structure']
+        single = structure == 'single_play'
+        bets = selected_bets(prediction, config['play_type'], config) if single else None
+        if single and not bets:
+            skip('missing_or_filtered_prediction')
+            continue
         if structure == 'follow_signal':
             structure = COMBO_STRUCTURES.get(prediction.get('prediction_combo'))
         if not structure:
@@ -159,17 +170,21 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
         available = config['base_amount'] if starting else (balance if config['roll_mode'] == 'all_in' else cycle_stake)
         if available > 1_000_000_000:
             raise ValueError('模拟滚动注额超过 10 亿，请减少关数或缩短区间')
-        main_stake, aux_stake = split_roll_stakes(available, config['main_share'])
+        if single:
+            per_unit = int(round(available,2) / len(bets) + 1e-9)
+            stakes = [per_unit] * len(bets)
+        else:
+            bets = [('odd_even',STRUCTURES[structure][0]), ('combo',STRUCTURES[structure][1])]
+            stakes = list(split_roll_stakes(available, config['main_share']))
+        main_stake = stakes[0]
         if not main_stake:
             # Integer/share constraints can make a small positive payout unplaceable.
             stopped, stop_reason = True, 'bust'
             summary['bust_cycle_count'] += 1
             skip('insufficient_stake')
             continue
-        main_value, aux_value = STRUCTURES[structure]
-        main = settle_leg(prediction, draw, 'odd_even', main_value, main_stake)
-        aux = settle_leg(prediction, draw, 'combo', aux_value, aux_stake)
-        if main is None or aux is None:
+        legs = [settle_leg(prediction, draw, metric, value, amount) for (metric,value),amount in zip(bets,stakes)]
+        if any(leg is None for leg in legs):
             skip('invalid_draw')
             continue
 
@@ -191,8 +206,8 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
             day_cycles += 1
             streak, stopped, stop_reason = 0, False, None
         before = balance
-        stake = main_stake + aux_stake
-        payout = round(main['payout_amount'] + aux['payout_amount'], 2)
+        stake = sum(stakes)
+        payout = round(sum(leg['payout_amount'] for leg in legs), 2)
         net = round(payout - stake, 2)
         balance = round(balance + net, 2)
         cycle_stake = payout
@@ -201,7 +216,7 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
         if streak >= config['target_streak']:
             stopped, stop_reason = True, 'target'
             summary['target_cycle_count'] += 1
-        elif not split_roll_stakes(next_stake, config['main_share'])[0]:
+        elif (single and int(round(next_stake,2) / len(bets) + 1e-9) < 1) or (not single and not split_roll_stakes(next_stake, config['main_share'])[0]):
             stopped, stop_reason = True, 'bust'
             summary['bust_cycle_count'] += 1
         result = 'hit' if net > 0 else 'miss' if net < 0 else 'refund'
@@ -212,13 +227,14 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
         peak_profit = max(peak_profit, summary['net_profit'])
         summary['max_drawdown'] = round(max(summary['max_drawdown'], peak_profit-summary['net_profit']), 2)
         if include_records:
-            refunds = list(dict.fromkeys(leg['refund_reason'] for leg in (main, aux) if leg.get('refund_reason')))
+            refunds = list(dict.fromkeys(leg['refund_reason'] for leg in legs if leg.get('refund_reason')))
             records.append({
                 'issue_no': issue, 'open_time': moment.strftime('%Y-%m-%d %H:%M:%S'),
                 'metric': 'roll', 'metric_label': '过关', 'structure': structure,
-                'ticket_label': f'{main_value} {main_stake}U ＋ {aux_value} {aux_stake}U',
-                'predicted_value': prediction.get('prediction_combo') or '固定结构',
-                'actual_value': draw.get('combo') or '--', 'odds': None, 'legs': [main, aux],
+                'ticket_label': ' ＋ '.join(f'{value} {amount}U' for (_,value),amount in zip(bets,stakes)),
+                'predicted_value': prediction.get('prediction_'+(config['play_type'] if single else 'combo')) or '固定／派生投注',
+                'actual_value': draw.get('combo') or '--', 'odds': None, 'legs': legs,
+                **({'prediction_hit': draw.get('combo') in [value for _,value in bets], 'per_combo_amount': stakes[0]} if single and config['play_type'] in ('double_group','kill_group') else {}),
                 'result_type': result, 'result_label': '盈利' if net > 0 else '亏损' if net < 0 else '持平',
                 'refund_reason': '；'.join(refunds) or None, 'stake_amount': stake,
                 'payout_amount': payout, 'net_profit': net, 'cumulative_profit': summary['net_profit'],

@@ -20,6 +20,7 @@ from services.bet_strategy import (
 from services.pc28_roll_simulator import (
     ROLL_MODE, REPLAY_NOTE, STRUCTURES, normalize_roll_config, replay_roll, roll_period,
 )
+from services.pc28_play_selection import normalize_selection, selected_prediction
 from utils import jingcai_football as football_utils
 from utils.pc28 import (
     DEFAULT_PROFIT_RULE_ID as PC28_DEFAULT_PROFIT_RULE_ID,
@@ -580,6 +581,7 @@ class ProfitSimulator:
         max_steps: Optional[int] = None,
         include_records: bool = True,
         roll_config: Optional[dict] = None,
+        selection_config: Optional[dict] = None,
     ) -> dict:
         predictor = self.db.get_predictor(predictor_id, include_secret=False)
         if not predictor:
@@ -615,11 +617,14 @@ class ProfitSimulator:
             base_stake=base_stake,
             multiplier=multiplier,
             max_steps=max_steps,
-            include_records=include_records
+            include_records=include_records,
+            selection_config=selection_config,
         )
 
     def _build_pc28_roll_simulation(self, predictor, profit_rule_id, odds_profile, roll_config, include_records):
         config = normalize_roll_config(roll_config)
+        if config['structure'] == 'single_play' and config['selection_mode'] != 'fixed' and config['play_type'] not in self.get_available_metrics(predictor):
+            raise ValueError('当前方案不支持该玩法预测；可选择固定方向')
         if config['structure'] == 'follow_signal' and 'combo' not in self.get_available_metrics(predictor):
             raise ValueError('跟随预测过关需要方案支持组合预测；可选择固定结构')
         rule_id = self._resolve_rule_id(predictor, profit_rule_id)
@@ -649,7 +654,7 @@ class ProfitSimulator:
                 if triplet is None or sum(triplet) != number:
                     return None
             odd = '单' if number % 2 else '双'
-            actual = {**draw, 'odd_even': odd, 'combo': ('大' if number >= 14 else '小') + odd}
+            actual = {**draw, 'big_small': '大' if number >= 14 else '小', 'odd_even': odd, 'combo': ('大' if number >= 14 else '小') + odd}
             policy = build_bet_strategy('flat', stake)
             # 模拟允许滚动超过普通基础注上限，结算使用真实金额。
             policy['base_stake'] = stake
@@ -662,7 +667,10 @@ class ProfitSimulator:
 
         replay = replay_roll(predictions, draws, config, start=start, end=end,
                              settle_leg=settle_leg, include_records=include_records)
-        structure_label = '跟随组合预测' if config['structure'] == 'follow_signal' else '＋'.join(STRUCTURES[config['structure']])
+        structure_label = (self._metric_label(config['play_type'], 'pc28') if config['structure'] == 'single_play' else
+                           '跟随组合预测' if config['structure'] == 'follow_signal' else '＋'.join(STRUCTURES[config['structure']]))
+        if config['structure'] == 'single_play':
+            structure_label += ' · ' + {'follow':'跟随预测','fixed':'固定买','filter':'只跟'}[config['selection_mode']] + (str(config['fixed_value']) if config['fixed_value'] is not None else '')
         roll_label = '链条滚动' if config['roll_mode'] == 'chain' else '全仓滚动'
         day_label = '北京时间自然日' if config['day_boundary'] == 'natural' else 'PC28 盘日'
         return {
@@ -674,7 +682,7 @@ class ProfitSimulator:
             'bet_mode': ROLL_MODE, 'bet_mode_label': '过关', 'roll_config': config,
             'bet_strategy_label': f'{structure_label} · {roll_label} · {config["target_streak"]} 关',
             'bet_config': {'base_stake': config['base_amount']}, 'stake_amount': config['base_amount'],
-            'stake_basis': 'per_period', 'unit_count': 2,
+            'stake_basis': 'per_period', 'unit_count': ({'double_group':2,'kill_group':3}.get(config['play_type'],1) if config['structure'] == 'single_play' else 2),
             'period': {'key': f'roll_{config["days"]}d', 'label': f'近 {config["days"]} 日 · {day_label}',
                        'start_time': format_beijing_time(start), 'end_time': format_beijing_time(end)},
             'odds_source_label': self._odds_profile_labels('pc28')[profile_key],
@@ -718,13 +726,19 @@ class ProfitSimulator:
         base_stake: Optional[float],
         multiplier: Optional[float],
         max_steps: Optional[int],
-        include_records: bool
+        include_records: bool,
+        selection_config: Optional[dict] = None,
     ) -> dict:
         available_metrics = self.get_available_metrics(predictor)
         if not available_metrics:
             raise ValueError('当前方案没有可用于收益模拟的玩法')
 
         effective_metric = self._resolve_metric(predictor, requested_metric, available_metrics)
+        if selection_config and selection_config.get('selection_mode', 'follow') != 'fixed' and requested_metric and requested_metric not in available_metrics:
+            raise ValueError('当前方案不支持该玩法预测；可选择固定方向')
+        if selection_config and selection_config.get('selection_mode') == 'fixed':
+            effective_metric = requested_metric or effective_metric
+        selection = normalize_selection(effective_metric, selection_config)
         effective_rule_id = self._resolve_rule_id(predictor, profit_rule_id)
         normalized_odds_profile = self._resolve_odds_profile(odds_profile, predictor)
         bet_strategy = self._build_bet_strategy(
@@ -763,8 +777,12 @@ class ProfitSimulator:
             if not (period['start'] <= open_time < period['end_exclusive']):
                 continue
 
+            chosen = selected_prediction(prediction, effective_metric, selection)
+            if not chosen:
+                skipped_count += 1
+                continue
             record = self._build_record(
-                prediction,
+                chosen,
                 draw,
                 effective_metric,
                 effective_rule_id,
@@ -817,6 +835,7 @@ class ProfitSimulator:
             'odds_profiles': self.get_odds_profile_options(predictor),
             'bet_modes': self.get_bet_mode_options(),
             'bet_mode': bet_strategy['mode'],
+            'selection_config': selection,
             'bet_mode_label': bet_strategy['mode_label'],
             'bet_strategy_label': ('每组合 ' if effective_metric in GROUP_PLAY_TYPES else '') + self._bet_strategy_label(bet_strategy),
             'bet_config': {
@@ -1303,7 +1322,7 @@ class ProfitSimulator:
         self, prediction: dict, draw: dict, metric: str, profit_rule_id: str,
         odds_profile: str, bet_strategy: dict, bet_step: int,
     ) -> Optional[dict]:
-        group = derive_group_bet(metric, prediction.get('prediction_combo'))
+        group = prediction.get('_simulation_group') or derive_group_bet(metric, prediction.get('prediction_combo'))
         if not group:
             return None
         legs = [self._build_record(

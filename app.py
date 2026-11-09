@@ -886,6 +886,8 @@ def _serialize_predictor(predictor: dict) -> dict:
         'capabilities': lottery_definition.to_catalog_item()['capabilities'],
         'simulation_metrics': simulation_metrics,
         'simulation_bet_modes': profit_simulator.get_bet_mode_options(predictor) if supports_profit_simulation(lottery_type) else [],
+        'simulation_play_selection': lottery_type == 'pc28',
+        'simulation_play_metrics': [{'key': key, 'label': get_target_label('pc28', key)} for key in ('big_small','odd_even','combo','number','double_group','kill_group')] if lottery_type == 'pc28' else [],
         'default_simulation_metric': default_simulation_metric,
         'profit_rule_options': profit_simulator.get_rule_options(predictor) if supports_profit_simulation(lottery_type) else [],
         'profit_period_options': profit_simulator.get_period_options(predictor) if supports_profit_simulation(lottery_type) else [],
@@ -1334,6 +1336,13 @@ def _simulation_roll_config():
         if request.args.get('bet_profile_id'):
             raise ValueError('过关模拟请使用独立参数，不支持套用均注或倍投模板')
     return {key: request.args[param] for key, param in params.items() if param in request.args}
+
+
+def _simulation_play_selection():
+    if 'play_selection_mode' not in request.args and 'play_fixed_value' not in request.args:
+        return None
+    return {'selection_mode': request.args.get('play_selection_mode', 'follow'),
+            'fixed_value': request.args.get('play_fixed_value')}
 
 
 def _format_jingcai_simulation_outcome(metric: str, outcome: str, meta_payload: dict) -> str:
@@ -2182,6 +2191,8 @@ def _get_public_predictor_detail(predictor_id: int) -> dict:
             'prediction_targets': predictor.get('prediction_targets') or [],
             'simulation_metrics': profit_simulator.get_metric_options(predictor) if supports_profit_simulation(lottery_type) else [],
             'simulation_bet_modes': profit_simulator.get_bet_mode_options(predictor) if supports_profit_simulation(lottery_type) else [],
+            'simulation_play_selection': lottery_type == 'pc28',
+            'simulation_play_metrics': [{'key': key, 'label': get_target_label('pc28', key)} for key in ('big_small','odd_even','combo','number','double_group','kill_group')] if lottery_type == 'pc28' else [],
             'default_simulation_metric': profit_simulator.get_default_metric(predictor) if supports_profit_simulation(lottery_type) else None,
             'profit_rule_options': profit_simulator.get_rule_options(predictor) if supports_profit_simulation(lottery_type) else [],
             'profit_period_options': profit_simulator.get_period_options(predictor) if supports_profit_simulation(lottery_type) else [],
@@ -4265,6 +4276,7 @@ def get_public_predictor_simulation(predictor_id: int):
             multiplier=multiplier,
             max_steps=max_steps,
             roll_config=_simulation_roll_config(),
+            selection_config=_simulation_play_selection(),
             include_records=force_include_records
         )
         if lottery_type == 'jingcai_football':
@@ -5761,6 +5773,7 @@ def get_predictor_simulation(predictor_id: int):
             multiplier=multiplier,
             max_steps=max_steps,
             roll_config=_simulation_roll_config(),
+            selection_config=_simulation_play_selection(),
             include_records=True
         )
         if lottery_type == 'jingcai_football':
