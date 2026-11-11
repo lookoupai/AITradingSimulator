@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from utils.timezone import BEIJING_FIXED_TZ, get_pc28_day_window, parse_beijing_time
 from services.pc28_play_selection import normalize_selection, selected_bets, VALUES
+from services.pc28_simulation_schedule import normalize_schedule, schedule_candidate
 
 
 ROLL_MODE = 'win_streak_roll'
@@ -19,6 +20,7 @@ ROLL_DEFAULTS = {
     'main_share': 0.7, 'target_streak': 3, 'on_target': 'close_day',
     'on_bust': 'close_day', 'max_cycles_per_day': 1,
     'day_boundary': 'natural', 'days': 1,
+    'schedule': None,
     'play_type': 'big_small', 'selection_mode': 'follow', 'fixed_value': None,
 }
 REPLAY_NOTE = '按每期当前保存的预测回放，并排除已知晚于开奖的预测；历史覆盖版本无法完整还原。'
@@ -33,7 +35,7 @@ def normalize_roll_config(value=None):
     config = {**ROLL_DEFAULTS, **incoming}
     enums = {
         'structure': ('single_play', 'follow_signal', *STRUCTURES), 'roll_mode': ('chain', 'all_in'),
-        'on_target': ('close_day', 'new_cycle'), 'on_bust': ('close_day', 'new_cycle'),
+        'on_target': ('close_day', 'new_cycle', 'wait_condition'), 'on_bust': ('close_day', 'new_cycle', 'wait_condition'),
         'day_boundary': ('natural', 'pc28'),
     }
     for key, allowed in enums.items():
@@ -62,6 +64,11 @@ def normalize_roll_config(value=None):
         raise ValueError('过关区间仅支持 1、7、30 日')
     if not single and split_roll_stakes(config['base_amount'], config['main_share'])[0] < 1:
         raise ValueError('起始金额按当前比例无法拆成两笔整数注')
+    config['schedule'] = normalize_schedule(config['schedule'])
+    if config['schedule'] and config['day_boundary'] != 'natural':
+        raise ValueError('定时回放按北京时间自然日计算启动次数，请选择北京时间 00:00')
+    if not config['schedule'] and 'wait_condition' in (config['on_target'],config['on_bust']):
+        raise ValueError('等待再次触发需要开启定时回放')
     return config
 
 
@@ -122,6 +129,9 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
     stopped = False
     stop_reason = None
     peak_profit = 0.0
+    schedule=config.get('schedule')
+    starts_by_day={};starts_by_window={}
+    last_bet_draw=None;last_start_issue=None;completed_issue=None
     seen = set()
 
     def skip(reason):
@@ -159,14 +169,37 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
         if not structure:
             skip('missing_combo')
             continue
-        day = roll_day_start(moment, config['day_boundary']).strftime('%Y-%m-%d')
-        new_day = day != current_day
-        if not new_day and stopped:
-            action = config['on_target' if stop_reason == 'target' else 'on_bust']
-            if action == 'close_day' or day_cycles >= config['max_cycles_per_day']:
-                skip('day_closed')
-                continue
-        starting = new_day or stopped
+        if schedule:
+            starting=current_day is None or stopped
+            picked,reason=schedule_candidate(schedule,prediction,moment,available_at,starting=starting,
+                previous_draw=last_bet_draw,earliest=start)
+            if picked is None:
+                skip(reason);continue
+            dispatch_time,window_id=picked if starting else (picked,None)
+            dispatch_day=dispatch_time.strftime('%Y-%m-%d')
+            day=dispatch_day if starting else current_day
+            new_day=day!=current_day
+            if starting:
+                action=config['on_target' if stop_reason=='target' else 'on_bust'] if stopped else None
+                if (stopped and action=='close_day' and not new_day) or starts_by_day.get(day,0)>=config['max_cycles_per_day']:
+                    skip('day_closed');continue
+                window_limit=schedule['max_starts_per_window']
+                if window_limit and starts_by_window.get((day,window_id),0)>=window_limit:
+                    skip('schedule_window_limit');continue
+                if stopped and action=='wait_condition':
+                    if completed_issue is not None and int(issue)<=int(completed_issue)+1:
+                        skip('cycle_waiting_new_issue');continue
+                    if last_start_issue is not None and int(issue)-int(last_start_issue)<schedule['cooldown_issues']:
+                        skip('cooldown');continue
+        else:
+            day = roll_day_start(moment, config['day_boundary']).strftime('%Y-%m-%d')
+            new_day = day != current_day
+            if not new_day and stopped:
+                action = config['on_target' if stop_reason == 'target' else 'on_bust']
+                if action == 'close_day' or day_cycles >= config['max_cycles_per_day']:
+                    skip('day_closed')
+                    continue
+            starting = new_day or stopped
         available = config['base_amount'] if starting else (balance if config['roll_mode'] == 'all_in' else cycle_stake)
         if available > 1_000_000_000:
             raise ValueError('模拟滚动注额超过 10 亿，请减少关数或缩短区间')
@@ -204,6 +237,11 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
             summary['total_withdrawn'] = round(summary['total_withdrawn'] + withdrawn, 2)
             summary['cycle_count'] += 1
             day_cycles += 1
+            if schedule:
+                starts_by_day[day]=starts_by_day.get(day,0)+1
+                starts_by_window[(day,window_id)]=starts_by_window.get((day,window_id),0)+1
+                day_cycles=starts_by_day[day]
+                last_start_issue=issue
             streak, stopped, stop_reason = 0, False, None
         before = balance
         stake = sum(stakes)
@@ -219,6 +257,9 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
         elif (single and int(round(next_stake,2) / len(bets) + 1e-9) < 1) or (not single and not split_roll_stakes(next_stake, config['main_share'])[0]):
             stopped, stop_reason = True, 'bust'
             summary['bust_cycle_count'] += 1
+        if schedule:
+            last_bet_draw=moment
+            if stopped:completed_issue=issue
         result = 'hit' if net > 0 else 'miss' if net < 0 else 'refund'
         summary[result + '_count'] += 1
         summary['bet_count'] += 1
@@ -229,6 +270,7 @@ def replay_roll(predictions, draws, config, *, start, end, settle_leg, include_r
         if include_records:
             refunds = list(dict.fromkeys(leg['refund_reason'] for leg in legs if leg.get('refund_reason')))
             records.append({
+                **({'simulated_dispatch_time':dispatch_time.strftime('%Y-%m-%d %H:%M:%S')} if schedule else {}),
                 'issue_no': issue, 'open_time': moment.strftime('%Y-%m-%d %H:%M:%S'),
                 'metric': 'roll', 'metric_label': '过关', 'structure': structure,
                 'ticket_label': ' ＋ '.join(f'{value} {amount}U' for (_,value),amount in zip(bets,stakes)),

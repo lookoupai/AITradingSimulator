@@ -687,7 +687,7 @@ class ProfitSimulator:
                        'start_time': format_beijing_time(start), 'end_time': format_beijing_time(end)},
             'odds_source_label': self._odds_profile_labels('pc28')[profile_key],
             'odds_source_description': '按所选规则与每期实际注额结算，不回看历史盘口变化。',
-            'replay_note': REPLAY_NOTE,
+            'replay_note': REPLAY_NOTE + (' 定时回放按保存/抓取时间和所设延迟估算可下单时刻，套用时段、新鲜度、开奖前余量及次数限制；不包含跟单端真实轮询、网络、封盘回执和条件触发历史。' if config.get('schedule') else ''),
         }
 
     def build_today_simulation(

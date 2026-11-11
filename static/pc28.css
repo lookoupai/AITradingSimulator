@@ -2060,3 +2060,9 @@ body:not(.theme-dark) .nav-dropdown-menu {
 body:not(.theme-dark) .nav-dropdown-menu a:hover {
     background: rgba(108, 156, 255, 0.08);
 }
+
+.roll-schedule { margin-top: 14px; border-top: 1px solid var(--border-color, #dce3ee); padding-top: 12px; }
+.roll-schedule-toggle, .roll-weekdays { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.roll-weekdays { gap: 12px; }
+.roll-weekdays label { display: inline-flex; align-items: center; gap: 5px; }
+.roll-schedule textarea { width: 100%; resize: vertical; min-height: 72px; }

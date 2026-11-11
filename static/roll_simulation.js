@@ -7,6 +7,10 @@ class RollSimulationControls {
         this.selectionMode = document.getElementById(`${prefix}SelectionMode`);
         this.fixedValue = document.getElementById(`${prefix}FixedValue`);
         this.metric = document.getElementById(`${prefix}MetricView`);
+        this.scheduleSection = document.getElementById(`${prefix}RollScheduleSection`);
+        this.scheduleEnabled = document.getElementById(`${prefix}RollScheduleEnabled`);
+        this.scheduleFields = document.getElementById(`${prefix}RollScheduleFields`);
+        this.windowsField = document.getElementById(`${prefix}RollWindows`);
         this.active = false;
         this.root?.addEventListener('change', () => {
             this.sync(this.active, this.predictor);
@@ -17,7 +21,8 @@ class RollSimulationControls {
     }
 
     validate() {
-        for (const field of this.root?.querySelectorAll('[data-roll-key]') || []) {
+        if (this.scheduleEnabled?.checked) this.scheduleConfig();
+        for (const field of this.root?.querySelectorAll('[data-roll-key], [data-schedule-key], textarea') || []) {
             if (!field.checkValidity()) { field.reportValidity(); return false; }
         }
         return true;
@@ -28,6 +33,21 @@ class RollSimulationControls {
         this.active = active;
         if (!this.root) return;
         this.root.hidden = !active;
+        if (this.scheduleSection) {
+            const supported = Boolean(predictor?.simulation_roll_schedule);
+            this.scheduleSection.hidden = !supported;
+            if (!supported) this.scheduleEnabled.checked = false;
+            const scheduled = supported && this.scheduleEnabled.checked;
+            this.scheduleFields.hidden = !scheduled;
+            this.scheduleFields.querySelectorAll('input, textarea').forEach(field => { field.disabled = !scheduled; });
+            const boundary = this.root.querySelector('[data-roll-key="day_boundary"]');
+            boundary.disabled = scheduled;
+            if (scheduled) boundary.value = 'natural';
+            this.root.querySelectorAll('option[value="wait_condition"]').forEach(option => {
+                option.disabled = !scheduled;
+                if (!scheduled && option.selected) option.parentElement.value = 'close_day';
+            });
+        }
         const structure = this.root.querySelector('[data-roll-key="structure"]');
         const capable = Boolean(predictor?.simulation_play_selection);
         const singleOption = structure.querySelector('[value="single_play"]');
@@ -59,6 +79,18 @@ class RollSimulationControls {
         if (!supportsCombo && structure.value === 'follow_signal') structure.value = 'A';
     }
 
+    scheduleConfig() {
+        const windows = this.windowsField.value.trim().split(/\n+/).map((line, index) => {
+            const match = line.trim().match(/^((?:[01]\d|2[0-3]):[0-5]\d)\s*[-–]\s*((?:[01]\d|2[0-3]):[0-5]\d|24:00)$/);
+            return match && match[1] < match[2] ? {id:`w${index+1}`, start:match[1], end:match[2]} : null;
+        });
+        this.windowsField.setCustomValidity(windows.length <= 24 && windows.every(Boolean) ? '' : '每行填写一个有效时段，例如 00:00-00:59；跨日请拆为两段。');
+        const config = {windows, weekdays:Array.from(this.scheduleFields.querySelectorAll('[data-schedule-weekday]:checked')).map(input => input.dataset.scheduleWeekday),
+            allow_pre_window_signal:document.getElementById(`${this.prefix}RollAllowPreWindow`).checked};
+        this.scheduleFields.querySelectorAll('[data-schedule-key]').forEach(input => { config[input.dataset.scheduleKey] = Number(input.value); });
+        return config;
+    }
+
     query() {
         const values = new URLSearchParams();
         if (this.selection && !this.selection.hidden) {
@@ -75,6 +107,7 @@ class RollSimulationControls {
             values.set('roll_selection_mode', this.selectionMode.value);
             values.set('roll_fixed_value', this.fixedValue.value);
         }
+        if (this.scheduleEnabled?.checked && this.predictor?.simulation_roll_schedule) values.set('roll_schedule', JSON.stringify(this.scheduleConfig()));
         return `&${values}`;
     }
 
@@ -97,14 +130,18 @@ class RollSimulationControls {
     static hint(simulation, view) {
         const config = simulation.roll_config || {};
         const summary = simulation.summary || {};
-        return `整期起始 ${view.formatUsd(config.base_amount || 0)} · ` + (config.structure === 'single_play' ? '按所选玩法下注 · ' : `主注 ${Number((config.main_share || 0) * 100).toFixed(2)}% · `) +
-            `每天最多 ${config.max_cycles_per_day || 1} 轮 · 跳过 ${summary.skipped_count || 0} 期（含收工后期号） · ${simulation.replay_note || ''}`;
+        const schedule = config.schedule;
+        const scheduleText = schedule ? `定时 ${(schedule.windows || []).map(w => w.start + '–' + w.end).join(' / ')} · ${schedule.allow_pre_window_signal ? '允许时段前有效信号' : '仅时段内新信号'} · 最大延迟 ${schedule.signal_max_age_seconds} 秒 · 投递余量 ${schedule.min_remaining_seconds} 秒 · ` : '';
+        const reasons = {schedule_signal_before_window:'时段前信号',schedule_signal_stale:'信号过期',outside_schedule_window:'时段外',window_too_short:'投递余量不足',schedule_window_limit:'时段次数已满',cooldown:'冷却中',cycle_waiting_new_issue:'等待新一期',day_closed:'当天收工'};
+        const skipped = schedule ? Object.entries(simulation.skip_reasons || {}).map(([key,count]) => (reasons[key] || key) + ' ' + count + ' 期').join('；') + '。' : '';
+        return scheduleText + `整期起始 ${view.formatUsd(config.base_amount || 0)} · ` + (config.structure === 'single_play' ? '按所选玩法下注 · ' : `主注 ${Number((config.main_share || 0) * 100).toFixed(2)}% · `) +
+            `每天最多 ${config.max_cycles_per_day || 1} 轮 · 跳过 ${summary.skipped_count || 0} 期（含收工后期号） · ${skipped}${simulation.replay_note || ''}`;
     }
 
     static detail(item, view) {
         if (item.metric !== 'roll') return '';
         const stop = item.stop_reason === 'target' ? ' · 本轮达标' : item.stop_reason === 'bust' ? ' · 资金不足' : '';
-        const text = `返还 ${view.formatUsd(item.payout_amount)} · 余额 ${view.formatUsd(item.balance_before)} → ${view.formatUsd(item.balance_after)}${stop}`;
+        const text = `返还 ${view.formatUsd(item.payout_amount)} · 余额 ${view.formatUsd(item.balance_before)} → ${view.formatUsd(item.balance_after)}${stop}${item.simulated_dispatch_time ? ' · 模拟下单 ' + item.simulated_dispatch_time : ''}`;
         return `<span class="result-meta-text roll-record-detail">${view.escapeHtml(text)}</span>`;
     }
 }

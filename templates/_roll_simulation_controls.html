@@ -46,17 +46,39 @@
         </label>
         <label for="{{ roll_prefix }}RollOnTarget">达标后
             <select id="{{ roll_prefix }}RollOnTarget" class="home-select" data-roll-key="on_target">
-                <option value="close_day">当天收工</option><option value="new_cycle">下一有效期开新轮</option>
+                <option value="close_day">当天收工</option><option value="new_cycle">下一有效期开新轮</option><option value="wait_condition">等待定时时段和冷却</option>
             </select>
         </label>
         <label for="{{ roll_prefix }}RollOnBust">资金不足后
             <select id="{{ roll_prefix }}RollOnBust" class="home-select" data-roll-key="on_bust">
-                <option value="close_day">当天收工</option><option value="new_cycle">补足起始金额再开轮</option>
+                <option value="close_day">当天收工</option><option value="new_cycle">补足起始金额再开轮</option><option value="wait_condition">等待定时时段和冷却</option>
             </select>
         </label>
         <label for="{{ roll_prefix }}RollMaxCycles">每天最多轮数（含首轮）
             <input id="{{ roll_prefix }}RollMaxCycles" class="home-select" data-roll-key="max_cycles_per_day" type="number" min="1" max="1000" step="1" value="1" required>
         </label>
+    </div>
+    <div id="{{ roll_prefix }}RollScheduleSection" class="roll-schedule" hidden>
+        <label class="roll-schedule-toggle"><input id="{{ roll_prefix }}RollScheduleEnabled" type="checkbox">按定时规则回放</label>
+        <div id="{{ roll_prefix }}RollScheduleFields" hidden>
+            <div class="roll-control-grid">
+                <label for="{{ roll_prefix }}RollWindows">启动时段（北京时间，每行一段）
+                    <textarea id="{{ roll_prefix }}RollWindows" class="home-select" rows="3" placeholder="00:00-00:59">00:00-00:59</textarea>
+                </label>
+                <label for="{{ roll_prefix }}RollSignalAge">信号最大延迟（秒）<input id="{{ roll_prefix }}RollSignalAge" class="home-select" data-schedule-key="signal_max_age_seconds" required type="number" min="1" max="86400" step="1" value="300"></label>
+                <label for="{{ roll_prefix }}RollMinRemaining">开奖前投递余量（秒）<input id="{{ roll_prefix }}RollMinRemaining" class="home-select" data-schedule-key="min_remaining_seconds" required type="number" min="0" max="3600" step="1" value="40"></label>
+                <label for="{{ roll_prefix }}RollReceiveDelay">额外同步／检查延迟（秒）<input id="{{ roll_prefix }}RollReceiveDelay" class="home-select" data-schedule-key="receive_delay_seconds" required type="number" min="0" max="3600" step="1" value="0"></label>
+                <label for="{{ roll_prefix }}RollWindowLimit">每时段最多轮数（0 不限）<input id="{{ roll_prefix }}RollWindowLimit" class="home-select" data-schedule-key="max_starts_per_window" required type="number" min="0" max="1000" step="1" value="1"></label>
+                <label for="{{ roll_prefix }}RollCooldown">重新等待时冷却期数<input id="{{ roll_prefix }}RollCooldown" class="home-select" data-schedule-key="cooldown_issues" required type="number" min="0" max="10000" step="1" value="0"></label>
+            </div>
+            <div class="roll-weekdays" aria-label="允许启动的星期">
+                {% for value,label in [('Mon','周一'),('Tue','周二'),('Wed','周三'),('Thu','周四'),('Fri','周五'),('Sat','周六'),('Sun','周日')] %}
+                <label><input type="checkbox" data-schedule-weekday="{{ value }}" checked>{{ label }}</label>
+                {% endfor %}
+            </div>
+            <label class="roll-schedule-toggle"><input id="{{ roll_prefix }}RollAllowPreWindow" type="checkbox">允许使用时段开始前发布的有效信号</label>
+            <p class="roll-control-help">按已保存的预测时间估算可下单时刻，未包含真实轮询、网络或送达记录。时段只限制新轮启动；正在运行的轮次可以跨时段继续。定时回放按北京时间自然日计次。</p>
+        </div>
     </div>
     <p class="roll-control-help">整期盈利加一关，亏损清零，持平保持。起始金额为整期总额，组玩法等分为整数子注，尾差留仓；补入本金不计作收益。不同玩法分别模拟，各自独立过关。</p>
 </fieldset>
