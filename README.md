@@ -30,11 +30,34 @@
 
 ## 快速开始
 
-### 本地运行
+### 服务器运行（推荐，scripts/run_app.sh）
 
 ```bash
-pip install -r requirements.txt
-python app.py
+bash scripts/run_app.sh start     # 后台启动（screen 会话 pc28，窗口 predictor）
+bash scripts/run_app.sh status    # 状态：进程/保留期配置/最近日志
+bash scripts/run_app.sh restart   # 重启
+bash scripts/run_app.sh stop      # 停止
+bash scripts/run_app.sh foreground   # 前台运行（调试用）
+```
+
+脚本自动创建 `.venv`、校验依赖，并**强制使用 `.venv/bin/python`**。
+
+> ⚠️ 不要直接用系统 `python app.py` 启动：系统解释器缺少 dotenv/flask 等依赖
+> 会启动失败；`/proc/<pid>/exe` 显示系统解释器只是 venv 软链的假象。
+> 生产实例运行在 screen 会话 `pc28`（窗口 predictor），日志写 `pc28_predictor.log`。
+
+数据保留期（`.env`，重启生效，详见 `.env.example`）：
+
+- `PC28_DRAW_RETENTION_DAYS`：开奖**每期明细**保留天数（生产为 365；
+  超期只归档"每日条数汇总"，每期奇偶/和值将不可恢复，请按需调大）
+- `PC28_PREDICTION_RETENTION_DAYS`：预测明细保留天数
+
+### 本地运行（手动 venv）
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python app.py
 ```
 
 启动后访问：
